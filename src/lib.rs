@@ -1105,16 +1105,31 @@ async fn oidc_auth(
 /// GET /api/oidc/callback?code=authorization_code&state=session_code
 #[openapi(tag = "login")]
 #[get("/api/oidc/callback?<code>&<state>")]
-async fn oidc_callback(apistate: &State<ApiState>, code: &str, state: &str) -> String {
-    let oidc_code = state; // this is the session code
+async fn oidc_callback(
+    apistate: &State<ApiState>,
+    code: &str,
+    state: &str,
+) -> rocket::response::content::RawHtml<String> {
+    let oidc_code = state;
     let oidc_authorization_code = code;
     let updated_oidc_session = apistate
         .oidc_session_exchange_code(oidc_authorization_code.to_string(), oidc_code.to_string())
         .await;
-    if updated_oidc_session.is_none() {
-        return "ERROR".to_string();
-    }
-    "OK".to_string()
+    let (status, message) = if updated_oidc_session.is_none() {
+        ("error", "Login failed. Please close this window and try again.")
+    } else {
+        ("ok", "Login successful!")
+    };
+    rocket::response::content::RawHtml(format!(
+        r#"<!DOCTYPE html>
+<html><head><title>RustDesk Login</title></head>
+<body>
+<p id="msg">{message}</p>
+<script>
+try {{ window.close(); }} catch(e) {{}}
+</script>
+</body></html>"#
+    ))
 }
 
 /// # OIDC State
