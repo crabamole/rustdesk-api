@@ -84,3 +84,46 @@ pub fn uuid_into_guid(uuid: &str) -> Option<Vec<u8>> {
     let guid = uuid.as_bytes().to_vec();
     Some(guid)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn guid_uuid_roundtrip() {
+        let uuid_str = "550e8400-e29b-41d4-a716-446655440000";
+        let guid = uuid_into_guid(uuid_str).unwrap();
+        assert_eq!(guid.len(), 16);
+        let recovered = guid_into_uuid(guid).unwrap();
+        assert_eq!(recovered, uuid_str);
+    }
+
+    #[test]
+    fn guid_into_uuid_wrong_length() {
+        let short = vec![1, 2, 3];
+        assert!(guid_into_uuid(short).is_none());
+    }
+
+    #[test]
+    fn guid_into_uuid_empty() {
+        assert!(guid_into_uuid(vec![]).is_none());
+    }
+
+    #[test]
+    fn uuid_into_guid_invalid() {
+        assert!(uuid_into_guid("not-a-uuid").is_none());
+    }
+
+    #[test]
+    fn uuid_into_guid_empty() {
+        assert!(uuid_into_guid("").is_none());
+    }
+
+    #[test]
+    fn guid_uuid_roundtrip_v4() {
+        let uuid_str = Uuid::new_v4().to_string();
+        let guid = uuid_into_guid(&uuid_str).unwrap();
+        let recovered = guid_into_uuid(guid).unwrap();
+        assert_eq!(recovered, uuid_str);
+    }
+}

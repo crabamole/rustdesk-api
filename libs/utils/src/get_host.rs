@@ -36,3 +36,68 @@ pub fn get_host(headers: HashMap<String, String>) -> String {
 
     "".to_string()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn headers(pairs: &[(&str, &str)]) -> HashMap<String, String> {
+        pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+    }
+
+    #[test]
+    fn empty_headers_returns_empty() {
+        assert_eq!(get_host(HashMap::new()), "");
+    }
+
+    #[test]
+    fn host_header_only() {
+        let h = headers(&[("host", "example.com")]);
+        assert_eq!(get_host(h), "http://example.com");
+    }
+
+    #[test]
+    fn forwarded_host_takes_priority_over_host() {
+        let h = headers(&[
+            ("host", "backend.local"),
+            ("x-forwarded-host", "example.com"),
+        ]);
+        assert_eq!(get_host(h), "http://example.com");
+    }
+
+    #[test]
+    fn forwarded_proto_with_host() {
+        let h = headers(&[
+            ("x-forwarded-proto", "https"),
+            ("host", "example.com"),
+        ]);
+        assert_eq!(get_host(h), "https://example.com");
+    }
+
+    #[test]
+    fn forwarded_proto_with_forwarded_host() {
+        let h = headers(&[
+            ("x-forwarded-proto", "https"),
+            ("x-forwarded-host", "example.com"),
+        ]);
+        assert_eq!(get_host(h), "https://example.com");
+    }
+
+    #[test]
+    fn forwarded_host_without_proto_defaults_http() {
+        let h = headers(&[("x-forwarded-host", "example.com")]);
+        assert_eq!(get_host(h), "http://example.com");
+    }
+
+    #[test]
+    fn host_with_port() {
+        let h = headers(&[("host", "example.com:8080")]);
+        assert_eq!(get_host(h), "http://example.com:8080");
+    }
+
+    #[test]
+    fn proto_only_returns_empty() {
+        let h = headers(&[("x-forwarded-proto", "https")]);
+        assert_eq!(get_host(h), "");
+    }
+}

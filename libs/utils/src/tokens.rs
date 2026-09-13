@@ -63,3 +63,63 @@ impl<'de> serde::Deserialize<'de> for Token {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn new_random_produces_unique_tokens() {
+        let t1 = Token::new_random();
+        let t2 = Token::new_random();
+        assert_ne!(t1, t2);
+    }
+
+    #[test]
+    fn to_base64_produces_nonempty_string() {
+        let token = Token::new_random();
+        let b64 = token.to_base64();
+        assert!(!b64.is_empty());
+    }
+
+    #[test]
+    fn from_str_roundtrip() {
+        let token = Token::new_random();
+        let b64 = token.to_base64();
+        let recovered = Token::from_str(&b64).unwrap();
+        assert_eq!(token, recovered);
+    }
+
+    #[test]
+    #[should_panic]
+    fn from_str_invalid_base64_panics() {
+        let _ = Token::from_str("not-valid-base64!!!");
+    }
+
+    #[test]
+    fn serde_roundtrip() {
+        let token = Token::new_random();
+        let json = serde_json::to_string(&token).unwrap();
+        let recovered: Token = serde_json::from_str(&json).unwrap();
+        assert_eq!(token, recovered);
+    }
+
+    #[test]
+    fn serde_serializes_as_base64_string() {
+        let token = Token::new_random();
+        let json = serde_json::to_string(&token).unwrap();
+        // Should be a quoted string, not an array
+        assert!(json.starts_with('"'));
+        assert!(json.ends_with('"'));
+        let b64 = token.to_base64();
+        assert_eq!(json, format!("\"{}\"", b64));
+    }
+
+    #[test]
+    fn token_base64_length() {
+        let token = Token::new_random();
+        let b64 = token.to_base64();
+        // 32 bytes in base64url no-pad = ceil(32*4/3) = 43 chars
+        assert_eq!(b64.len(), 43);
+    }
+}
+

@@ -790,3 +790,397 @@ pub struct AbSharedNameRequest {
 pub struct DeleteUserRequest {
     pub rows: Vec<String>,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // --- BoolVisitor / from_str_to_bool / from_bool_to_str ---
+
+    #[derive(Debug, Serialize, Deserialize, PartialEq)]
+    struct BoolWrapper {
+        #[serde(deserialize_with = "from_str_to_bool", serialize_with = "from_bool_to_str")]
+        val: Option<bool>,
+    }
+
+    #[test]
+    fn bool_deser_from_true_string() {
+        let w: BoolWrapper = serde_json::from_str(r#"{"val":"true"}"#).unwrap();
+        assert_eq!(w.val, Some(true));
+    }
+
+    #[test]
+    fn bool_deser_from_false_string() {
+        let w: BoolWrapper = serde_json::from_str(r#"{"val":"false"}"#).unwrap();
+        assert_eq!(w.val, Some(false));
+    }
+
+    #[test]
+    fn bool_deser_from_1_string() {
+        let w: BoolWrapper = serde_json::from_str(r#"{"val":"1"}"#).unwrap();
+        assert_eq!(w.val, Some(true));
+    }
+
+    #[test]
+    fn bool_deser_from_0_string() {
+        let w: BoolWrapper = serde_json::from_str(r#"{"val":"0"}"#).unwrap();
+        assert_eq!(w.val, Some(false));
+    }
+
+    #[test]
+    fn bool_deser_from_bool_true() {
+        let w: BoolWrapper = serde_json::from_str(r#"{"val":true}"#).unwrap();
+        assert_eq!(w.val, Some(true));
+    }
+
+    #[test]
+    fn bool_deser_from_bool_false() {
+        let w: BoolWrapper = serde_json::from_str(r#"{"val":false}"#).unwrap();
+        assert_eq!(w.val, Some(false));
+    }
+
+    #[test]
+    fn bool_deser_from_null() {
+        let w: BoolWrapper = serde_json::from_str(r#"{"val":null}"#).unwrap();
+        assert_eq!(w.val, None);
+    }
+
+    #[test]
+    fn bool_deser_invalid_string() {
+        let result: Result<BoolWrapper, _> = serde_json::from_str(r#"{"val":"maybe"}"#);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn bool_ser_true() {
+        let w = BoolWrapper { val: Some(true) };
+        let json = serde_json::to_string(&w).unwrap();
+        assert!(json.contains(r#""val":"true""#));
+    }
+
+    #[test]
+    fn bool_ser_false() {
+        let w = BoolWrapper { val: Some(false) };
+        let json = serde_json::to_string(&w).unwrap();
+        assert!(json.contains(r#""val":"false""#));
+    }
+
+    #[test]
+    fn bool_ser_none() {
+        let w = BoolWrapper { val: None };
+        let json = serde_json::to_string(&w).unwrap();
+        assert!(json.contains(r#""val":null"#));
+    }
+
+    // --- AbPeer serde with BoolVisitor fields ---
+
+    #[test]
+    fn ab_peer_serde_roundtrip() {
+        let peer = AbPeer::default_test();
+        let json = serde_json::to_string(&peer).unwrap();
+        let recovered: AbPeer = serde_json::from_str(&json).unwrap();
+        assert_eq!(recovered.id, peer.id);
+        assert_eq!(recovered.force_always_relay, peer.force_always_relay);
+        assert_eq!(recovered.same_server, peer.same_server);
+    }
+
+    #[test]
+    fn ab_peer_force_relay_serialized_as_string() {
+        let peer = AbPeer {
+            force_always_relay: Some(true),
+            ..AbPeer::default()
+        };
+        let json = serde_json::to_string(&peer).unwrap();
+        assert!(json.contains(r#""forceAlwaysRelay":"true""#));
+    }
+
+    #[test]
+    fn ab_peer_deser_force_relay_from_string() {
+        let json = r#"{"id":"test","forceAlwaysRelay":"true","rdpPort":""}"#;
+        let peer: AbPeer = serde_json::from_str(json).unwrap();
+        assert_eq!(peer.force_always_relay, Some(true));
+    }
+
+    #[test]
+    fn ab_peer_deser_force_relay_from_bool() {
+        let json = r#"{"id":"test","forceAlwaysRelay":false,"rdpPort":""}"#;
+        let peer: AbPeer = serde_json::from_str(json).unwrap();
+        assert_eq!(peer.force_always_relay, Some(false));
+    }
+
+    #[test]
+    fn ab_peer_skip_none_fields() {
+        let peer = AbPeer {
+            id: "test".to_string(),
+            hash: None,
+            password: None,
+            username: None,
+            hostname: None,
+            platform: None,
+            alias: None,
+            tags: None,
+            force_always_relay: None,
+            rdp_port: None,
+            rdp_username: None,
+            login_name: None,
+            same_server: None,
+        };
+        let json = serde_json::to_string(&peer).unwrap();
+        assert!(!json.contains("hash"));
+        assert!(!json.contains("username"));
+        assert!(!json.contains("forceAlwaysRelay"));
+    }
+
+    // --- AddressBook ---
+
+    #[test]
+    fn address_book_empty() {
+        let ab = AddressBook::empty();
+        assert_eq!(ab.ab, "{}");
+        assert!(ab.name.is_none());
+        assert!(ab.owner.is_none());
+        assert!(ab.rule.is_none());
+    }
+
+    #[test]
+    fn address_book_serde_roundtrip() {
+        let ab = AddressBook {
+            ab: r#"{"peers":[],"tags":[]}"#.to_string(),
+            name: Some("work".to_string()),
+            owner: Some(vec![1, 2, 3]),
+            rule: Some(1),
+        };
+        let json = serde_json::to_string(&ab).unwrap();
+        let recovered: AddressBook = serde_json::from_str(&json).unwrap();
+        assert_eq!(ab, recovered);
+    }
+
+    #[test]
+    fn address_book_skip_none_fields() {
+        let ab = AddressBook::empty();
+        let json = serde_json::to_string(&ab).unwrap();
+        assert!(!json.contains("name"));
+        assert!(!json.contains("owner"));
+        assert!(!json.contains("rule"));
+    }
+
+    // --- OidcUserStatus ---
+
+    #[test]
+    fn oidc_user_status_into_i32() {
+        let disabled: i32 = OidcUserStatus::Disabled.into();
+        let normal: i32 = OidcUserStatus::Normal.into();
+        let unverified: i32 = OidcUserStatus::Unverified.into();
+        assert_eq!(disabled, 0);
+        assert_eq!(normal, 1);
+        assert_eq!(unverified, -1);
+    }
+
+    #[test]
+    fn oidc_user_status_into_i64() {
+        let normal: i64 = OidcUserStatus::Normal.into();
+        assert_eq!(normal, 1);
+    }
+
+    #[test]
+    fn oidc_user_status_default() {
+        assert_eq!(OidcUserStatus::default(), OidcUserStatus::Normal);
+    }
+
+    #[test]
+    fn oidc_user_status_serde_roundtrip() {
+        let status = OidcUserStatus::Disabled;
+        let json = serde_json::to_string(&status).unwrap();
+        let recovered: OidcUserStatus = serde_json::from_str(&json).unwrap();
+        assert_eq!(status, recovered);
+    }
+
+    // --- OidcState ---
+
+    #[test]
+    fn oidc_state_default() {
+        let state = OidcState::default();
+        assert_eq!(state.id, "");
+        assert_eq!(state.uuid, "");
+        assert!(state.code.is_none());
+        assert!(state.auth_token.is_none());
+        assert!(state.provider.is_none());
+    }
+
+    // --- AbProfile ---
+
+    #[test]
+    fn ab_profile_default() {
+        let p = AbProfile::default();
+        assert_eq!(p.guid, "");
+        assert_eq!(p.name, "");
+        assert_eq!(p.owner, "");
+        assert_eq!(p.rule, 0);
+        assert!(p.note.is_none());
+    }
+
+    #[test]
+    fn ab_profile_serde_roundtrip() {
+        let p = AbProfile {
+            guid: "abc-123".to_string(),
+            name: "test ab".to_string(),
+            owner: "admin".to_string(),
+            note: Some("a note".to_string()),
+            rule: 2,
+        };
+        let json = serde_json::to_string(&p).unwrap();
+        let recovered: AbProfile = serde_json::from_str(&json).unwrap();
+        assert_eq!(recovered.guid, p.guid);
+        assert_eq!(recovered.name, p.name);
+        assert_eq!(recovered.rule, p.rule);
+    }
+
+    // --- AbTag ---
+
+    #[test]
+    fn ab_tag_default() {
+        let tag = AbTag::default();
+        assert_eq!(tag.name, "TAG1");
+        assert_eq!(tag.color, 4288585374);
+    }
+
+    #[test]
+    fn ab_tag_serde_roundtrip() {
+        let tag = AbTag { name: "work".to_string(), color: 123456 };
+        let json = serde_json::to_string(&tag).unwrap();
+        let recovered: AbTag = serde_json::from_str(&json).unwrap();
+        assert_eq!(recovered.name, "work");
+        assert_eq!(recovered.color, 123456);
+    }
+
+    // --- LoginRequest / LoginReply / CurrentUser ---
+
+    #[test]
+    fn login_request_deser() {
+        let json = r#"{"username":"admin","password":"pass","id":"123","uuid":"abc-def"}"#;
+        let req: LoginRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.username, "admin");
+        assert_eq!(req.id, "123");
+    }
+
+    #[test]
+    fn current_user_response_flattens_user_info() {
+        let resp = CurrentUserResponse {
+            error: false,
+            data: UserInfo {
+                name: "admin".to_string(),
+                email: Some("a@b.com".to_string()),
+                admin: true,
+            },
+        };
+        let json = serde_json::to_string(&resp).unwrap();
+        assert!(json.contains(r#""name":"admin""#));
+        assert!(json.contains(r#""error":false"#));
+        // flattened, not nested under "data"
+        assert!(!json.contains(r#""data":"#));
+    }
+
+    // --- UpdateUserRequest ---
+
+    #[test]
+    fn update_user_request_default_has_uuid() {
+        let req = UpdateUserRequest::default();
+        assert!(!req.uuid.is_empty());
+        assert!(req.name.is_none());
+        assert!(req.status.is_none());
+    }
+
+    #[test]
+    fn update_user_request_serde_skip_none() {
+        let req = UpdateUserRequest {
+            uuid: "test-uuid".to_string(),
+            name: Some("newname".to_string()),
+            ..UpdateUserRequest::default()
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        assert!(json.contains("newname"));
+        assert!(!json.contains("email"));
+        assert!(!json.contains("password"));
+    }
+
+    // --- OidcDeviceInfo ---
+
+    #[test]
+    fn oidc_device_info_default() {
+        let d = OidcDeviceInfo::default();
+        assert_eq!(d.name, "");
+        assert_eq!(d.os, "");
+        assert_eq!(d.r#type, "");
+    }
+
+    // --- AbPeersResponse ---
+
+    #[test]
+    fn ab_peers_response_default() {
+        let r = AbPeersResponse::default();
+        assert!(r.error.is_none());
+        assert_eq!(r.total, 0);
+        assert!(r.data.is_empty());
+    }
+
+    #[test]
+    fn ab_peers_response_default_test() {
+        let r = AbPeersResponse::default_test();
+        assert_eq!(r.total, 1);
+        assert_eq!(r.data.len(), 1);
+        assert_eq!(r.data[0].id, "123456789");
+    }
+
+    // --- AbSharedProfilesResponse ---
+
+    #[test]
+    fn ab_shared_profiles_response_default() {
+        let r = AbSharedProfilesResponse::default();
+        assert!(r.error.is_none());
+        assert_eq!(r.total, 0);
+        assert!(r.data.is_empty());
+    }
+
+    // --- PeerInfo ---
+
+    #[test]
+    fn peer_info_default() {
+        let p = PeerInfo::default();
+        assert!(p.cpu.is_none());
+        assert!(p.hostname.is_none());
+    }
+
+    // --- EnableUserRequest ---
+
+    #[test]
+    fn enable_user_request_serde() {
+        let req = EnableUserRequest {
+            rows: vec!["user1".to_string(), "user2".to_string()],
+            disable: true,
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        let recovered: EnableUserRequest = serde_json::from_str(&json).unwrap();
+        assert_eq!(recovered.rows.len(), 2);
+        assert!(recovered.disable);
+    }
+
+    // --- SoftwareVersionResponse ---
+
+    #[test]
+    fn software_version_response_skip_none() {
+        let r = SoftwareVersionResponse { server: None, client: Some("1.0".to_string()) };
+        let json = serde_json::to_string(&r).unwrap();
+        assert!(!json.contains("server"));
+        assert!(json.contains(r#""client":"1.0""#));
+    }
+
+    // --- AbSharedNameRequest ---
+
+    #[test]
+    fn ab_shared_name_request_default() {
+        let r = AbSharedNameRequest::default();
+        assert!(r.name.is_none());
+        assert!(r.note.is_none());
+        assert_eq!(r.guid, "");
+    }
+}
