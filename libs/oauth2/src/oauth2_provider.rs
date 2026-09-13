@@ -122,3 +122,52 @@ impl OAuthProvider for Oauth2Provider {
         Provider::Oauth2
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_config() -> ProviderConfig {
+        ProviderConfig {
+            provider: Provider::Oauth2,
+            scope: "openid email".to_string(),
+            authorization_url: "https://auth.example.com/authorize".to_string(),
+            token_exchange_url: "https://auth.example.com/token".to_string(),
+            app_id: "client-id".to_string(),
+            app_secret: "client-secret".to_string(),
+            op_auth_string: "oidc/generic".to_string(),
+            op: "generic".to_string(),
+        }
+    }
+
+    #[test]
+    fn test_get_authorization_header() {
+        let config = test_config();
+        let header = get_authorization_header(&config);
+        assert!(header.starts_with("Basic "));
+        let decoded = base64::prelude::BASE64_STANDARD
+            .decode(header.strip_prefix("Basic ").unwrap())
+            .unwrap();
+        assert_eq!(String::from_utf8(decoded).unwrap(), "client-id:client-secret");
+    }
+
+    #[test]
+    fn test_get_redirect_url() {
+        let provider = Oauth2Provider {
+            provider_config: test_config(),
+        };
+        let url = provider.get_redirect_url("https://app.com/callback", "abc123");
+        assert!(url.starts_with("https://auth.example.com/authorize?"));
+        assert!(url.contains("client_id=client-id"));
+        assert!(url.contains("response_type=code"));
+        assert!(url.contains("state=abc123"));
+    }
+
+    #[test]
+    fn test_get_provider_type() {
+        let provider = Oauth2Provider {
+            provider_config: test_config(),
+        };
+        assert_eq!(provider.get_provider_type(), Provider::Oauth2);
+    }
+}

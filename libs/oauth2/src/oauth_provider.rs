@@ -89,3 +89,72 @@ pub fn decode_oauth2_id_token(id_token: &str) -> Result<(String, String), Oauth2
         serde_json::from_slice(&claims).map_err(|_| Oauth2Error::DecodeIdTokenError)?;
     Ok((claims["name"].as_str().unwrap().to_string(), claims["email"].as_str().unwrap().to_string()))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use base64::prelude::{Engine as _, BASE64_URL_SAFE_NO_PAD};
+
+    fn make_jwt(claims_json: &str) -> String {
+        let header = BASE64_URL_SAFE_NO_PAD.encode(r#"{"alg":"none"}"#);
+        let payload = BASE64_URL_SAFE_NO_PAD.encode(claims_json);
+        format!("{}.{}.sig", header, payload)
+    }
+
+    #[test]
+    fn test_decode_oauth_id_token_valid() {
+        let claims = r#"{"aud":"app","sub":"u1","name":"Alice","email":"alice@test.com","exp":9999999999}"#;
+        let token = make_jwt(claims);
+        let (name, email) = decode_oauth_id_token(&token).unwrap();
+        assert_eq!(name, "Alice");
+        assert_eq!(email, "alice@test.com");
+    }
+
+    #[test]
+    fn test_decode_oauth2_id_token_valid() {
+        let claims = r#"{"name":"Bob","email":"bob@test.com"}"#;
+        let token = make_jwt(claims);
+        let (name, email) = decode_oauth2_id_token(&token).unwrap();
+        assert_eq!(name, "Bob");
+        assert_eq!(email, "bob@test.com");
+    }
+
+    #[test]
+    fn test_decode_oauth_id_token_invalid_base64() {
+        let token = "header.!!!invalid!!!.sig";
+        let result = decode_oauth_id_token(token);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_decode_oauth_id_token_invalid_json() {
+        let payload = BASE64_URL_SAFE_NO_PAD.encode("not json");
+        let token = format!("header.{}.sig", payload);
+        let result = decode_oauth_id_token(&token);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_decode_oauth_id_token_aud_as_array() {
+        let claims = r#"{"aud":["app1","app2"],"sub":"u1","name":"Test","email":"t@t.com","exp":9999999999}"#;
+        let token = make_jwt(claims);
+        let (name, email) = decode_oauth_id_token(&token).unwrap();
+        assert_eq!(name, "Test");
+        assert_eq!(email, "t@t.com");
+    }
+
+    #[test]
+    fn test_decode_oauth2_id_token_invalid_base64() {
+        let token = "h.@@@.s";
+        let result = decode_oauth2_id_token(token);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_decode_oauth2_id_token_invalid_json() {
+        let payload = BASE64_URL_SAFE_NO_PAD.encode("{bad}");
+        let token = format!("h.{}.s", payload);
+        let result = decode_oauth2_id_token(&token);
+        assert!(result.is_err());
+    }
+}

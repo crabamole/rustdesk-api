@@ -34,3 +34,36 @@ impl fmt::Display for Oauth2Error {
 }
 
 impl Error for Oauth2Error {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_display_exchange_code_error() {
+        assert_eq!(Oauth2Error::ExchangeCodeError.to_string(), "Exchange code error");
+    }
+
+    #[test]
+    fn test_display_verify_token_error() {
+        assert_eq!(Oauth2Error::VerifyTokenError.to_string(), "Verify token error");
+    }
+
+    #[test]
+    fn test_display_decode_id_token_error() {
+        assert_eq!(Oauth2Error::DecodeIdTokenError.to_string(), "Decode id token error");
+    }
+
+    #[test]
+    fn test_error_is_error_trait() {
+        let err: Box<dyn Error> = Box::new(Oauth2Error::ExchangeCodeError);
+        assert_eq!(err.to_string(), "Exchange code error");
+    }
+
+    #[test]
+    fn test_debug_format() {
+        let err = Oauth2Error::ExchangeCodeError;
+        let debug = format!("{:?}", err);
+        assert!(debug.contains("ExchangeCodeError"));
+    }
+}

@@ -192,3 +192,59 @@ impl OAuthProvider for GithubProvider {
         Provider::Github
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_config() -> ProviderConfig {
+        ProviderConfig {
+            provider: Provider::Github,
+            scope: "read:user user:email".to_string(),
+            authorization_url: "https://github.com/login/oauth/authorize".to_string(),
+            token_exchange_url: "https://github.com/login/oauth/access_token".to_string(),
+            app_id: "gh-app-id".to_string(),
+            app_secret: "gh-secret".to_string(),
+            op_auth_string: "oidc/github".to_string(),
+            op: "github".to_string(),
+        }
+    }
+
+    #[test]
+    fn test_get_redirect_url() {
+        let provider = GithubProvider {
+            provider_config: test_config(),
+        };
+        let url = provider.get_redirect_url("https://myapp.com/cb", "xyz");
+        assert!(url.starts_with("https://github.com/login/oauth/authorize?"));
+        assert!(url.contains("client_id=gh-app-id"));
+        assert!(url.contains("allow_signup=true"));
+        assert!(url.contains("state=xyz"));
+    }
+
+    #[test]
+    fn test_get_redirect_url_encodes_callback() {
+        let provider = GithubProvider {
+            provider_config: test_config(),
+        };
+        let url = provider.get_redirect_url("https://app.com/cb?p=1&q=2", "s");
+        assert!(url.contains("redirect_uri=https%3A%2F%2Fapp.com%2Fcb%3Fp%3D1%26q%3D2"));
+    }
+
+    #[test]
+    fn test_get_provider_type() {
+        let provider = GithubProvider {
+            provider_config: test_config(),
+        };
+        assert_eq!(provider.get_provider_type(), Provider::Github);
+    }
+
+    #[test]
+    fn test_github_token_response_deserialize() {
+        let json = r#"{"access_token":"gho_abc","token_type":"bearer","scope":"read:user"}"#;
+        let tr: GithubTokenResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(tr.access_token, "gho_abc");
+        assert_eq!(tr.token_type, "bearer");
+        assert_eq!(tr.scope, "read:user");
+    }
+}

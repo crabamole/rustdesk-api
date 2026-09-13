@@ -121,3 +121,64 @@ impl OAuthProvider for DexProvider {
         Provider::Dex
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_config() -> ProviderConfig {
+        ProviderConfig {
+            provider: Provider::Dex,
+            scope: "openid email profile".to_string(),
+            authorization_url: "https://dex.example.com/auth".to_string(),
+            token_exchange_url: "https://dex.example.com/token".to_string(),
+            app_id: "my-app".to_string(),
+            app_secret: "my-secret".to_string(),
+            op_auth_string: "oidc/dex".to_string(),
+            op: "dex".to_string(),
+        }
+    }
+
+    #[test]
+    fn test_get_authorization_header() {
+        let config = test_config();
+        let header = get_authorization_header(&config);
+        assert!(header.starts_with("Basic "));
+        let decoded = base64::prelude::BASE64_STANDARD
+            .decode(header.strip_prefix("Basic ").unwrap())
+            .unwrap();
+        let decoded_str = String::from_utf8(decoded).unwrap();
+        assert_eq!(decoded_str, "my-app:my-secret");
+    }
+
+    #[test]
+    fn test_get_redirect_url() {
+        let provider = DexProvider {
+            provider_config: test_config(),
+        };
+        let url = provider.get_redirect_url("https://example.com/callback", "state123");
+        assert!(url.starts_with("https://dex.example.com/auth?"));
+        assert!(url.contains("client_id=my-app"));
+        assert!(url.contains("response_type=code"));
+        assert!(url.contains("state=state123"));
+        assert!(url.contains("redirect_uri=https"));
+    }
+
+    #[test]
+    fn test_get_redirect_url_encodes_special_chars() {
+        let provider = DexProvider {
+            provider_config: test_config(),
+        };
+        let url = provider.get_redirect_url("https://example.com/cb?foo=bar", "s&t=1");
+        assert!(!url.contains("foo=bar"));
+        assert!(url.contains("s%26t%3D1"));
+    }
+
+    #[test]
+    fn test_get_provider_type() {
+        let provider = DexProvider {
+            provider_config: test_config(),
+        };
+        assert_eq!(provider.get_provider_type(), Provider::Dex);
+    }
+}

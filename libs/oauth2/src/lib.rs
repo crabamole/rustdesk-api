@@ -49,11 +49,36 @@ pub enum Provider {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Claims {
+    #[serde(deserialize_with = "deserialize_aud")]
     aud: String,
     sub: String,
     name: String,
     email: String,
     exp: u64,
+}
+
+fn deserialize_aud<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de;
+    struct AudVisitor;
+    impl<'de> de::Visitor<'de> for AudVisitor {
+        type Value = String;
+        fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+            f.write_str("a string or array of strings")
+        }
+        fn visit_str<E: de::Error>(self, v: &str) -> Result<String, E> {
+            Ok(v.to_owned())
+        }
+        fn visit_seq<A: de::SeqAccess<'de>>(self, mut seq: A) -> Result<String, A::Error> {
+            let first = seq.next_element::<String>()?
+                .ok_or_else(|| de::Error::invalid_length(0, &"at least one audience"))?;
+            while seq.next_element::<serde::de::IgnoredAny>()?.is_some() {}
+            Ok(first)
+        }
+    }
+    deserializer.deserialize_any(AudVisitor)
 }
 
 impl FromStr for Provider {
@@ -134,6 +159,7 @@ pub fn get_providers_config_file() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::oauth_provider::decode_oauth_id_token;
 
     #[test]
     fn test_get_provider_config_one_provider() {
@@ -152,7 +178,7 @@ mod tests {
         let config_file = tempfile::NamedTempFile::new().unwrap();
         std::fs::write(config_file.path(), config).unwrap();
 
-        let providers = get_provider_config(config_file.path().to_str().unwrap());
+        let providers = get_providers_config_from_file(config_file.path().to_str().unwrap());
         assert_eq!(providers.len(), 1);
         assert_eq!(providers[0].provider, Provider::Github);
         assert_eq!(
@@ -194,14 +220,169 @@ mod tests {
         let config_file = tempfile::NamedTempFile::new().unwrap();
         std::fs::write(config_file.path(), config).unwrap();
 
-        let providers = get_provider_config(config_file.path().to_str().unwrap());
+        let providers = get_providers_config_from_file(config_file.path().to_str().unwrap());
         assert_eq!(providers.len(), 2);
     }
 
     #[test]
     fn test_decode_id_token() {
         let id_token = "eyJhbGciOiJSUzI1NiIsImtpZCI6IjhiMjFkMTM0NjExZDQxNWJkMWU2MjUzOGE0ZGRjOTA4NmYxYTZiMjUifQ.eyJpc3MiOiJodHRwczovL2RleC1tb2NrLXNlcnZlci5OT05FL2RleCIsInN1YiI6IkNpUXdPR0U0TmpnMFlpMWtZamc0TFRSaU56TXRPVEJoT1MwelkyUXhOall4WmpVME5qWVNCV3h2WTJGcyIsImF1ZCI6InNjdGdkZXNrLWFwaS1zZXJ2ZXIiLCJleHAiOjE3MTU2NzEwODQsImlhdCI6MTcxNTU4NDY4NCwiYXRfaGFzaCI6IjVvZEdyU3VrMW9lejJkc1NaRXZFM0EiLCJjX2hhc2giOiJfdFZfZFNiU09qTVVmRVdMeVVNSTNnIiwiZW1haWwiOiJhZG1pbkBkZXNrLk5PTkUiLCJlbWFpbF92ZXJpZmllZCI6dHJ1ZSwibmFtZSI6ImFkbWluIn0.AqOiwBKq2i_AoJcbfxuaVY54PN3GJjnHIn3E2FWoZY2IOu8qxvZevcUb4mjnoUZGf2QaabIcTAIxIg-mpFTRxheOPiQ1c9VSZ0vd-wNGrAG12vdraRq0-evqmFduR2G9k20QMIV8iHiGM7l93k8Fw5_bnTQId044BjepayS98bpUclS4RIIGoOLBM5IenfBCqLhHHv6oYUM6HDU4rCD02U9_Bu597wedeLdYYa7lzBDyb88ab83-eALsDpbFZ90rUnvAhpTQcl9_t51Etx-sP1yWSQ3UZ-QL61cKreqWlMbimM43R4boUWnpQTMF7ZO0EftVixEfaIQvWDRm-TLl8A";
-        let (name, email) = decode_id_token(id_token).unwrap();
+        let (name, email) = decode_oauth_id_token(id_token).unwrap();
         assert_eq!(name, "admin");
+        assert_eq!(email, "admin@desk.NONE");
+    }
+
+    #[test]
+    fn test_provider_from_str_all_variants() {
+        assert_eq!(Provider::from_str("github").unwrap(), Provider::Github);
+        assert_eq!(Provider::from_str("GITHUB").unwrap(), Provider::Github);
+        assert_eq!(Provider::from_str("Github").unwrap(), Provider::Github);
+        assert_eq!(Provider::from_str("gitlab").unwrap(), Provider::Gitlab);
+        assert_eq!(Provider::from_str("google").unwrap(), Provider::Google);
+        assert_eq!(Provider::from_str("apple").unwrap(), Provider::Apple);
+        assert_eq!(Provider::from_str("okta").unwrap(), Provider::Okta);
+        assert_eq!(Provider::from_str("facebook").unwrap(), Provider::Facebook);
+        assert_eq!(Provider::from_str("azure").unwrap(), Provider::Azure);
+        assert_eq!(Provider::from_str("auth0").unwrap(), Provider::Auth0);
+        assert_eq!(Provider::from_str("custom").unwrap(), Provider::Dex);
+        assert_eq!(Provider::from_str("oauth2").unwrap(), Provider::Oauth2);
+    }
+
+    #[test]
+    fn test_provider_from_str_invalid() {
+        assert!(Provider::from_str("unknown").is_err());
+        assert!(Provider::from_str("").is_err());
+    }
+
+    #[test]
+    fn test_provider_into_string() {
+        let s: String = Provider::Github.into();
+        assert_eq!(s, "Github");
+        let s: String = Provider::Gitlab.into();
+        assert_eq!(s, "Gitlab");
+        let s: String = Provider::Google.into();
+        assert_eq!(s, "Google");
+        let s: String = Provider::Apple.into();
+        assert_eq!(s, "Apple");
+        let s: String = Provider::Okta.into();
+        assert_eq!(s, "Okta");
+        let s: String = Provider::Facebook.into();
+        assert_eq!(s, "Facebook");
+        let s: String = Provider::Azure.into();
+        assert_eq!(s, "Azure");
+        let s: String = Provider::Auth0.into();
+        assert_eq!(s, "Auth0");
+        let s: String = Provider::Dex.into();
+        assert_eq!(s, "Dex");
+        let s: String = Provider::Oauth2.into();
+        assert_eq!(s, "Oauth2");
+    }
+
+    #[test]
+    fn test_provider_serde_roundtrip() {
+        let provider = Provider::Github;
+        let json = serde_json::to_string(&provider).unwrap();
+        let deserialized: Provider = serde_json::from_str(&json).unwrap();
+        assert_eq!(provider, deserialized);
+    }
+
+    #[test]
+    fn test_provider_config_serde_roundtrip() {
+        let config = ProviderConfig {
+            provider: Provider::Github,
+            scope: "read:user".to_string(),
+            authorization_url: "https://github.com/login/oauth/authorize".to_string(),
+            token_exchange_url: "https://github.com/login/oauth/access_token".to_string(),
+            app_id: "test_id".to_string(),
+            app_secret: "test_secret".to_string(),
+            op_auth_string: "oidc/github".to_string(),
+            op: "github".to_string(),
+        };
+        let json = serde_json::to_string(&config).unwrap();
+        let deserialized: ProviderConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.provider, Provider::Github);
+        assert_eq!(deserialized.app_id, "test_id");
+    }
+
+    #[test]
+    fn test_deserialize_aud_string() {
+        let json = r#"{"aud":"my-app","sub":"user1","name":"Test","email":"test@test.com","exp":9999999999}"#;
+        let claims: Claims = serde_json::from_str(json).unwrap();
+        assert_eq!(claims.aud, "my-app");
+    }
+
+    #[test]
+    fn test_deserialize_aud_array() {
+        let json = r#"{"aud":["my-app","other"],"sub":"user1","name":"Test","email":"test@test.com","exp":9999999999}"#;
+        let claims: Claims = serde_json::from_str(json).unwrap();
+        assert_eq!(claims.aud, "my-app");
+    }
+
+    #[test]
+    fn test_deserialize_aud_empty_array() {
+        let json = r#"{"aud":[],"sub":"user1","name":"Test","email":"test@test.com","exp":9999999999}"#;
+        let result: Result<Claims, _> = serde_json::from_str(json);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_claims_fields() {
+        let json = r#"{"aud":"app","sub":"sub123","name":"Alice","email":"alice@example.com","exp":1234567890}"#;
+        let claims: Claims = serde_json::from_str(json).unwrap();
+        assert_eq!(claims.sub, "sub123");
+        assert_eq!(claims.name, "Alice");
+        assert_eq!(claims.email, "alice@example.com");
+        assert_eq!(claims.exp, 1234567890);
+    }
+
+    #[test]
+    fn test_token_response_serde() {
+        let json = r#"{"access_token":"tok123","token_type":"Bearer","expires_in":3600,"id_token":"id_tok","refresh_token":"ref_tok"}"#;
+        let tr: TokenResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(tr.access_token, "tok123");
+        assert_eq!(tr.token_type, "Bearer");
+        assert_eq!(tr.expires_in, 3600);
+        assert_eq!(tr.id_token.unwrap(), "id_tok");
+        assert_eq!(tr.refresh_token.unwrap(), "ref_tok");
+    }
+
+    #[test]
+    fn test_token_response_optional_fields() {
+        let json = r#"{"access_token":"tok","token_type":"Bearer","expires_in":100}"#;
+        let tr: TokenResponse = serde_json::from_str(json).unwrap();
+        assert!(tr.id_token.is_none());
+        assert!(tr.refresh_token.is_none());
+    }
+
+    #[test]
+    fn test_config_serde() {
+        let toml_str = r#"
+            [[provider]]
+            provider = "Github"
+            authorization_url = "https://example.com/auth"
+            token_exchange_url = "https://example.com/token"
+            app_id = "id"
+            app_secret = "secret"
+            scope = "read"
+            op_auth_string = "oidc/gh"
+            op = "gh"
+        "#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.provider.len(), 1);
+    }
+
+    #[test]
+    fn test_get_providers_config_file_default() {
+        std::env::remove_var("OAUTH2_CONFIG_FILE");
+        let file = get_providers_config_file();
+        assert_eq!(file, "oauth2.toml");
+    }
+
+    #[test]
+    fn test_get_providers_config_file_env() {
+        std::env::set_var("OAUTH2_CONFIG_FILE", "/tmp/custom-oauth2.toml");
+        let file = get_providers_config_file();
+        assert_eq!(file, "/tmp/custom-oauth2.toml");
+        std::env::remove_var("OAUTH2_CONFIG_FILE");
     }
 }
