@@ -44,3 +44,69 @@ impl<'s> UserPasswordInfo<'s> {
 
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hash_and_verify_correct_password() {
+        let hashed = UserPasswordInfo::hash_password("mysecret");
+        let info = UserPasswordInfo::from_password("mysecret");
+        let db_info = DatabaseUserPasswordInfo {
+            password: hashed,
+            username: "user".to_string(),
+            user_id: vec![1],
+        };
+        assert!(info.check(db_info));
+    }
+
+    #[test]
+    fn verify_wrong_password_fails() {
+        let hashed = UserPasswordInfo::hash_password("correct");
+        let info = UserPasswordInfo::from_password("wrong");
+        let db_info = DatabaseUserPasswordInfo {
+            password: hashed,
+            username: "user".to_string(),
+            user_id: vec![1],
+        };
+        assert!(!info.check(db_info));
+    }
+
+    #[test]
+    fn hash_password_produces_bcrypt_format() {
+        let hashed = UserPasswordInfo::hash_password("test");
+        assert!(hashed.starts_with("$2b$"));
+    }
+
+    #[test]
+    fn hash_password_is_not_deterministic() {
+        let h1 = UserPasswordInfo::hash_password("same");
+        let h2 = UserPasswordInfo::hash_password("same");
+        assert_ne!(h1, h2);
+    }
+
+    #[test]
+    fn check_with_string_correct() {
+        let info = UserPasswordInfo::from_password("Hello,world!");
+        assert!(info.check_with_string("Hello,world!".to_string()));
+    }
+
+    #[test]
+    fn check_with_string_wrong() {
+        let info = UserPasswordInfo::from_password("Hello,world!");
+        assert!(!info.check_with_string("wrong".to_string()));
+    }
+
+    #[test]
+    fn empty_password_hashes_and_verifies() {
+        let hashed = UserPasswordInfo::hash_password("");
+        let info = UserPasswordInfo::from_password("");
+        let db_info = DatabaseUserPasswordInfo {
+            password: hashed,
+            username: "user".to_string(),
+            user_id: vec![],
+        };
+        assert!(info.check(db_info));
+    }
+}
+

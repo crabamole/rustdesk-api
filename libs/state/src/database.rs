@@ -1836,3 +1836,653 @@ impl Database {
         Some(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use utils::AbTag;
+
+    async fn test_db() -> Database {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.db");
+        let db = Database::open(&path).await;
+        std::mem::forget(dir);
+        db
+    }
+
+    #[tokio::test]
+    async fn find_default_admin_user() {
+        let db = test_db().await;
+        let (_, result) = db.find_user_by_name("admin").await;
+        assert!(result.is_some());
+        let (user_id, email, info) = result.unwrap();
+        assert!(!user_id.is_empty());
+        assert_eq!(email, Some("admin@example.org".to_string()));
+        assert!(info.admin);
+        assert!(info.active);
+    }
+
+    #[tokio::test]
+    async fn find_nonexistent_user() {
+        let db = test_db().await;
+        let (_, result) = db.find_user_by_name("nonexistent").await;
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn get_hashed_password_for_admin() {
+        let db = test_db().await;
+        let (conn, user) = db.find_user_by_name("admin").await;
+        let (user_id, _, _) = user.unwrap();
+        let (_, pw_info) = db.get_user_hashed_password(conn, user_id).await;
+        assert!(pw_info.is_some());
+        let pw_info = pw_info.unwrap();
+        assert_eq!(pw_info.username, "admin");
+        assert!(pw_info.password.starts_with("$2b$"));
+    }
+
+    #[tokio::test]
+    async fn get_hashed_password_by_username() {
+        let db = test_db().await;
+        let conn = DatabaseConnection {
+            conn: db.pool.acquire().await.unwrap(),
+        };
+        let (_, pw_info) = db
+            .get_user_hashed_password_with_username(conn, "admin".to_string())
+            .await;
+        assert!(pw_info.is_some());
+        assert_eq!(pw_info.unwrap().username, "admin");
+    }
+
+    #[tokio::test]
+    async fn admin_password_is_hello_world() {
+        let db = test_db().await;
+        let (conn, user) = db.find_user_by_name("admin").await;
+        let (user_id, _, _) = user.unwrap();
+        let (_, pw_info) = db.get_user_hashed_password(conn, user_id).await;
+        let pw_info = pw_info.unwrap();
+        let checker = UserPasswordInfo::from_password("Hello,world!");
+        assert!(checker.check(pw_info));
+    }
+
+    #[tokio::test]
+    async fn add_user_and_find() {
+        let db = test_db().await;
+        let result = db
+            .add_user(
+                "testuser".to_string(),
+                "testpass".to_string(),
+                "test@example.com".to_string(),
+                false,
+                "Default".to_string(),
+            )
+            .await;
+        assert!(result.is_some());
+        let (_, found) = db.find_user_by_name("testuser").await;
+        assert!(found.is_some());
+        let (_, _, info) = found.unwrap();
+        assert!(info.active);
+        assert!(!info.admin);
+    }
+
+    #[tokio::test]
+    async fn add_admin_user() {
+        let db = test_db().await;
+        db.add_user(
+            "superadmin".to_string(),
+            "pass".to_string(),
+            "super@example.com".to_string(),
+            true,
+            "Default".to_string(),
+        )
+        .await;
+        let (_, found) = db.find_user_by_name("superadmin").await;
+        let (_, _, info) = found.unwrap();
+        assert!(info.admin);
+    }
+
+    #[tokio::test]
+    async fn update_user_password() {
+        let db = test_db().await;
+        let result = db
+            .update_user_password(
+                "admin".to_string(),
+                "Hello,world!".to_string(),
+                "newpass".to_string(),
+            )
+            .await;
+        assert!(result.is_some());
+        let conn = DatabaseConnection {
+            conn: db.pool.acquire().await.unwrap(),
+        };
+        let (_, pw_info) = db
+            .get_user_hashed_password_with_username(conn, "admin".to_string())
+            .await;
+        let checker = UserPasswordInfo::from_password("newpass");
+        assert!(checker.check(pw_info.unwrap()));
+    }
+
+    #[tokio::test]
+    async fn update_user_password_wrong_old() {
+        let db = test_db().await;
+        let result = db
+            .update_user_password(
+                "admin".to_string(),
+                "wrongold".to_string(),
+                "newpass".to_string(),
+            )
+            .await;
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn reset_user_password() {
+        let db = test_db().await;
+        let result = db
+            .reset_user_password("admin".to_string(), "reset123".to_string())
+            .await;
+        assert!(result.is_some());
+        let conn = DatabaseConnection {
+            conn: db.pool.acquire().await.unwrap(),
+        };
+        let (_, pw_info) = db
+            .get_user_hashed_password_with_username(conn, "admin".to_string())
+            .await;
+        let checker = UserPasswordInfo::from_password("reset123");
+        assert!(checker.check(pw_info.unwrap()));
+    }
+
+    #[tokio::test]
+    async fn reset_password_nonexistent_user() {
+        let db = test_db().await;
+        let result = db
+            .reset_user_password("nobody".to_string(), "pass".to_string())
+            .await;
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn ui_get_all_users_returns_admin() {
+        let db = test_db().await;
+        let users = db.ui_get_all_users().await;
+        assert!(users.is_some());
+        let users = users.unwrap();
+        assert!(!users.is_empty());
+        assert!(users.iter().any(|u| u.username == "admin"));
+    }
+
+    #[tokio::test]
+    async fn ui_get_user_info() {
+        let db = test_db().await;
+        let info = db.ui_get_user_info("admin".to_string()).await;
+        assert!(info.is_some());
+        let info = info.unwrap();
+        assert_eq!(info.username, "admin");
+        assert!(info.admin);
+        assert!(info.active);
+    }
+
+    #[tokio::test]
+    async fn ui_get_user_info_nonexistent() {
+        let db = test_db().await;
+        let info = db.ui_get_user_info("nobody".to_string()).await;
+        assert!(info.is_none());
+    }
+
+    #[tokio::test]
+    async fn delete_user_invalid_uuid() {
+        let db = test_db().await;
+        let result = db.delete_user("not-a-uuid").await;
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn user_change_status() {
+        let db = test_db().await;
+        let (_, user) = db.find_user_by_name("admin").await;
+        let (user_id, _, _) = user.unwrap();
+        let guid = Uuid::from_slice(&user_id).unwrap().to_string();
+        let result = db.user_change_status(&guid, 0).await;
+        assert!(result.is_some());
+        let (_, found) = db.find_user_by_name("admin").await;
+        let (_, _, info) = found.unwrap();
+        assert!(!info.active);
+    }
+
+    #[tokio::test]
+    async fn user_change_status_invalid_uuid() {
+        let db = test_db().await;
+        let result = db.user_change_status("invalid", 0).await;
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn get_all_users_with_pagination() {
+        let db = test_db().await;
+        db.add_user("user1".to_string(), "p".to_string(), "u1@e.com".to_string(), false, "Default".to_string()).await;
+        db.add_user("user2".to_string(), "p".to_string(), "u2@e.com".to_string(), false, "Default".to_string()).await;
+        let all = db.get_all_users(None, None, 1, 100).await;
+        assert!(all.is_some());
+        assert!(all.unwrap().len() >= 3);
+
+        let page = db.get_all_users(None, None, 1, 1).await;
+        assert!(page.is_some());
+        assert_eq!(page.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn get_all_users_with_name_filter() {
+        let db = test_db().await;
+        let filtered = db.get_all_users(Some("admin"), None, 1, 100).await;
+        assert!(filtered.is_some());
+        assert_eq!(filtered.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn get_all_users_current_zero_defaults_to_one() {
+        let db = test_db().await;
+        let result = db.get_all_users(None, None, 0, 100).await;
+        assert!(result.is_some());
+    }
+
+    #[tokio::test]
+    async fn get_ab_personal_guid_for_admin() {
+        let db = test_db().await;
+        let (_, user) = db.find_user_by_name("admin").await;
+        let (user_id, _, _) = user.unwrap();
+        let guid = db.get_ab_personal_guid(user_id).await;
+        assert!(guid.is_some());
+        assert!(Uuid::parse_str(&guid.unwrap()).is_ok());
+    }
+
+    #[tokio::test]
+    async fn get_groups_returns_default() {
+        let db = test_db().await;
+        let groups = db.get_groups(0, 100).await;
+        assert!(groups.is_some());
+        let groups = groups.unwrap();
+        assert!(!groups.is_empty());
+        assert!(groups.iter().any(|g| g.name == "Default"));
+    }
+
+    #[tokio::test]
+    async fn create_and_get_group() {
+        let db = test_db().await;
+        let result = db.create_group("TestGroup", "Default", "A note").await;
+        assert!(result.is_some());
+        let groups = db.get_groups(0, 100).await.unwrap();
+        let found = groups.iter().find(|g| g.name == "TestGroup");
+        assert!(found.is_some());
+        assert_eq!(found.unwrap().note, Some("A note".to_string()));
+    }
+
+    #[tokio::test]
+    async fn update_group() {
+        let db = test_db().await;
+        db.create_group("OldName", "Default", "old").await;
+        let groups = db.get_groups(0, 100).await.unwrap();
+        let group = groups.iter().find(|g| g.name == "OldName").unwrap();
+        let result = db
+            .update_group(&group.guid, "NewName", "Default", "new")
+            .await;
+        assert!(result.is_some());
+        let updated = db.get_group(&group.guid).await;
+        assert!(updated.is_some());
+        assert_eq!(updated.unwrap().name, "NewName");
+    }
+
+    #[tokio::test]
+    async fn delete_group() {
+        let db = test_db().await;
+        db.create_group("ToDelete", "Default", "").await;
+        let groups = db.get_groups(0, 100).await.unwrap();
+        let group = groups.iter().find(|g| g.name == "ToDelete").unwrap();
+        let result = db.delete_group(&group.guid).await;
+        assert!(result.is_some());
+        let after = db.get_group(&group.guid).await;
+        assert!(after.is_none());
+    }
+
+    #[tokio::test]
+    async fn delete_group_invalid_uuid() {
+        let db = test_db().await;
+        let result = db.delete_group("bad-uuid").await;
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn get_group_invalid_uuid() {
+        let db = test_db().await;
+        let result = db.get_group("bad-uuid").await;
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn add_user_with_group() {
+        let db = test_db().await;
+        let result = db
+            .add_user(
+                "groupuser".to_string(),
+                "pass".to_string(),
+                "group@test.com".to_string(),
+                false,
+                "Default".to_string(),
+            )
+            .await;
+        assert!(result.is_some());
+        let (_, found) = db.find_user_by_name("groupuser").await;
+        assert!(found.is_some());
+    }
+
+    #[tokio::test]
+    async fn add_user_nonexistent_group_fails() {
+        let db = test_db().await;
+        let result = db
+            .add_user(
+                "baduser".to_string(),
+                "pass".to_string(),
+                "bad@test.com".to_string(),
+                false,
+                "NonexistentGroup".to_string(),
+            )
+            .await;
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn ab_tag_crud() {
+        let db = test_db().await;
+        let (_, user) = db.find_user_by_name("admin").await;
+        let (user_id, _, _) = user.unwrap();
+        let ab_guid = db.get_ab_personal_guid(user_id).await.unwrap();
+
+        let tag = AbTag {
+            name: "important".to_string(),
+            color: 0xFF0000,
+        };
+        let result = db.add_tag_to_ab(&ab_guid, tag).await;
+        assert!(result.is_some());
+
+        let tags = db.get_ab_tags(&ab_guid).await;
+        assert!(tags.is_some());
+        let tags = tags.unwrap();
+        assert!(tags.iter().any(|t| t.name == "important"));
+
+        let tag = db.get_ab_tag(&ab_guid, "important").await;
+        assert!(tag.is_some());
+        assert_eq!(tag.unwrap().color, 0xFF0000);
+
+        let renamed = AbTag {
+            name: "critical".to_string(),
+            color: 0x00FF00,
+        };
+        let result = db.rename_ab_tag(&ab_guid, "important", renamed).await;
+        assert!(result.is_some());
+        let tag = db.get_ab_tag(&ab_guid, "critical").await;
+        assert!(tag.is_some());
+
+        let result = db.delete_tag_from_ab(&ab_guid, "critical").await;
+        assert!(result.is_some());
+        let tag = db.get_ab_tag(&ab_guid, "critical").await;
+        assert!(tag.is_none());
+    }
+
+    #[tokio::test]
+    async fn ab_tag_invalid_uuid() {
+        let db = test_db().await;
+        let tag = AbTag {
+            name: "t".to_string(),
+            color: 0,
+        };
+        assert!(db.add_tag_to_ab("bad", tag).await.is_none());
+        assert!(db.get_ab_tags("bad").await.is_none());
+        assert!(db.get_ab_tag("bad", "t").await.is_none());
+        assert!(
+            db.rename_ab_tag(
+                "bad",
+                "t",
+                AbTag {
+                    name: "x".to_string(),
+                    color: 0
+                }
+            )
+            .await
+            .is_none()
+        );
+        assert!(db.delete_tag_from_ab("bad", "t").await.is_none());
+    }
+
+    #[tokio::test]
+    async fn get_ab_tag_nonexistent() {
+        let db = test_db().await;
+        let (_, user) = db.find_user_by_name("admin").await;
+        let (user_id, _, _) = user.unwrap();
+        let ab_guid = db.get_ab_personal_guid(user_id).await.unwrap();
+        let tag = db.get_ab_tag(&ab_guid, "nonexistent").await;
+        assert!(tag.is_none());
+    }
+
+    #[tokio::test]
+    async fn shared_address_book_crud() {
+        let db = test_db().await;
+        let (_, user) = db.find_user_by_name("admin").await;
+        let (user_id, _, _) = user.unwrap();
+        let owner_uuid = Uuid::from_slice(&user_id).unwrap().to_string();
+
+        let ab_guid = db
+            .add_shared_address_book("Shared AB", &owner_uuid)
+            .await;
+        assert!(ab_guid.is_some());
+        let ab_guid = ab_guid.unwrap();
+        assert!(Uuid::parse_str(&ab_guid).is_ok());
+
+        let result = db
+            .update_shared_address_book(&ab_guid, "Renamed AB")
+            .await;
+        assert!(result.is_some());
+
+        let result = db.delete_shared_address_book(&ab_guid).await;
+        assert!(result.is_some());
+    }
+
+    #[tokio::test]
+    async fn shared_address_book_invalid_owner() {
+        let db = test_db().await;
+        let result = db.add_shared_address_book("Test", "bad-uuid").await;
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn delete_shared_address_book_invalid_uuid() {
+        let db = test_db().await;
+        assert!(db.delete_shared_address_book("bad").await.is_none());
+    }
+
+    #[tokio::test]
+    async fn update_shared_address_book_invalid_uuid() {
+        let db = test_db().await;
+        assert!(db.update_shared_address_book("bad", "n").await.is_none());
+    }
+
+    #[tokio::test]
+    async fn get_peers_count_empty() {
+        let db = test_db().await;
+        let count = db.get_peers_count(Platform::All).await;
+        assert_eq!(count, 0);
+    }
+
+    #[tokio::test]
+    async fn get_cpus_count_empty() {
+        let db = test_db().await;
+        let cpus = db.get_cpus_count().await;
+        assert!(cpus.is_empty());
+    }
+
+    #[tokio::test]
+    async fn get_all_peers_empty() {
+        let db = test_db().await;
+        let peers = db.get_all_peers().await;
+        assert!(peers.is_some());
+        assert!(peers.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn get_shared_address_books_for_admin() {
+        let db = test_db().await;
+        let (_, user) = db.find_user_by_name("admin").await;
+        let (user_id, _, _) = user.unwrap();
+        let abs = db.get_shared_address_books(user_id).await;
+        assert!(abs.is_some());
+    }
+
+    #[tokio::test]
+    async fn legacy_address_book_not_found() {
+        let db = test_db().await;
+        let result = db.get_legacy_address_book(vec![0, 1, 2]).await;
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn update_legacy_address_books() {
+        let db = test_db().await;
+        let (_, user) = db.find_user_by_name("admin").await;
+        let (user_id, _, _) = user.unwrap();
+        let ab = AddressBook {
+            ab: r#"[{"id":"123"}]"#.to_string(),
+            ..Default::default()
+        };
+        let result = db
+            .update_legacy_address_books(vec![(user_id.clone(), ab)])
+            .await;
+        assert!(result.is_some());
+        let fetched = db.get_legacy_address_book(user_id).await;
+        assert!(fetched.is_some());
+        assert!(fetched.unwrap().ab.contains("123"));
+    }
+
+    fn make_ab_peer(id: &str) -> AbPeer {
+        AbPeer {
+            id: id.to_string(),
+            hash: None,
+            password: None,
+            username: None,
+            hostname: None,
+            platform: None,
+            alias: None,
+            tags: None,
+            force_always_relay: None,
+            rdp_port: None,
+            rdp_username: None,
+            login_name: None,
+            same_server: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn ab_peer_crud_invalid_uuid() {
+        let db = test_db().await;
+        let peer = make_ab_peer("test");
+        assert!(db.add_peer_to_ab("bad-uuid", peer).await.is_none());
+        assert!(db.get_peers_from_ab("bad-uuid").await.is_none());
+        assert!(db.get_ab_peer("bad-uuid", "test").await.is_none());
+        assert!(db.delete_peer_from_ab("bad-uuid", "test").await.is_none());
+    }
+
+    #[tokio::test]
+    async fn ab_rules_invalid_uuid() {
+        let db = test_db().await;
+        assert!(db.get_ab_rules(0, 100, "bad").await.is_none());
+        assert!(db.delete_ab_rule("bad").await.is_none());
+        let rule = AbRule {
+            guid: "bad".to_string(),
+            user: None,
+            group: None,
+            rule: 1,
+        };
+        assert!(db.add_ab_rule(rule).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn user_update_name_and_status() {
+        let db = test_db().await;
+        db.add_user("updatable".to_string(), "pass".to_string(), "upd@e.com".to_string(), false, "Default".to_string())
+            .await;
+        let (_, user) = db.find_user_by_name("updatable").await;
+        let (user_id, _, _) = user.unwrap();
+
+        let params = UpdateUserRequest {
+            uuid: String::new(),
+            name: Some("renamed".to_string()),
+            email: None,
+            note: None,
+            password: None,
+            confirm_password: None,
+            status: Some(0),
+            is_admin: Some(true),
+            group_name: None,
+        };
+        let result = db.user_update(user_id, params).await;
+        assert!(result.is_some());
+        let (_, found) = db.find_user_by_name("renamed").await;
+        assert!(found.is_some());
+        let (_, _, info) = found.unwrap();
+        assert!(!info.active);
+        assert!(info.admin);
+    }
+
+    #[tokio::test]
+    async fn user_update_password_matching() {
+        let db = test_db().await;
+        db.add_user("pwuser".to_string(), "old".to_string(), "pw@e.com".to_string(), false, "Default".to_string())
+            .await;
+        let (_, user) = db.find_user_by_name("pwuser").await;
+        let (user_id, _, _) = user.unwrap();
+
+        let params = UpdateUserRequest {
+            uuid: String::new(),
+            name: None,
+            email: None,
+            note: None,
+            password: Some("newpass".to_string()),
+            confirm_password: Some("newpass".to_string()),
+            status: None,
+            is_admin: None,
+            group_name: None,
+        };
+        db.user_update(user_id, params).await;
+        let conn = DatabaseConnection {
+            conn: db.pool.acquire().await.unwrap(),
+        };
+        let (_, pw_info) = db
+            .get_user_hashed_password_with_username(conn, "pwuser".to_string())
+            .await;
+        let checker = UserPasswordInfo::from_password("newpass");
+        assert!(checker.check(pw_info.unwrap()));
+    }
+
+    #[tokio::test]
+    async fn heartbeat_no_peer() {
+        let db = test_db().await;
+        let hb = utils::HeartbeatRequest {
+            id: "test".to_string(),
+            uuid: BASE64_STANDARD.encode("nonexistent"),
+            modified_at: 0,
+            ver: 1,
+        };
+        let result = db.update_heartbeat(hb).await;
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn heartbeat_invalid_base64() {
+        let db = test_db().await;
+        let hb = utils::HeartbeatRequest {
+            id: "test".to_string(),
+            uuid: "not-base64!!!".to_string(),
+            modified_at: 0,
+            ver: 1,
+        };
+        let result = db.update_heartbeat(hb).await;
+        assert!(result.is_none());
+    }
+}

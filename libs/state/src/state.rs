@@ -42,7 +42,7 @@ pub struct ApiState {
     users: RwLock<HashMap<UserId, UserInfo>>,
     address_books: RwLock<HashMap<UserId, AddressBookInfo>>,
     oidc_sessions: RwLock<HashMap<String, OidcState>>,
-    db: Database,
+    pub(crate) db: Database,
     oauth2_providers: RwLock<Vec<ProviderConfig>>,
 }
 
@@ -730,5 +730,694 @@ impl ApiState {
     }
     pub async fn update_shared_address_book(&self, guid: &str, name: &str) -> Option<()> {
         self.db.update_shared_address_book(guid, name).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::bearer::AuthenticatedUserInfo;
+
+    async fn test_state() -> ApiState {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.db");
+        let state = ApiState::new_with_db(&path).await;
+        std::mem::forget(dir);
+        state
+    }
+
+    #[tokio::test]
+    async fn login_admin_success() {
+        let state = test_state().await;
+        let pw = UserPasswordInfo::from_password("Hello,world!");
+        let result = state
+            .user_login(&"admin".to_string(), pw, false)
+            .await;
+        assert!(result.is_some());
+        let (info, token) = result.unwrap();
+        assert_eq!(info.name, "admin");
+        assert!(info.admin);
+        assert!(!token.to_base64().is_empty());
+    }
+
+    #[tokio::test]
+    async fn login_wrong_password() {
+        let state = test_state().await;
+        let pw = UserPasswordInfo::from_password("wrong");
+        let result = state
+            .user_login(&"admin".to_string(), pw, false)
+            .await;
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn login_nonexistent_user() {
+        let state = test_state().await;
+        let pw = UserPasswordInfo::from_password("pass");
+        let result = state
+            .user_login(&"nobody".to_string(), pw, false)
+            .await;
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn login_admin_only_rejects_non_admin() {
+        let state = test_state().await;
+        state
+            .add_user(AddUserRequest {
+                name: "regular".to_string(),
+                password: "pass".to_string(),
+                confirm_password: "pass".to_string(),
+                email: "reg@e.com".to_string(),
+                is_admin: false,
+                group_name: "Default".to_string(),
+            })
+            .await;
+        let pw = UserPasswordInfo::from_password("pass");
+        let result = state
+            .user_login(&"regular".to_string(), pw, true)
+            .await;
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn login_inactive_user_rejected() {
+        let state = test_state().await;
+        state
+            .add_user(AddUserRequest {
+                name: "inactive".to_string(),
+                password: "pass".to_string(),
+                confirm_password: "pass".to_string(),
+                email: "inact@e.com".to_string(),
+                is_admin: false,
+                group_name: "Default".to_string(),
+            })
+            .await;
+        let (_, user) = state.db.find_user_by_name("inactive").await;
+        let (user_id, _, _) = user.unwrap();
+        let guid = uuid::Uuid::from_slice(&user_id).unwrap().to_string();
+        // Note: disable=false maps to status=0 (inactive) due to inverted semantics
+        state.user_change_status(&guid, false).await;
+
+        let pw = UserPasswordInfo::from_password("pass");
+        let result = state
+            .user_login(&"inactive".to_string(), pw, false)
+            .await;
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn find_session_after_login() {
+        let state = test_state().await;
+        let pw = UserPasswordInfo::from_password("Hello,world!");
+        let (_, token) = state
+            .user_login(&"admin".to_string(), pw, false)
+            .await
+            .unwrap();
+        let session = state.find_session(&token).await;
+        assert!(session.is_some());
+        let session = session.unwrap();
+        assert_eq!(session.session_id, 1);
+    }
+
+    #[tokio::test]
+    async fn find_session_invalid_token() {
+        let state = test_state().await;
+        let fake = Token::new_random();
+        let session = state.find_session(&fake).await;
+        assert!(session.is_none());
+    }
+
+    #[tokio::test]
+    async fn get_current_user_name() {
+        let state = test_state().await;
+        let pw = UserPasswordInfo::from_password("Hello,world!");
+        let (_, token) = state
+            .user_login(&"admin".to_string(), pw, false)
+            .await
+            .unwrap();
+        let session = state.find_session(&token).await.unwrap();
+        let auth_info = AuthenticatedUserInfo {
+            session_id: session.session_id,
+            user_id: session.user_id,
+            access_token: token,
+        };
+        let name = state.get_current_user_name(&auth_info).await;
+        assert_eq!(name, Some("admin".to_string()));
+    }
+
+    #[tokio::test]
+    async fn is_current_user_admin() {
+        let state = test_state().await;
+        let pw = UserPasswordInfo::from_password("Hello,world!");
+        let (_, token) = state
+            .user_login(&"admin".to_string(), pw, false)
+            .await
+            .unwrap();
+        let session = state.find_session(&token).await.unwrap();
+        let auth_info = AuthenticatedUserInfo {
+            session_id: session.session_id,
+            user_id: session.user_id,
+            access_token: token,
+        };
+        assert_eq!(state.is_current_user_admin(&auth_info).await, Some(true));
+    }
+
+    #[tokio::test]
+    async fn logout_removes_session() {
+        let state = test_state().await;
+        let pw = UserPasswordInfo::from_password("Hello,world!");
+        let (_, token) = state
+            .user_login(&"admin".to_string(), pw, false)
+            .await
+            .unwrap();
+        let session = state.find_session(&token).await.unwrap();
+        let auth_info = AuthenticatedUserInfo {
+            session_id: session.session_id,
+            user_id: session.user_id,
+            access_token: token.clone(),
+        };
+        let result = state.user_logout(&auth_info).await;
+        assert!(result.is_some());
+        assert!(state.find_session(&token).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn multiple_logins_then_logout() {
+        let state = test_state().await;
+        let pw1 = UserPasswordInfo::from_password("Hello,world!");
+        let (_, token1) = state
+            .user_login(&"admin".to_string(), pw1, false)
+            .await
+            .unwrap();
+        let pw2 = UserPasswordInfo::from_password("Hello,world!");
+        let (_, token2) = state
+            .user_login(&"admin".to_string(), pw2, false)
+            .await
+            .unwrap();
+
+        let s1 = state.find_session(&token1).await.unwrap();
+        let auth1 = AuthenticatedUserInfo {
+            session_id: s1.session_id,
+            user_id: s1.user_id,
+            access_token: token1.clone(),
+        };
+        state.user_logout(&auth1).await;
+        assert!(state.find_session(&token1).await.is_none());
+        assert!(state.find_session(&token2).await.is_some());
+
+        let name = state
+            .get_current_user_name(&AuthenticatedUserInfo {
+                session_id: 2,
+                user_id: auth1.user_id.clone(),
+                access_token: token2.clone(),
+            })
+            .await;
+        assert_eq!(name, Some("admin".to_string()));
+    }
+
+    #[tokio::test]
+    async fn address_book_set_and_get() {
+        let state = test_state().await;
+        let user_id: UserId = vec![1, 2, 3];
+        let ab = AddressBook {
+            ab: "test data".to_string(),
+            ..Default::default()
+        };
+        state
+            .set_user_address_book(user_id.clone(), ab)
+            .await;
+        let result = state.get_user_address_book(user_id).await;
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().ab, "test data");
+    }
+
+    #[tokio::test]
+    async fn address_book_update_marks_modified() {
+        let state = test_state().await;
+        let user_id: UserId = vec![1, 2, 3];
+        let ab1 = AddressBook {
+            ab: "v1".to_string(),
+            ..Default::default()
+        };
+        state
+            .set_user_address_book(user_id.clone(), ab1)
+            .await;
+        let ab2 = AddressBook {
+            ab: "v2".to_string(),
+            ..Default::default()
+        };
+        state
+            .set_user_address_book(user_id.clone(), ab2)
+            .await;
+        let result = state.get_user_address_book(user_id).await;
+        assert_eq!(result.unwrap().ab, "v2");
+    }
+
+    #[tokio::test]
+    async fn oidc_session_lifecycle() {
+        let state = test_state().await;
+        let oidc = OidcState {
+            id: "user1".to_string(),
+            uuid: "uuid1".to_string(),
+            code: None,
+            auth_token: None,
+            redirect_url: None,
+            callback_url: None,
+            provider: None,
+            name: None,
+            email: None,
+        };
+        let result = state
+            .insert_oidc_session("code1".to_string(), oidc)
+            .await;
+        assert!(result.is_some());
+
+        let session = state.get_oidc_session("code1".to_string()).await;
+        assert!(session.is_some());
+        assert_eq!(session.unwrap().id, "user1");
+
+        let missing = state.get_oidc_session("missing".to_string()).await;
+        assert!(missing.is_none());
+    }
+
+    #[tokio::test]
+    async fn oidc_insert_duplicate_returns_none() {
+        let state = test_state().await;
+        let oidc = OidcState {
+            id: "u".to_string(),
+            uuid: "u".to_string(),
+            code: None,
+            auth_token: None,
+            redirect_url: None,
+            callback_url: None,
+            provider: None,
+            name: None,
+            email: None,
+        };
+        state
+            .insert_oidc_session("dup".to_string(), oidc.clone())
+            .await;
+        let result = state
+            .insert_oidc_session("dup".to_string(), oidc)
+            .await;
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn oidc_check_session_no_auth_token() {
+        let state = test_state().await;
+        let oidc = OidcState {
+            id: "u".to_string(),
+            uuid: "u".to_string(),
+            code: None,
+            auth_token: None,
+            redirect_url: None,
+            callback_url: None,
+            provider: None,
+            name: None,
+            email: None,
+        };
+        state
+            .insert_oidc_session("check".to_string(), oidc)
+            .await;
+        let result = state.oidc_check_session("check".to_string()).await;
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn oidc_check_session_missing() {
+        let state = test_state().await;
+        let result = state.oidc_check_session("missing".to_string()).await;
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn oidc_exchange_code_missing_session() {
+        let state = test_state().await;
+        let result = state
+            .oidc_session_exchange_code("code".to_string(), "missing".to_string())
+            .await;
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn maintenance_runs_without_error() {
+        let state = test_state().await;
+        state.maintenance().await;
+        state.check_maintenance().await;
+    }
+
+    #[tokio::test]
+    async fn with_user_info_no_user() {
+        let state = test_state().await;
+        let result = state
+            .with_user_info(&vec![99], |_| true)
+            .await;
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn ui_get_all_users() {
+        let state = test_state().await;
+        let users = state.ui_get_all_users().await;
+        assert!(users.is_some());
+        assert!(!users.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn create_and_get_user() {
+        let state = test_state().await;
+        let result = state
+            .add_user(AddUserRequest {
+                name: "newuser".to_string(),
+                password: "pass".to_string(),
+                confirm_password: "pass".to_string(),
+                email: "new@e.com".to_string(),
+                is_admin: false,
+                group_name: "Default".to_string(),
+            })
+            .await;
+        assert!(result.is_some());
+        let info = state.ui_get_user_info("newuser".to_string()).await;
+        assert!(info.is_some());
+    }
+
+    #[tokio::test]
+    async fn get_groups() {
+        let state = test_state().await;
+        let groups = state.get_groups(0, 100).await;
+        assert!(groups.is_some());
+    }
+
+    #[tokio::test]
+    async fn group_crud() {
+        let state = test_state().await;
+        state.create_group("G1", "Default", "note").await;
+        let groups = state.get_groups(0, 100).await.unwrap();
+        let g = groups.iter().find(|g| g.name == "G1").unwrap();
+        state.update_group(&g.guid, "G2", "Default", "n2").await;
+        let g2 = state.get_group(&g.guid).await.unwrap();
+        assert_eq!(g2.name, "G2");
+        state.delete_group(&g.guid).await;
+        assert!(state.get_group(&g.guid).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn update_and_reset_password() {
+        let state = test_state().await;
+        let result = state
+            .ui_update_user_password(
+                "admin".to_string(),
+                "Hello,world!".to_string(),
+                "new123".to_string(),
+            )
+            .await;
+        assert!(result.is_some());
+        let result = state
+            .ui_reset_user_password("admin".to_string(), "reset456".to_string())
+            .await;
+        assert!(result.is_some());
+    }
+
+    #[tokio::test]
+    async fn get_all_peers_empty() {
+        let state = test_state().await;
+        let peers = state.get_all_peers().await;
+        assert!(peers.is_some());
+        assert!(peers.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn get_peers_count() {
+        let state = test_state().await;
+        assert_eq!(state.get_peers_count(Platform::All).await, 0);
+    }
+
+    #[tokio::test]
+    async fn get_cpus_count() {
+        let state = test_state().await;
+        let cpus = state.get_cpus_count().await;
+        assert!(cpus.is_empty());
+    }
+
+    #[tokio::test]
+    async fn shared_address_book_lifecycle() {
+        let state = test_state().await;
+        let pw = UserPasswordInfo::from_password("Hello,world!");
+        let (_, token) = state
+            .user_login(&"admin".to_string(), pw, false)
+            .await
+            .unwrap();
+        let session = state.find_session(&token).await.unwrap();
+        let owner_uuid = uuid::Uuid::from_slice(&session.user_id)
+            .unwrap()
+            .to_string();
+
+        let guid = state
+            .add_shared_address_book("Shared", &owner_uuid)
+            .await;
+        assert!(guid.is_some());
+        let guid = guid.unwrap();
+
+        state
+            .update_shared_address_book(&guid, "Renamed")
+            .await;
+
+        let abs = state
+            .get_shared_address_books(session.user_id.clone())
+            .await;
+        assert!(abs.is_some());
+
+        state.delete_shared_address_book(&guid).await;
+    }
+
+    #[tokio::test]
+    async fn delete_shared_address_books_batch() {
+        let state = test_state().await;
+        let pw = UserPasswordInfo::from_password("Hello,world!");
+        let (_, token) = state
+            .user_login(&"admin".to_string(), pw, false)
+            .await
+            .unwrap();
+        let session = state.find_session(&token).await.unwrap();
+        let owner_uuid = uuid::Uuid::from_slice(&session.user_id)
+            .unwrap()
+            .to_string();
+
+        let g1 = state
+            .add_shared_address_book("S1", &owner_uuid)
+            .await
+            .unwrap();
+        let g2 = state
+            .add_shared_address_book("S2", &owner_uuid)
+            .await
+            .unwrap();
+
+        let result = state
+            .delete_shared_address_books(vec![g1, g2])
+            .await;
+        assert!(result.is_some());
+    }
+
+    #[tokio::test]
+    async fn ab_personal_guid() {
+        let state = test_state().await;
+        let pw = UserPasswordInfo::from_password("Hello,world!");
+        let (_, token) = state
+            .user_login(&"admin".to_string(), pw, false)
+            .await
+            .unwrap();
+        let session = state.find_session(&token).await.unwrap();
+        let guid = state
+            .get_ab_personal_guid(session.user_id)
+            .await;
+        assert!(guid.is_some());
+    }
+
+    #[tokio::test]
+    async fn ab_tags_lifecycle() {
+        let state = test_state().await;
+        let pw = UserPasswordInfo::from_password("Hello,world!");
+        let (_, token) = state
+            .user_login(&"admin".to_string(), pw, false)
+            .await
+            .unwrap();
+        let session = state.find_session(&token).await.unwrap();
+        let ab = state
+            .get_ab_personal_guid(session.user_id)
+            .await
+            .unwrap();
+
+        let tag = AbTag {
+            name: "test".to_string(),
+            color: 0xFF,
+        };
+        state.add_ab_tag(&ab, tag).await;
+        let tags = state.get_ab_tags(&ab).await;
+        assert!(tags.is_some());
+        let found = state.get_ab_tag(&ab, "test").await;
+        assert!(found.is_some());
+
+        let renamed = AbTag {
+            name: "renamed".to_string(),
+            color: 0x00,
+        };
+        state.rename_ab_tag(&ab, "test", renamed).await;
+        state
+            .delete_ab_tags(&ab, vec!["renamed".to_string()])
+            .await;
+    }
+
+    #[tokio::test]
+    async fn ab_peers_lifecycle() {
+        let state = test_state().await;
+        let pw = UserPasswordInfo::from_password("Hello,world!");
+        let (_, token) = state
+            .user_login(&"admin".to_string(), pw, false)
+            .await
+            .unwrap();
+        let session = state.find_session(&token).await.unwrap();
+        let ab = state
+            .get_ab_personal_guid(session.user_id)
+            .await
+            .unwrap();
+
+        let peer = AbPeer {
+            id: "peer1".to_string(),
+            hash: None,
+            password: None,
+            username: None,
+            hostname: None,
+            platform: None,
+            alias: None,
+            tags: None,
+            force_always_relay: None,
+            rdp_port: None,
+            rdp_username: None,
+            login_name: None,
+            same_server: None,
+        };
+        state.add_ab_peer(&ab, peer).await;
+        let peers = state.get_ab_peers(&ab).await;
+        assert!(peers.is_some());
+        let p = state.get_ab_peer(&ab, "peer1").await;
+        assert!(p.is_some());
+        state
+            .delete_ab_peer(&ab, vec!["peer1".to_string()])
+            .await;
+    }
+
+    #[tokio::test]
+    async fn ab_rules_lifecycle() {
+        let state = test_state().await;
+        let pw = UserPasswordInfo::from_password("Hello,world!");
+        let (_, token) = state
+            .user_login(&"admin".to_string(), pw, false)
+            .await
+            .unwrap();
+        let session = state.find_session(&token).await.unwrap();
+        let owner_uuid = uuid::Uuid::from_slice(&session.user_id)
+            .unwrap()
+            .to_string();
+
+        let ab_guid = state
+            .add_shared_address_book("RuleAB", &owner_uuid)
+            .await
+            .unwrap();
+
+        let rule = AbRule {
+            guid: ab_guid.clone(),
+            user: Some(owner_uuid.clone()),
+            group: None,
+            rule: 2,
+        };
+        state.add_ab_rule(rule).await;
+        let rules = state.get_ab_rules(0, 100, &ab_guid).await;
+        assert!(rules.is_some());
+
+        let rules = rules.unwrap();
+        if !rules.is_empty() {
+            state.delete_ab_rule(&rules[0].guid).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn get_all_users() {
+        let state = test_state().await;
+        let users = state
+            .get_all_users(None, None, 1, 100)
+            .await;
+        assert!(users.is_some());
+    }
+
+    #[tokio::test]
+    async fn user_update() {
+        let state = test_state().await;
+        state
+            .add_user(AddUserRequest {
+                name: "upd".to_string(),
+                password: "pass".to_string(),
+                confirm_password: "pass".to_string(),
+                email: "upd@e.com".to_string(),
+                is_admin: false,
+                group_name: "Default".to_string(),
+            })
+            .await;
+        let (_, user) = state.db.find_user_by_name("upd").await;
+        let (user_id, _, _) = user.unwrap();
+        let params = UpdateUserRequest {
+            uuid: String::new(),
+            name: Some("updated".to_string()),
+            email: None,
+            note: None,
+            password: None,
+            confirm_password: None,
+            status: None,
+            is_admin: None,
+            group_name: None,
+        };
+        let result = state.user_update(user_id, params).await;
+        assert!(result.is_some());
+    }
+
+    #[tokio::test]
+    async fn user_delete() {
+        let state = test_state().await;
+        state
+            .add_user(AddUserRequest {
+                name: "todelete".to_string(),
+                password: "pass".to_string(),
+                confirm_password: "pass".to_string(),
+                email: "del@e.com".to_string(),
+                is_admin: false,
+                group_name: "Default".to_string(),
+            })
+            .await;
+        let (_, user) = state.db.find_user_by_name("todelete").await;
+        let (user_id, _, _) = user.unwrap();
+        let guid = uuid::Uuid::from_slice(&user_id).unwrap().to_string();
+        let result = state.user_delete(&guid).await;
+        assert!(result.is_some());
+    }
+
+    #[tokio::test]
+    async fn user_change_status_wrapper() {
+        let state = test_state().await;
+        state
+            .add_user(AddUserRequest {
+                name: "statususer".to_string(),
+                password: "pass".to_string(),
+                confirm_password: "pass".to_string(),
+                email: "status@e.com".to_string(),
+                is_admin: false,
+                group_name: "Default".to_string(),
+            })
+            .await;
+        let (_, user) = state.db.find_user_by_name("statususer").await;
+        let (user_id, _, _) = user.unwrap();
+        let guid = uuid::Uuid::from_slice(&user_id).unwrap().to_string();
+        let result = state.user_change_status(&guid, false).await;
+        assert!(result.is_some());
     }
 }
