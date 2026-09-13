@@ -115,7 +115,11 @@ async fn options(_path: PathBuf) -> Result<(), std::io::Error> {
 }
 
 pub async fn build_rocket(figment: Figment) -> Rocket<Build> {
-    let state = ApiState::new_with_db("db_v2.sqlite3").await;
+    build_rocket_with_db(figment, "db_v2.sqlite3").await
+}
+
+pub async fn build_rocket_with_db(figment: Figment, db_path: &str) -> Rocket<Build> {
+    let state = ApiState::new_with_db(db_path).await;
 
     let rocket = rocket::custom(figment)
         .attach(CORS)
