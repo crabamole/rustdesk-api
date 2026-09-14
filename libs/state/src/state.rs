@@ -987,6 +987,7 @@ mod tests {
             provider: None,
             name: None,
             email: None,
+            client_redirect_uri: None,
         };
         let result = state
             .insert_oidc_session("code1".to_string(), oidc)
@@ -1014,6 +1015,7 @@ mod tests {
             provider: None,
             name: None,
             email: None,
+            client_redirect_uri: None,
         };
         state
             .insert_oidc_session("dup".to_string(), oidc.clone())
@@ -1037,6 +1039,7 @@ mod tests {
             provider: None,
             name: None,
             email: None,
+            client_redirect_uri: None,
         };
         state
             .insert_oidc_session("check".to_string(), oidc)
