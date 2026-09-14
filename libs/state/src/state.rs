@@ -88,8 +88,8 @@ fn secs_from_epoch() -> u64 {
 }
 
 impl ApiState {
-    pub async fn new_with_db<P: AsRef<Path>>(db_filename: P) -> Self {
-        let db = Database::open(db_filename).await;
+    pub async fn new_with_db(db_url: &str) -> Self {
+        let db = Database::new(db_url).await.expect("Failed to open database");
         Self {
             last_maintenance_time: AtomicU64::new(0),
             access_tokens: Default::default(),
@@ -741,7 +741,7 @@ mod tests {
     async fn test_state() -> ApiState {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("test.db");
-        let state = ApiState::new_with_db(&path).await;
+        let state = ApiState::new_with_db(path.to_str().unwrap()).await;
         std::mem::forget(dir);
         state
     }

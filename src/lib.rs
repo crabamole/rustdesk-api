@@ -115,7 +115,8 @@ async fn options(_path: PathBuf) -> Result<(), std::io::Error> {
 }
 
 pub async fn build_rocket(figment: Figment) -> Rocket<Build> {
-    build_rocket_with_db(figment, "db_v2.sqlite3").await
+    let db_url = std::env::var("DATABASE_URL").unwrap_or_else(|_| "db_v2.sqlite3".to_string());
+    build_rocket_with_db(figment, &db_url).await
 }
 
 pub async fn build_rocket_with_db(figment: Figment, db_path: &str) -> Rocket<Build> {

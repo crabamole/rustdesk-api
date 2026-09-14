@@ -13,7 +13,6 @@
 //
 // You should have received a copy of the Affero General Public License
 // along with SCTGDesk. If not, see <https://www.gnu.org/licenses/agpl-3.0.html>.
-use sqlx::{Connection, Executor, SqliteConnection};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::env;
@@ -51,9 +50,7 @@ impl PackageJson {
         self.version = version.to_string();
     }
 }
-#[tokio::main]
-async fn main() {
-    let db_path = env::var("DATABASE_URL").unwrap_or("sqlite://db_v2.sqlite3".to_string());
+fn main() {
 
     println!("cargo:rerun-if-changed=webconsole");
 
@@ -136,16 +133,4 @@ async fn main() {
         str::from_utf8(&output.stderr).unwrap_or("")
     );
 
-    // Delete test data if it exists
-    let mut conn = SqliteConnection::connect(&format!("{}", db_path))
-    .await
-    .expect("Failed to open database");
-    conn.execute(
-        r#"
-        DELETE FROM peer WHERE guid = x'95CC7775BA37481DAD7214A4F6CE5A94';
-        PRAGMA journal_mode=DELETE;
-        "#
-    )
-    .await
-    .expect("Failed to delete test data");
 }

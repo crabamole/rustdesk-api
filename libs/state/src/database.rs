@@ -18,9 +18,8 @@ use crate::types;
 use crate::UserId;
 use serde::Serialize;
 use sqlx::{
-    pool::PoolConnection,
-    sqlite::{Sqlite, SqliteConnectOptions, SqliteJournalMode, SqlitePool},
-    QueryBuilder,
+    any::{install_default_drivers, AnyPoolOptions},
+    AnyPool, Row,
 };
 use std::env;
 use std::path::Path;
@@ -40,12 +39,23 @@ use base64::prelude::{Engine as _, BASE64_STANDARD};
 
 use uuid::Uuid;
 
+const SCHEMA_SQLITE: &str = include_str!("../../../db_v2/create/db_sqlite.sql");
+const SCHEMA_POSTGRES: &str = include_str!("../../../db_v2/create/db_postgres.sql");
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Backend {
+    Sqlite,
+    Postgres,
+}
+
+#[derive(Clone)]
 pub struct Database {
-    pool: SqlitePool,
+    pool: AnyPool,
+    backend: Backend,
 }
 
 pub struct DatabaseConnection {
-    conn: PoolConnection<Sqlite>,
+    pool: AnyPool,
 }
 
 pub struct DatabaseUserInfo {
@@ -69,53 +79,106 @@ macro_rules! unwrap_or_return_tuple {
     };
 }
 
+fn split_sql(sql: &str) -> Vec<&str> {
+    sql.split(';')
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty() && !s.starts_with("--"))
+        .collect()
+}
+
+fn normalize_url(url: &str) -> String {
+    if url.starts_with("sqlite://")
+        || url.starts_with("postgres://")
+        || url.starts_with("postgresql://")
+    {
+        url.to_string()
+    } else {
+        format!("sqlite://{}", url)
+    }
+}
+
 impl Database {
     pub async fn open<P: AsRef<Path>>(db_filename: P) -> Self {
-        let db_opts = SqliteConnectOptions::new()
-            .filename(db_filename.as_ref())
-            .journal_mode(SqliteJournalMode::Wal)
-            .create_if_missing(true);
-
-        let pool = SqlitePool::connect_with(db_opts).await.unwrap();
-
-        Self::init_db(&pool).await;
-
-        Self { pool }
+        let url = format!("sqlite://{}", db_filename.as_ref().display());
+        Self::new(&url).await.expect("Failed to open database")
     }
 
-    async fn init_db(pool: &SqlitePool) {
-        let mut conn = pool.acquire().await.unwrap();
-        // default admin password is "Hello,world!"
+    pub async fn new(url: &str) -> Result<Self, Box<dyn std::error::Error>> {
+        install_default_drivers();
 
-        // run migrations only if the db is empty
-        let res = sqlx::query!(
-            r#"
-            SELECT
-                name
-            FROM
-                sqlite_master
-            WHERE
-                type='table'
-        "#
-        )
-        .fetch_all(&mut *conn)
-        .await;
-        if res.is_err() {
-            log::debug!("init_db error: {:?}", res);
-            return;
-        }
-        let res = res.unwrap();
-        if res.len() > 0 {
-            let migrator = sqlx::migrate!("../../db_v2/migrations/");
-            migrator.run(pool).await.unwrap();
+        let url = normalize_url(url);
+        let backend = if url.starts_with("postgres") {
+            Backend::Postgres
+        } else {
+            Backend::Sqlite
+        };
+
+        if backend == Backend::Sqlite {
+            let path = url.strip_prefix("sqlite://").unwrap_or(&url);
+            if !Path::new(path).exists() {
+                std::fs::File::create(path).ok();
+            }
         }
 
-        // query_file! macro use path relative to Cargo.toml
-        sqlx::query_file!("../../db_v2/create/db.sql")
-            .execute(&mut *conn)
-            .await
-            .unwrap();
-        // Load and run migrations
+        let max_connections: u32 = env::var("MAX_DATABASE_CONNECTIONS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or((num_cpus::get() * 4) as u32);
+
+        let pool = AnyPoolOptions::new()
+            .max_connections(max_connections)
+            .connect(&url)
+            .await?;
+
+        let db = Database { pool, backend };
+        db.init_db().await;
+        Ok(db)
+    }
+
+    pub fn backend(&self) -> Backend {
+        self.backend
+    }
+
+    async fn init_db(&self) {
+        let has_tables = match self.backend {
+            Backend::Sqlite => {
+                let res = sqlx::query("SELECT name FROM sqlite_master WHERE type='table'")
+                    .fetch_all(&self.pool)
+                    .await;
+                match res {
+                    Ok(rows) => !rows.is_empty(),
+                    Err(_) => false,
+                }
+            }
+            Backend::Postgres => {
+                let res = sqlx::query(
+                    "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public'",
+                )
+                .fetch_all(&self.pool)
+                .await;
+                match res {
+                    Ok(rows) => !rows.is_empty(),
+                    Err(_) => false,
+                }
+            }
+        };
+
+        if has_tables {
+            if self.backend == Backend::Sqlite {
+                let migrator = sqlx::migrate!("../../db_v2/migrations/");
+                migrator.run(&self.pool).await.unwrap();
+            }
+        }
+
+        let schema = match self.backend {
+            Backend::Sqlite => SCHEMA_SQLITE,
+            Backend::Postgres => SCHEMA_POSTGRES,
+        };
+        for statement in split_sql(schema) {
+            if let Err(e) = sqlx::query(statement).execute(&self.pool).await {
+                log::debug!("init_db statement error (may be expected): {:?}", e);
+            }
+        }
     }
 
     pub async fn find_user_by_name(
@@ -125,36 +188,26 @@ impl Database {
         DatabaseConnection,
         Option<(UserId, Option<String>, DatabaseUserInfo)>,
     ) {
-        let mut conn = DatabaseConnection {
-            conn: self.pool.acquire().await.unwrap(),
+        let conn = DatabaseConnection {
+            pool: self.pool.clone(),
         };
 
-        let res = unwrap_or_return_tuple!(
-            conn,
-            sqlx::query!(
-                r#"
-            SELECT
-                guid,
-                status,
-                role,
-                email
-            FROM
-                user
-            WHERE
-                name = ?
-        "#,
-                username
-            )
-            .fetch_one(&mut *conn.conn)
-            .await
-            .ok()
-        );
+        let res = sqlx::query(
+            "SELECT guid, status, role, email FROM \"user\" WHERE name = $1",
+        )
+        .bind(username)
+        .fetch_one(&self.pool)
+        .await;
 
-        let user_id: UserId = res.guid;
-        let email = res.email;
+        let res = unwrap_or_return_tuple!(conn, res.ok());
+
+        let user_id: UserId = res.try_get::<Vec<u8>, _>("guid").unwrap();
+        let email: Option<String> = res.try_get::<Option<String>, _>("email").unwrap_or(None);
+        let status: i32 = res.try_get::<i32, _>("status").unwrap_or(0);
+        let role: i32 = res.try_get::<i32, _>("role").unwrap_or(0);
         let dbi = DatabaseUserInfo {
-            active: res.status == 1,
-            admin: res.role == 1,
+            active: status == 1,
+            admin: role == 1,
         };
 
         (conn, Some((user_id, email, dbi)))
@@ -162,111 +215,68 @@ impl Database {
 
     pub async fn get_user_hashed_password(
         &self,
-        mut conn: DatabaseConnection,
+        conn: DatabaseConnection,
         user_id: UserId,
     ) -> (DatabaseConnection, Option<DatabaseUserPasswordInfo>) {
-        let res = unwrap_or_return_tuple!(
-            conn,
-            sqlx::query!(
-                r#"
-            SELECT
-                guid,
-                name,
-                password
-            FROM
-                user
-            WHERE
-                guid = ?
-        "#,
-                user_id
-            )
-            .fetch_one(&mut *conn.conn)
-            .await
-            .ok()
-        );
+        let res = sqlx::query(
+            "SELECT guid, name, password FROM \"user\" WHERE guid = $1",
+        )
+        .bind(&user_id)
+        .fetch_one(&self.pool)
+        .await;
+
+        let res = unwrap_or_return_tuple!(conn, res.ok());
 
         let dbpi = DatabaseUserPasswordInfo {
-            password: res.password,
-            username: res.name,
-            user_id: res.guid,
+            password: res.try_get::<String, _>("password").unwrap(),
+            username: res.try_get::<String, _>("name").unwrap(),
+            user_id: res.try_get::<Vec<u8>, _>("guid").unwrap(),
         };
 
         (conn, Some(dbpi))
     }
 
-    /// Get the hashed password info for a user with the given username
-    ///
-    /// # Arguments
-    /// * `conn` - The database connection
-    /// * `username` - The username of the user
-    ///
-    /// # Returns
-    /// * `DatabaseConnection` - The database connection
-    /// * `Option<DatabaseUserPasswordInfo>` - The hashed password info for the user if the user exists, `None` otherwise
     pub async fn get_user_hashed_password_with_username(
         &self,
-        mut conn: DatabaseConnection,
+        conn: DatabaseConnection,
         username: String,
     ) -> (DatabaseConnection, Option<DatabaseUserPasswordInfo>) {
-        let res = unwrap_or_return_tuple!(
-            conn,
-            sqlx::query!(
-                r#"
-            SELECT
-                guid,
-                name,
-                password
-            FROM
-                user
-            WHERE
-                name = ?
-        "#,
-                username
-            )
-            .fetch_one(&mut *conn.conn)
-            .await
-            .ok()
-        );
+        let res = sqlx::query(
+            "SELECT guid, name, password FROM \"user\" WHERE name = $1",
+        )
+        .bind(&username)
+        .fetch_one(&self.pool)
+        .await;
+
+        let res = unwrap_or_return_tuple!(conn, res.ok());
 
         let dbpi = DatabaseUserPasswordInfo {
-            password: res.password,
-            username: res.name,
-            user_id: res.guid,
+            password: res.try_get::<String, _>("password").unwrap(),
+            username: res.try_get::<String, _>("name").unwrap(),
+            user_id: res.try_get::<Vec<u8>, _>("guid").unwrap(),
         };
 
         (conn, Some(dbpi))
     }
 
     pub async fn get_legacy_address_book(&self, user_id: UserId) -> Option<AddressBook> {
-        let mut conn = self.pool.acquire().await.unwrap();
-
-        let res = sqlx::query!(
-            r#"
-            SELECT
-                ab as "ab!: String"
-            FROM
-                ab_legacy
-            WHERE
-                user_guid = ?
-        "#,
-            user_id
+        let res = sqlx::query(
+            "SELECT ab FROM ab_legacy WHERE user_guid = $1",
         )
-        .fetch_one(&mut *conn)
+        .bind(&user_id)
+        .fetch_one(&self.pool)
         .await
         .ok()?;
 
+        let ab_str: String = res.try_get::<String, _>("ab").unwrap_or_default();
         let ab = AddressBook {
-            ab: res.ab,
+            ab: ab_str,
             ..Default::default()
         };
 
         Some(ab)
     }
 
-    // Update user password
-    // first check if password is correct
-    // if correct, update password
-    // if not correct, return error
     pub async fn update_user_password(
         &self,
         username: String,
@@ -274,7 +284,7 @@ impl Database {
         new_password: String,
     ) -> Option<()> {
         let conn = DatabaseConnection {
-            conn: self.pool.acquire().await.unwrap(),
+            pool: self.pool.clone(),
         };
         let (_, dbpi) = self
             .get_user_hashed_password_with_username(conn, username)
@@ -291,51 +301,32 @@ impl Database {
             return None;
         }
         let new_password_hashed = UserPasswordInfo::hash_password(new_password.as_str());
-        let mut tx = self.pool.begin().await.unwrap();
-        let res = sqlx::query!(
-            r#"
-            UPDATE
-                user
-            SET
-                password = ?
-            WHERE
-                guid = ?
-        "#,
-            new_password_hashed,
-            user_id
+        let res = sqlx::query(
+            "UPDATE \"user\" SET password = $1 WHERE guid = $2",
         )
-        .execute(&mut *tx)
+        .bind(&new_password_hashed)
+        .bind(&user_id)
+        .execute(&self.pool)
         .await
         .ok()?
         .rows_affected();
-        tx.commit().await.ok()?;
         if res == 0 {
             return None;
         }
         Some(())
     }
 
-    // reset user password
     pub async fn reset_user_password(&self, username: String, new_password: String) -> Option<()> {
         let new_password_hashed = UserPasswordInfo::hash_password(new_password.as_str());
-        let mut tx = self.pool.begin().await.unwrap();
-        let res = sqlx::query!(
-            r#"
-            UPDATE
-                user
-            SET
-                password = ?
-            WHERE
-                name = ?
-        "#,
-            new_password_hashed,
-            username
+        let res = sqlx::query(
+            "UPDATE \"user\" SET password = $1 WHERE name = $2",
         )
-        .execute(&mut *tx)
+        .bind(&new_password_hashed)
+        .bind(&username)
+        .execute(&self.pool)
         .await
         .ok()?
         .rows_affected();
-        tx.commit().await.ok()?;
         if res == 0 {
             return None;
         }
@@ -344,88 +335,95 @@ impl Database {
 
     pub async fn update_legacy_address_books(
         &self,
-        mut values: Vec<(UserId, AddressBook)>,
+        values: Vec<(UserId, AddressBook)>,
     ) -> Option<()> {
-        let mut tx = self.pool.begin().await.unwrap();
-
-        let mut query_builder: QueryBuilder<Sqlite> = QueryBuilder::new(
-            // Note the trailing space; most calls to `QueryBuilder` don't automatically insert
-            // spaces as that might interfere with identifiers or quoted strings where exact
-            // values may matter.
-            "INSERT OR REPLACE INTO ab_legacy (user_guid, ab) ",
-        );
-
         let values_count = values.len() as u64;
+        let mut total_affected = 0u64;
 
-        // Note that `.into_iter()` wasn't needed here since `users` is already an iterator.
-        query_builder.push_values(values.drain(..), |mut b, value| {
-            b.push_bind(value.0).push_bind(value.1.ab);
-        });
-
-        let query = query_builder.build();
-
-        let res = query.execute(&mut *tx).await.ok()?.rows_affected();
-
-        if res != values_count {
-            return None;
+        for (user_guid, ab) in &values {
+            let res = sqlx::query(
+                "INSERT INTO ab_legacy (user_guid, ab) VALUES ($1, $2) \
+                 ON CONFLICT (user_guid) DO UPDATE SET ab = $2",
+            )
+            .bind(user_guid)
+            .bind(&ab.ab)
+            .execute(&self.pool)
+            .await
+            .ok()?
+            .rows_affected();
+            total_affected += res;
         }
 
-        tx.commit().await.ok()?;
+        if total_affected != values_count {
+            return None;
+        }
 
         Some(())
     }
 
     pub async fn ui_get_all_users(&self) -> Option<Vec<types::UserInfo>> {
-        let mut conn = self.pool.acquire().await.unwrap();
-        let res = sqlx::query_as!(
-            types::UserInfo,
-            r#"
-            SELECT
-                user.guid as id,
-                user.status as "active!: bool",
-                user.role as "admin!: bool",
-                user.name as username,
-                user.password,
-                ab_legacy.ab as "address_book!: String"
+        let rows = sqlx::query(
+            r#"SELECT
+                "user".guid as id,
+                "user".status,
+                "user".role,
+                "user".name as username,
+                "user".password,
+                ab_legacy.ab
             FROM
-                user
+                "user"
                 LEFT JOIN ab_legacy
-                    ON ab_legacy.user_guid = user.guid
-            "#
+                    ON ab_legacy.user_guid = "user".guid"#,
         )
-        .fetch_all(&mut *conn)
+        .fetch_all(&self.pool)
         .await
         .ok()?;
 
-        Some(res)
+        let mut users = Vec::new();
+        for row in rows {
+            let info = types::UserInfo {
+                id: row.try_get::<Vec<u8>, _>("id").unwrap_or_default(),
+                active: row.try_get::<i32, _>("status").unwrap_or(0) != 0,
+                admin: row.try_get::<i32, _>("role").unwrap_or(0) != 0,
+                username: row.try_get::<String, _>("username").unwrap_or_default(),
+                password: row.try_get::<String, _>("password").unwrap_or_default(),
+                address_book: row.try_get::<String, _>("ab").unwrap_or_default(),
+            };
+            users.push(info);
+        }
+
+        Some(users)
     }
 
     pub async fn ui_get_user_info(&self, username: String) -> Option<types::UserInfo> {
-        let mut conn = self.pool.acquire().await.unwrap();
-        let res = sqlx::query_as!(
-            types::UserInfo,
-            r#"
-            SELECT
-                user.guid as id,
-                user.status as "active!: bool",
-                user.role as "admin!: bool",
-                user.name as username,
-                user.password,
-                ab_legacy.ab as "address_book!: String" 
+        let row = sqlx::query(
+            r#"SELECT
+                "user".guid as id,
+                "user".status,
+                "user".role,
+                "user".name as username,
+                "user".password,
+                ab_legacy.ab
             FROM
-                user
+                "user"
                 LEFT JOIN ab_legacy
-                    ON ab_legacy.user_guid = user.guid
+                    ON ab_legacy.user_guid = "user".guid
             WHERE
-                user.name = ?
-            "#,
-            username
+                "user".name = $1"#,
         )
-        .fetch_one(&mut *conn)
+        .bind(&username)
+        .fetch_one(&self.pool)
         .await
         .ok()?;
 
-        Some(res)
+        Some(types::UserInfo {
+            id: row.try_get::<Vec<u8>, _>("id").unwrap_or_default(),
+            active: row.try_get::<i32, _>("status").unwrap_or(0) != 0,
+            admin: row.try_get::<i32, _>("role").unwrap_or(0) != 0,
+            username: row.try_get::<String, _>("username").unwrap_or_default(),
+            password: row.try_get::<String, _>("password").unwrap_or_default(),
+            address_book: row.try_get::<String, _>("ab").unwrap_or_default(),
+        })
     }
 
     pub async fn create_user(
@@ -435,72 +433,56 @@ impl Database {
         admin: bool,
     ) -> Option<UserId> {
         let password_hashed = UserPasswordInfo::hash_password(password.as_str());
-        let mut tx = self.pool.begin().await.unwrap();
-        let _res = sqlx::query!(
-            r#"
-            INSERT INTO
-                user (status, role, name, password)
-            VALUES
-                (1, ?, ?, ?)
-        "#,
-            admin,
-            username,
-            password_hashed
+        let guid = Uuid::new_v4().as_bytes().to_vec();
+        let role: i32 = if admin { 1 } else { 0 };
+
+        sqlx::query(
+            "INSERT INTO \"user\" (guid, status, role, name, password, grp, team) \
+             VALUES ($1, 1, $2, $3, $4, \
+             (SELECT guid FROM grp WHERE name = 'Default'), \
+             (SELECT guid FROM team WHERE name = 'Default'))",
         )
-        .execute(&mut *tx)
+        .bind(&guid)
+        .bind(role)
+        .bind(&username)
+        .bind(&password_hashed)
+        .execute(&self.pool)
         .await
         .ok()?;
 
-        let user_id: (Vec<u8>,) = sqlx::query_as("SELECT last_insert_rowid()")
-            .fetch_one(&mut *tx)
-            .await
-            .ok()?;
-
-        tx.commit().await.ok()?;
-        Some(user_id.0 as UserId)
+        Some(guid)
     }
 
-    /// Delete a user and its address book
     pub async fn delete_user(&self, uuid: &str) -> Option<()> {
-        let mut tx = self.pool.begin().await.unwrap();
         let user_id = Uuid::parse_str(uuid);
         if user_id.is_err() {
             log::error!("delete user error: {:?}", uuid);
             return None;
         }
         let user_id = user_id.unwrap().as_bytes().to_vec();
-        let res = sqlx::query!(
-            r#"
-            DELETE FROM
-                user
-            WHERE
-                guid = ?;
-            DELETE FROM
-                ab_legacy
-            WHERE
-                user_guid = ?;
-            DELETE FROM
-                ab
-            WHERE
-                owner = ?;
-        "#,
-            user_id,
-            user_id,
-            user_id
-        )
-        .execute(&mut *tx)
-        .await
-        .ok()?
-        .rows_affected();
-        tx.commit().await.ok()?;
-        if res == 0 {
-            return None;
-        }
+
+        sqlx::query("DELETE FROM \"user\" WHERE guid = $1")
+            .bind(&user_id)
+            .execute(&self.pool)
+            .await
+            .ok()?;
+
+        sqlx::query("DELETE FROM ab_legacy WHERE user_guid = $1")
+            .bind(&user_id)
+            .execute(&self.pool)
+            .await
+            .ok();
+
+        sqlx::query("DELETE FROM ab WHERE owner = $1")
+            .bind(&user_id)
+            .execute(&self.pool)
+            .await
+            .ok();
+
         Some(())
     }
 
     pub async fn update_systeminfo(&self, systeminfo: utils::SystemInfo) -> Option<()> {
-        let mut tx = self.pool.begin().await.unwrap();
         let mut systeminfo = systeminfo;
         let uuid = systeminfo.uuid.clone().unwrap();
 
@@ -512,34 +494,33 @@ impl Database {
                 uuid_decoded,
                 String::from_utf8(uuid_decoded.clone())
             );
-            // get old info (if any for keeping ip setted by hbbs)
-            let res = sqlx::query!(
-                r#"SELECT info as "info!: String" FROM peer WHERE uuid = ?"#,
-                uuid_decoded
+            let res = sqlx::query(
+                "SELECT info FROM peer WHERE uuid = $1",
             )
-            .fetch_one(&mut *tx)
+            .bind(&uuid_decoded)
+            .fetch_one(&self.pool)
             .await;
             if res.is_err() {
-                log::debug!("peer select error: {:?}", res);
+                log::debug!("peer select error: {:?}", res.as_ref().err());
                 return None;
             } else {
                 let res = res.unwrap();
+                let info_str: String = res.try_get::<String, _>("info").unwrap_or_default();
                 let old_systeminfo: utils::SystemInfo =
-                    rocket::serde::json::from_str(&res.info).unwrap();
+                    rocket::serde::json::from_str(&info_str).unwrap();
                 systeminfo.ip = old_systeminfo.ip.clone();
             }
             let systeminfo_string = rocket::serde::json::to_string(&systeminfo).unwrap();
             log::debug!("systeminfo_string: {:?}", systeminfo_string);
-            let res = sqlx::query!(
-                r#"UPDATE peer SET info = ? WHERE uuid = ?"#,
-                systeminfo_string,
-                uuid_decoded
+            let res = sqlx::query(
+                "UPDATE peer SET info = $1 WHERE uuid = $2",
             )
-            .execute(&mut *tx)
+            .bind(&systeminfo_string)
+            .bind(&uuid_decoded)
+            .execute(&self.pool)
             .await
             .ok()?
             .rows_affected();
-            tx.commit().await.ok()?;
             if res == 0 {
                 return None;
             } else {
@@ -559,14 +540,14 @@ impl Database {
                 uuid_decoded,
                 String::from_utf8(uuid_decoded.clone())
             );
-            let res = sqlx::query!(
-                r#"UPDATE peer SET last_online = current_timestamp WHERE uuid = ?"#,
-                uuid_decoded
+            let res = sqlx::query(
+                "UPDATE peer SET last_online = current_timestamp WHERE uuid = $1",
             )
+            .bind(&uuid_decoded)
             .execute(&self.pool)
             .await;
             if res.is_err() {
-                log::debug!("update_heartbeat error: {:?}", res);
+                log::debug!("update_heartbeat error: {:?}", res.as_ref().err());
                 return None;
             }
             let res = res.unwrap().rows_affected();
@@ -581,27 +562,12 @@ impl Database {
         None
     }
 
-    /// Get user for oauth2 flow
-    /// if the user does not exist, create it with status=0 and role=0
-    /// if environment variable OAUTH2_CREATE_USER is set to 1, create the user with status=1 and role=0
-    /// if the user exists return its guid
-    ///
-    /// # Arguments
-    /// * `id` - peer id
-    /// * `uuid` - peer uuid
-    ///
-    /// # Returns
-    /// Option<(UserId, name: String,DatabaseUserInfo)>
-    ///
     pub async fn get_user_for_oauth2(
         &self,
         id: String,
         email: String,
         uuid: String,
     ) -> Option<(UserId, String, DatabaseUserInfo)> {
-        let mut conn = DatabaseConnection {
-            conn: self.pool.acquire().await.unwrap(),
-        };
         let status = { env::var("OAUTH2_CREATE_USER").unwrap_or("0".to_string()) == "1" };
         let ab_guid = Uuid::new_v4().as_bytes().to_vec();
         let user_guid = Uuid::new_v4().as_bytes().to_vec();
@@ -614,105 +580,95 @@ impl Database {
             random_password
         );
         let name = format!("{}'s Personal Address Book", id);
-        let res = sqlx::query!(
-            r#"
-            INSERT OR IGNORE INTO user(guid, grp, team, status, role, name, email, password)
-                VALUES (?,
-                    (SELECT guid FROM grp  WHERE name = 'Default'),
-                    (SELECT guid FROM team  WHERE name = 'Default'), ?, 0, ?, ?, ?);
-            INSERT OR IGNORE INTO ab(guid, name, owner, personal, info)
-                VALUES (?,?,?,1,'{}');
-            "#,
-            user_guid,
-            status,
-            id,
-            email,
-            hashed_random_password,
-            ab_guid,
-            name,
-            user_guid
+        let status_val: i32 = if status { 1 } else { 0 };
+
+        let res = sqlx::query(
+            "INSERT INTO \"user\"(guid, grp, team, status, role, name, email, password) \
+             VALUES ($1, \
+             (SELECT guid FROM grp WHERE name = 'Default'), \
+             (SELECT guid FROM team WHERE name = 'Default'), $2, 0, $3, $4, $5) \
+             ON CONFLICT DO NOTHING",
         )
-        .execute(&mut *conn.conn)
+        .bind(&user_guid)
+        .bind(status_val)
+        .bind(&id)
+        .bind(&email)
+        .bind(&hashed_random_password)
+        .execute(&self.pool)
         .await;
         if res.is_err() {
             log::error!(
-                "get_user_for_oauth2 error while creating/getting user: {:?}",
+                "get_user_for_oauth2 error while creating user: {:?}",
                 res
             );
         }
-        let res = sqlx::query!(
-            r#"  
-            SELECT guid, status, role, name FROM user WHERE name = ?;
-            "#,
-            id
+
+        let res2 = sqlx::query(
+            "INSERT INTO ab(guid, name, owner, personal, info) \
+             VALUES ($1, $2, $3, 1, '{}') \
+             ON CONFLICT DO NOTHING",
         )
-        .fetch_one(&mut *conn.conn)
+        .bind(&ab_guid)
+        .bind(&name)
+        .bind(&user_guid)
+        .execute(&self.pool)
+        .await;
+        if res2.is_err() {
+            log::error!(
+                "get_user_for_oauth2 error while creating ab: {:?}",
+                res2
+            );
+        }
+
+        let res = sqlx::query(
+            "SELECT guid, status, role, name FROM \"user\" WHERE name = $1",
+        )
+        .bind(&id)
+        .fetch_one(&self.pool)
         .await;
 
         if res.is_err() {
             log::error!(
                 "get_user_for_oauth2 error while creating/getting user: {:?}",
-                res
+                res.as_ref().err()
             );
             return None;
         }
         let res = res.unwrap();
-        let user_id: UserId = res.guid;
+        let user_id: UserId = res.try_get::<Vec<u8>, _>("guid").unwrap();
         let dbi = DatabaseUserInfo {
-            active: res.status == 1,
-            admin: res.role == 1,
+            active: res.try_get::<i32, _>("status").unwrap_or(0) == 1,
+            admin: res.try_get::<i32, _>("role").unwrap_or(0) == 1,
         };
-        Some((user_id, res.name, dbi))
+        Some((user_id, res.try_get::<String, _>("name").unwrap(), dbi))
     }
 
     pub async fn get_personal_address_book(&self, user_id: UserId) {
-        let mut conn = self.pool.acquire().await.unwrap();
-
-        let _res = sqlx::query!(
-            r#"
-            SELECT
-                guid
-            FROM
-                ab
-            WHERE
-                owner = ?
-                AND personal = 1
-        "#,
-            user_id
+        let _res = sqlx::query(
+            "SELECT guid FROM ab WHERE owner = $1 AND personal = 1",
         )
-        .fetch_one(&mut *conn)
+        .bind(&user_id)
+        .fetch_one(&self.pool)
         .await
         .ok();
     }
 
-    /// Get the personal address book guid for a user
-    /// if the user is inactive (status != 1) return None
     pub async fn get_ab_personal_guid(&self, user_id: UserId) -> Option<String> {
-        let mut conn = self.pool.acquire().await.unwrap();
-
-        let res = sqlx::query!(
-            r#"
-            SELECT
-                a.guid
-            FROM
-                ab as a, user as u
-            WHERE
-                u.guid = ?
-                AND a.personal = 1
-                AND a.owner = u.guid
-                AND u.status = 1
-        "#,
-            user_id
+        let res = sqlx::query(
+            r#"SELECT a.guid FROM ab as a, "user" as u
+               WHERE u.guid = $1 AND a.personal = 1 AND a.owner = u.guid AND u.status = 1"#,
         )
-        .fetch_one(&mut *conn)
+        .bind(&user_id)
+        .fetch_one(&self.pool)
         .await;
         if res.is_err() {
-            log::error!("get_ab_personal_guid error: {:?}", res);
+            log::error!("get_ab_personal_guid error: {:?}", res.as_ref().err());
             return None;
         }
 
         let res = res.unwrap();
-        let guid_u8: Result<[u8; 16], _> = res.guid.try_into();
+        let guid_bytes: Vec<u8> = res.try_get::<Vec<u8>, _>("guid").unwrap();
+        let guid_u8: Result<[u8; 16], _> = guid_bytes.try_into();
         if guid_u8.is_err() {
             log::error!("get_ab_personal_guid error: {:?}", guid_u8);
             return None;
@@ -722,9 +678,7 @@ impl Database {
         Some(guid)
     }
 
-    /// Add a peer to the address book
     pub async fn add_peer_to_ab(&self, ab: &str, ab_peer: AbPeer) -> Option<()> {
-        let mut conn = self.pool.acquire().await.unwrap();
         let ab_guid = Uuid::parse_str(ab);
         if ab_guid.is_err() {
             log::error!("add_peer_to_ab error: {:?}", ab_guid);
@@ -733,68 +687,58 @@ impl Database {
         let ab_guid = ab_guid.unwrap().as_bytes().to_vec();
         let ab_peer_guid = Uuid::new_v4().as_bytes().to_vec();
         let ab_peer_json = rocket::serde::json::to_string(&ab_peer).unwrap();
-        let res = sqlx::query!(
-            r#"
-            -- must be improved !
-            DELETE FROM ab_peer WHERE ab = ? AND id = ?;
-            INSERT OR IGNORE INTO ab_peer (
-                guid,
-                ab,
-                peer,
-                id,
-                note,
-                created_at,
-                info
-                )
-                VALUES (?, ?, (select guid from peer where id = ?), ?, ?, current_timestamp, ?)
-        "#,
-            ab_guid,
-            ab_peer.id,
-            ab_peer_guid,
-            ab_guid,
-            ab_peer.id,
-            ab_peer.id,
-            "",
-            ab_peer_json
+
+        // Delete existing peer with same ab+id first
+        let res = sqlx::query("DELETE FROM ab_peer WHERE ab = $1 AND id = $2")
+            .bind(&ab_guid)
+            .bind(&ab_peer.id)
+            .execute(&self.pool)
+            .await;
+        if res.is_err() {
+            log::error!("add_peer_to_ab delete error: {:?}", res.as_ref().err());
+        }
+
+        let res = sqlx::query(
+            "INSERT INTO ab_peer (guid, ab, peer, id, note, created_at, info) \
+             VALUES ($1, $2, (SELECT guid FROM peer WHERE id = $3), $3, $4, current_timestamp, $5) \
+             ON CONFLICT DO NOTHING",
         )
-        .execute(&mut *conn)
+        .bind(&ab_peer_guid)
+        .bind(&ab_guid)
+        .bind(&ab_peer.id)
+        .bind("")
+        .bind(&ab_peer_json)
+        .execute(&self.pool)
         .await;
         if res.is_err() {
-            log::error!("add_peer_to_ab error: {:?}", res);
+            log::error!("add_peer_to_ab error: {:?}", res.as_ref().err());
             return None;
         }
         Some(())
     }
 
     pub async fn get_peers_from_ab(&self, ab: &str) -> Option<Vec<AbPeer>> {
-        let mut conn = self.pool.acquire().await.unwrap();
         let ab_guid = Uuid::parse_str(ab);
         if ab_guid.is_err() {
             log::error!("get_peers_from_ab error: {:?}", ab_guid);
             return None;
         }
         let ab_guid = ab_guid.unwrap().as_bytes().to_vec();
-        let res = sqlx::query!(
-            r#"
-            SELECT
-                info
-            FROM
-                ab_peer
-            WHERE
-                ab_peer.ab = ?
-        "#,
-            ab_guid
+        let res = sqlx::query(
+            "SELECT info FROM ab_peer WHERE ab_peer.ab = $1",
         )
-        .fetch_all(&mut *conn)
+        .bind(&ab_guid)
+        .fetch_all(&self.pool)
         .await;
         if res.is_err() {
-            log::error!("get_peers_from_ab error: {:?}", res);
+            log::error!("get_peers_from_ab error: {:?}", res.as_ref().err());
             return None;
         }
         let res = res.unwrap();
         let mut ab_peers = Vec::new();
         for row in res {
-            let ab_peer: AbPeer = rocket::serde::json::from_str(&row.info).unwrap();
+            let info: String = row.try_get::<String, _>("info").unwrap_or_default();
+            let ab_peer: AbPeer = rocket::serde::json::from_str(&info).unwrap();
             log::debug!("ab_peer: {:?}", ab_peer);
             ab_peers.push(ab_peer);
         }
@@ -802,120 +746,103 @@ impl Database {
     }
 
     pub async fn delete_peer_from_ab(&self, ab: &str, id: &str) -> Option<()> {
-        let mut conn = self.pool.acquire().await.unwrap();
         let ab_guid = Uuid::parse_str(ab);
         if ab_guid.is_err() {
             log::error!("delete_peer_from_ab error: {:?}", ab_guid);
             return None;
         }
         let ab_guid = ab_guid.unwrap().as_bytes().to_vec();
-        let res = sqlx::query!(
-            r#"
-            DELETE FROM ab_peer WHERE ab = ? AND id = ?
-        "#,
-            ab_guid,
-            id
-        )
-        .execute(&mut *conn)
-        .await;
+        let res = sqlx::query("DELETE FROM ab_peer WHERE ab = $1 AND id = $2")
+            .bind(&ab_guid)
+            .bind(id)
+            .execute(&self.pool)
+            .await;
         if res.is_err() {
-            log::error!("delete_peer_from_ab error: {:?}", res);
+            log::error!("delete_peer_from_ab error: {:?}", res.as_ref().err());
             return None;
         }
         Some(())
     }
 
     pub async fn get_ab_peer(&self, ab: &str, id: &str) -> Option<AbPeer> {
-        let mut conn = self.pool.acquire().await.unwrap();
         let ab_guid = Uuid::parse_str(ab);
         if ab_guid.is_err() {
             log::error!("get_ab_peer error: {:?}", ab_guid);
             return None;
         }
         let ab_guid = ab_guid.unwrap().as_bytes().to_vec();
-        let res = sqlx::query!(
-            r#"
-            SELECT
-                info
-            FROM
-                ab_peer
-            WHERE
-                ab_peer.ab = ? AND ab_peer.id = ?
-        "#,
-            ab_guid,
-            id
+        let res = sqlx::query(
+            "SELECT info FROM ab_peer WHERE ab_peer.ab = $1 AND ab_peer.id = $2",
         )
-        .fetch_one(&mut *conn)
+        .bind(&ab_guid)
+        .bind(id)
+        .fetch_one(&self.pool)
         .await;
         if res.is_err() {
-            log::error!("get_ab_peer error: {:?}", res);
+            log::error!("get_ab_peer error: {:?}", res.as_ref().err());
             return None;
         }
         let res = res.unwrap();
-        let ab_peer: AbPeer = rocket::serde::json::from_str(&res.info).unwrap();
+        let info: String = res.try_get::<String, _>("info").unwrap_or_default();
+        let ab_peer: AbPeer = rocket::serde::json::from_str(&info).unwrap();
         Some(ab_peer)
     }
 
     pub async fn add_tag_to_ab(&self, ab: &str, tag: AbTag) -> Option<()> {
-        let mut conn = self.pool.acquire().await.unwrap();
         let ab_guid = Uuid::parse_str(ab);
         if ab_guid.is_err() {
             log::error!("add_tag_to_ab error: {:?}", ab_guid);
             return None;
         }
         let ab_guid = ab_guid.unwrap().as_bytes().to_vec();
-        let res = sqlx::query!(
-            r#"
-            DELETE FROM ab_tag WHERE ab = ? AND name = ?;
-            INSERT OR IGNORE INTO ab_tag (ab, name, color) VALUES (?, ?, ?)
-        "#,
-            ab_guid,
-            tag.name,
-            ab_guid,
-            tag.name,
-            tag.color
+
+        // Delete existing tag first, then insert
+        let res = sqlx::query("DELETE FROM ab_tag WHERE ab = $1 AND name = $2")
+            .bind(&ab_guid)
+            .bind(&tag.name)
+            .execute(&self.pool)
+            .await;
+        if res.is_err() {
+            log::error!("add_tag_to_ab delete error: {:?}", res.as_ref().err());
+        }
+
+        let color_val = tag.color as i64;
+        let res = sqlx::query(
+            "INSERT INTO ab_tag (ab, name, color) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING",
         )
-        .execute(&mut *conn)
+        .bind(&ab_guid)
+        .bind(&tag.name)
+        .bind(color_val)
+        .execute(&self.pool)
         .await;
         if res.is_err() {
-            log::error!("add_tag_to_ab error: {:?}", res);
+            log::error!("add_tag_to_ab error: {:?}", res.as_ref().err());
             return None;
         }
         Some(())
     }
 
     pub async fn get_ab_tags(&self, ab: &str) -> Option<Vec<AbTag>> {
-        let mut conn = self.pool.acquire().await.unwrap();
         let ab_guid = Uuid::parse_str(ab);
         if ab_guid.is_err() {
             log::error!("get_ab_tags error: {:?}", ab_guid);
             return None;
         }
         let ab_guid = ab_guid.unwrap().as_bytes().to_vec();
-        let res = sqlx::query!(
-            r#"
-            SELECT
-                name,
-                color
-            FROM
-                ab_tag
-            WHERE
-                ab = ?
-        "#,
-            ab_guid
-        )
-        .fetch_all(&mut *conn)
-        .await;
+        let res = sqlx::query("SELECT name, color FROM ab_tag WHERE ab = $1")
+            .bind(&ab_guid)
+            .fetch_all(&self.pool)
+            .await;
         if res.is_err() {
-            log::error!("get_ab_tags error: {:?}", res);
+            log::error!("get_ab_tags error: {:?}", res.as_ref().err());
             return None;
         }
         let res = res.unwrap();
         let mut ab_tags = Vec::new();
         for row in res {
             let ab_tag = AbTag {
-                name: row.name,
-                color: row.color as u32,
+                name: row.try_get::<String, _>("name").unwrap_or_default(),
+                color: row.try_get::<i64, _>("color").unwrap_or(0) as u32,
             };
             ab_tags.push(ab_tag);
         }
@@ -923,89 +850,70 @@ impl Database {
     }
 
     pub async fn get_ab_tag(&self, ab: &str, tag: &str) -> Option<AbTag> {
-        let mut conn = self.pool.acquire().await.unwrap();
         let ab_guid = Uuid::parse_str(ab);
         if ab_guid.is_err() {
             log::error!("get_ab_tag error: {:?}", ab_guid);
             return None;
         }
         let ab_guid = ab_guid.unwrap().as_bytes().to_vec();
-        let res = sqlx::query!(
-            r#"
-            SELECT
-                name,
-                color
-            FROM
-                ab_tag
-            WHERE
-                ab = ?
-                AND name = ?
-        "#,
-            ab_guid,
-            tag
-        )
-        .fetch_all(&mut *conn)
-        .await;
+        let res = sqlx::query("SELECT name, color FROM ab_tag WHERE ab = $1 AND name = $2")
+            .bind(&ab_guid)
+            .bind(tag)
+            .fetch_all(&self.pool)
+            .await;
         if res.is_err() {
-            log::error!("get_ab_tags error: {:?}", res);
+            log::error!("get_ab_tags error: {:?}", res.as_ref().err());
             return None;
         }
         let res = res.unwrap();
-        if res.len() == 0 {
+        if res.is_empty() {
             return None;
         }
         let ab_tag = AbTag {
-            name: res[0].name.clone(),
-            color: res[0].color as u32,
+            name: res[0].try_get::<String, _>("name").unwrap_or_default(),
+            color: res[0].try_get::<i64, _>("color").unwrap_or(0) as u32,
         };
         Some(ab_tag)
     }
 
     pub async fn rename_ab_tag(&self, ab: &str, old_name: &str, tag: AbTag) -> Option<()> {
-        let mut conn = self.pool.acquire().await.unwrap();
         let ab_guid = Uuid::parse_str(ab);
         if ab_guid.is_err() {
             log::error!("rename_ab_tag error: {:?}", ab_guid);
             return None;
         }
         let ab_guid = ab_guid.unwrap().as_bytes().to_vec();
-        let res = sqlx::query!(
-            r#"
-            UPDATE ab_tag SET name = ?, color = ? WHERE ab = ? AND name = ?
-        "#,
-            tag.name,
-            tag.color,
-            ab_guid,
-            old_name
+        let color_val = tag.color as i64;
+        let res = sqlx::query(
+            "UPDATE ab_tag SET name = $1, color = $2 WHERE ab = $3 AND name = $4",
         )
-        .execute(&mut *conn)
+        .bind(&tag.name)
+        .bind(color_val)
+        .bind(&ab_guid)
+        .bind(old_name)
+        .execute(&self.pool)
         .await;
         if res.is_err() {
-            log::error!("rename_ab_tag error: {:?}", res);
+            log::error!("rename_ab_tag error: {:?}", res.as_ref().err());
             return None;
         }
         Some(())
     }
 
     pub async fn delete_tag_from_ab(&self, ab: &str, tag: &str) -> Option<()> {
-        let mut conn = self.pool.acquire().await.unwrap();
         let ab_guid = Uuid::parse_str(ab);
         if ab_guid.is_err() {
             log::error!("delete_tag_from_ab error: {:?}", ab_guid);
             return None;
         }
         let ab_guid = ab_guid.unwrap().as_bytes().to_vec();
-        let res = sqlx::query!(
-            r#"
-            DELETE FROM ab_tag WHERE ab = ? AND name = ?
-        "#,
-            ab_guid,
-            tag
-        )
-        .execute(&mut *conn)
-        .await;
+        let res = sqlx::query("DELETE FROM ab_tag WHERE ab = $1 AND name = $2")
+            .bind(&ab_guid)
+            .bind(tag)
+            .execute(&self.pool)
+            .await;
         if res.is_err() {
-            log::error!("delete_tag_from_ab error: {:?}", res);
+            log::error!("delete_tag_from_ab error: {:?}", res.as_ref().err());
             return None;
         }
         Some(())
@@ -1019,90 +927,74 @@ impl Database {
         is_admin: bool,
         group_name: String,
     ) -> Option<()> {
-        let mut conn = self.pool.acquire().await.unwrap();
         let user_guid = Uuid::new_v4().as_bytes().to_vec();
-        // Create a personal address book name based on the user name
         let ab_name = format!("{}'s Personal Address Book", name);
-        // Check if the group exists
-        let res = sqlx::query!(
-            r#"
-            SELECT
-                guid
-            FROM
-                grp
-            WHERE
-                name = ?
-        "#,
-            group_name
-        )
-        .fetch_all(&mut *conn)
-        .await;
+        let res = sqlx::query("SELECT guid FROM grp WHERE name = $1")
+            .bind(&group_name)
+            .fetch_all(&self.pool)
+            .await;
         if res.is_err() {
-            log::error!("add_user error: {:?}", res);
+            log::error!("add_user error: {:?}", res.as_ref().err());
             return None;
         }
         let res = res.unwrap();
-        if res.len() == 0 {
+        if res.is_empty() {
             return None;
         }
-        let group_guid: Vec<u8> = res[0].guid.clone();
+        let group_guid: Vec<u8> = res[0].try_get::<Vec<u8>, _>("guid").unwrap();
         let ab_guid = Uuid::new_v4().as_bytes().to_vec();
         let password_hashed = UserPasswordInfo::hash_password(password.as_str());
-        let res = sqlx::query!(
-            r#"
-            INSERT OR IGNORE INTO user(guid, grp, team, status, role, name, password, email)
-                VALUES (?,
-                    ?,
-                    (SELECT guid FROM team  WHERE name = 'Default'), 1, ?, ?, ?, ?);
-            INSERT OR IGNORE INTO ab(guid, name, owner, personal, info)
-                VALUES (?,?,?,1,'{}');
-            "#,
-            user_guid,
-            group_guid,
-            is_admin,
-            name,
-            password_hashed,
-            email,
-            ab_guid,
-            ab_name,
-            user_guid
+        let role: i32 = if is_admin { 1 } else { 0 };
+
+        let res = sqlx::query(
+            "INSERT INTO \"user\"(guid, grp, team, status, role, name, password, email) \
+             VALUES ($1, $2, (SELECT guid FROM team WHERE name = 'Default'), 1, $3, $4, $5, $6) \
+             ON CONFLICT DO NOTHING",
         )
-        .execute(&mut *conn)
+        .bind(&user_guid)
+        .bind(&group_guid)
+        .bind(role)
+        .bind(&name)
+        .bind(&password_hashed)
+        .bind(&email)
+        .execute(&self.pool)
         .await;
         if res.is_err() {
-            log::error!("add_user error: {:?}", res);
+            log::error!("add_user error: {:?}", res.as_ref().err());
+            return None;
+        }
+
+        let res = sqlx::query(
+            "INSERT INTO ab(guid, name, owner, personal, info) \
+             VALUES ($1, $2, $3, 1, '{}') ON CONFLICT DO NOTHING",
+        )
+        .bind(&ab_guid)
+        .bind(&ab_name)
+        .bind(&user_guid)
+        .execute(&self.pool)
+        .await;
+        if res.is_err() {
+            log::error!("add_user ab error: {:?}", res.as_ref().err());
             return None;
         }
         Some(())
     }
 
-    /// Change user status
-    /// if status is 1, the user is active
-    /// if status is 0, the user is inactive
     pub async fn user_change_status(&self, uuid: &str, status: u32) -> Option<()> {
-        let mut conn = self.pool.acquire().await.unwrap();
         let guid = Uuid::parse_str(uuid);
         if guid.is_err() {
             log::error!("change_user_status error: {:?}", guid);
             return None;
         }
         let guid = guid.unwrap().as_bytes().to_vec();
-        let res = sqlx::query!(
-            r#"
-            UPDATE
-                user
-            SET
-                status = ?
-            WHERE
-                guid = ?
-        "#,
-            status,
-            guid
-        )
-        .execute(&mut *conn)
-        .await;
+        let status_val = status as i32;
+        let res = sqlx::query("UPDATE \"user\" SET status = $1 WHERE guid = $2")
+            .bind(status_val)
+            .bind(&guid)
+            .execute(&self.pool)
+            .await;
         if res.is_err() {
-            log::error!("change_user_status error: {:?}", res);
+            log::error!("change_user_status error: {:?}", res.as_ref().err());
             return None;
         }
         Some(())
@@ -1115,74 +1007,66 @@ impl Database {
         current: u32,
         page_size: u32,
     ) -> Option<Vec<UserListResponse>> {
-        let mut conn = self.pool.acquire().await.unwrap();
-        let mut email_filter = "%";
-        let mut name_filter = "%";
-        if email.is_some() {
-            email_filter = email.unwrap();
-        }
-        if name.is_some() {
-            name_filter = name.unwrap();
-        }
-        let current = {
-            if current < 1 {
-                1
-            } else {
-                current
-            }
-        };
+        let email_filter = email.unwrap_or("%").to_string();
+        let name_filter = name.unwrap_or("%").to_string();
+        let current = if current < 1 { 1 } else { current };
         let offset = ((current - 1) * page_size) as i32;
         let page_size = page_size as i32;
 
-        let res = sqlx::query!(
-            r#"
-            SELECT
-                user.guid as id,
-                user.status as "active!: i32",
-                user.role as "admin!: bool",
-                user.name as username,
-                user.email as email,
-                user.note as note,
+        let res = sqlx::query(
+            r#"SELECT
+                "user".guid as id,
+                "user".status,
+                "user".role,
+                "user".name as username,
+                "user".email as email,
+                "user".note as note,
                 grp.name as group_name
             FROM
-                user
+                "user"
                 LEFT JOIN grp
-                    ON user.grp = grp.guid
+                    ON "user".grp = grp.guid
             WHERE
-                user.name LIKE ?
-                AND user.email LIKE ?
-            LIMIT ?
-            OFFSET ?
-        "#,
-            name_filter,
-            email_filter,
-            page_size,
-            offset
+                "user".name LIKE $1
+                AND "user".email LIKE $2
+            LIMIT $3
+            OFFSET $4"#,
         )
-        .fetch_all(&mut *conn)
+        .bind(&name_filter)
+        .bind(&email_filter)
+        .bind(page_size)
+        .bind(offset)
+        .fetch_all(&self.pool)
         .await;
         if res.is_err() {
-            log::error!("get_all_users error: {:?}", res);
+            log::error!("get_all_users error: {:?}", res.as_ref().err());
             return None;
         }
         let res = res.unwrap();
         let mut users: Vec<UserListResponse> = Vec::new();
         for row in res {
-            let guid_u8: Result<[u8; 16], _> = row.id.try_into();
+            let id_bytes: Vec<u8> = row.try_get::<Vec<u8>, _>("id").unwrap_or_default();
+            let guid_u8: Result<[u8; 16], _> = id_bytes.try_into();
             if guid_u8.is_err() {
-                log::error!("get_ab_personal_guid error: {:?}", guid_u8);
+                log::error!("get_all_users guid error: {:?}", guid_u8);
                 return None;
             }
             let guid_u8: [u8; 16] = guid_u8.unwrap();
             let guid = Uuid::from_bytes(guid_u8).to_string();
             let user = UserListResponse {
-                guid: guid,
-                name: row.username,
-                email: row.email.unwrap_or("".to_string()),
-                note: row.note,
-                status: row.active,
-                is_admin: row.admin,
-                group_name: row.group_name.unwrap_or("Defaut".to_string()),
+                guid,
+                name: row.try_get::<String, _>("username").unwrap_or_default(),
+                email: row
+                    .try_get::<Option<String>, _>("email")
+                    .unwrap_or(None)
+                    .unwrap_or_default(),
+                note: row.try_get::<Option<String>, _>("note").unwrap_or(None),
+                status: row.try_get::<i32, _>("status").unwrap_or(0),
+                is_admin: row.try_get::<i32, _>("role").unwrap_or(0) != 0,
+                group_name: row
+                    .try_get::<Option<String>, _>("group_name")
+                    .unwrap_or(None)
+                    .unwrap_or_else(|| "Defaut".to_string()),
             };
             users.push(user);
         }
@@ -1194,94 +1078,102 @@ impl Database {
         user_id: UserId,
         user_parameters: UpdateUserRequest,
     ) -> Option<()> {
-        let mut conn = self.pool.acquire().await.unwrap();
-        let mut query = "UPDATE user SET ".to_string();
-        let mut query_params = Vec::new();
-        if user_parameters.name.is_some() && user_parameters.name.clone().unwrap().len() > 0 {
-            query.push_str("name = ?, ");
+        let mut set_clauses = Vec::new();
+        let mut query_params: Vec<String> = Vec::new();
+        let mut param_idx = 1u32;
+
+        if user_parameters.name.is_some() && !user_parameters.name.as_ref().unwrap().is_empty() {
+            set_clauses.push(format!("name = ${}", param_idx));
             query_params.push(user_parameters.name.unwrap());
+            param_idx += 1;
         }
-        if user_parameters.email.is_some() && user_parameters.email.clone().unwrap().len() > 0 {
-            query.push_str("email = ?, ");
+        if user_parameters.email.is_some() && !user_parameters.email.as_ref().unwrap().is_empty() {
+            set_clauses.push(format!("email = ${}", param_idx));
             query_params.push(user_parameters.email.unwrap());
+            param_idx += 1;
         }
-        if user_parameters.note.is_some() && user_parameters.note.clone().unwrap().len() > 0 {
-            query.push_str("note = ?, ");
+        if user_parameters.note.is_some() && !user_parameters.note.as_ref().unwrap().is_empty() {
+            set_clauses.push(format!("note = ${}", param_idx));
             query_params.push(user_parameters.note.unwrap());
+            param_idx += 1;
         }
         if user_parameters.password.is_some()
             && user_parameters.confirm_password.is_some()
-            && user_parameters.password.clone().unwrap().len() > 0
-            && user_parameters.confirm_password.clone().unwrap().len() > 0
+            && !user_parameters.password.as_ref().unwrap().is_empty()
+            && !user_parameters.confirm_password.as_ref().unwrap().is_empty()
         {
             let password = user_parameters.password.unwrap();
             let confirm_password = user_parameters.confirm_password.unwrap();
             if password == confirm_password {
                 let password_hashed = UserPasswordInfo::hash_password(password.as_str());
-                query.push_str("password = ?, ");
+                set_clauses.push(format!("password = ${}", param_idx));
                 query_params.push(password_hashed);
+                param_idx += 1;
             }
         }
         if let Some(status) = user_parameters.status {
-            query.push_str("status = ?, ");
+            set_clauses.push(format!("status = CAST(${} AS integer)", param_idx));
             query_params.push(status.to_string());
+            param_idx += 1;
         }
         if let Some(is_admin) = user_parameters.is_admin {
-            query.push_str("role = ?, ");
+            set_clauses.push(format!("role = CAST(${} AS integer)", param_idx));
             query_params.push(if is_admin { "1" } else { "0" }.to_string());
+            param_idx += 1;
         }
-        query.pop();
-        query.pop();
 
-        query.push_str(" WHERE guid = ?");
+        if set_clauses.is_empty() {
+            return Some(());
+        }
+
+        let query = format!(
+            "UPDATE \"user\" SET {} WHERE guid = ${}",
+            set_clauses.join(", "),
+            param_idx
+        );
 
         log::debug!("query: {:?}", query);
         let mut res = sqlx::query(&query);
         for param in query_params {
             res = res.bind(param);
         }
-        let res = res.bind(user_id).execute(&mut *conn).await;
+        let res = res.bind(user_id).execute(&self.pool).await;
         if res.is_err() {
-            log::error!("user_update error: {:?}", res);
+            log::error!("user_update error: {:?}", res.as_ref().err());
             return None;
         }
         Some(())
     }
 
     pub async fn get_all_peers(&self) -> Option<Vec<Peer>> {
-        let mut conn = self.pool.acquire().await.unwrap();
-        let res = sqlx::query!(
-            r#"
-            SELECT
-                guid,
-                id,
-                uuid,
-                status,
-                info as "info!: String",
-                last_online  as "last_online!: String"
-            FROM
-                peer
-        "#
+        let res = sqlx::query(
+            "SELECT guid, id, uuid, status, info, last_online FROM peer",
         )
-        .fetch_all(&mut *conn)
+        .fetch_all(&self.pool)
         .await
         .ok()?;
 
         let mut peers: Vec<Peer> = Vec::new();
         for row in res {
-            let uuid = guid_into_uuid(row.guid).unwrap_or("".to_string());
-            let peer_info = serde_json::from_str::<utils::PeerInfo>(&row.info);
+            let guid_bytes: Vec<u8> = row.try_get::<Vec<u8>, _>("guid").unwrap_or_default();
+            let uuid = guid_into_uuid(guid_bytes).unwrap_or("".to_string());
+            let info_str: String = row.try_get::<String, _>("info").unwrap_or("{}".to_string());
+            let peer_info = serde_json::from_str::<utils::PeerInfo>(&info_str);
             if peer_info.is_err() {
                 log::error!("get_all_peers error: {:?}", peer_info);
                 return None;
             }
             let peer_info = peer_info.unwrap();
+            let last_online: String = row
+                .try_get::<String, _>("last_online")
+                .unwrap_or_default();
+            let status: i32 = row.try_get::<i32, _>("status").unwrap_or(0);
             peers.push(Peer {
-                id: row.id,
+                id: row.try_get::<String, _>("id").unwrap_or_default(),
                 guid: uuid,
                 info: peer_info,
-                last_online: row.last_online.into(),
-                status: row.status as i32,
+                last_online: last_online.into(),
+                status: status,
                 strategy_name: "-".to_string(),
             });
         }
@@ -1289,86 +1181,73 @@ impl Database {
     }
 
     pub async fn get_groups(&self, offset: u32, page_size: u32) -> Option<Vec<Group>> {
-        let mut conn = self.pool.acquire().await.unwrap();
-        let res = sqlx::query!(
-            r#"
-            SELECT
-                guid,
-                team,
-                name,
-                note,
-                created_at as "created_at!: String",
-                info as "info!: String"
-            FROM
-                grp
-            LIMIT ?
-            OFFSET ?
-        "#,
-            page_size,
-            offset
+        let res = sqlx::query(
+            "SELECT guid, team, name, note, created_at, info FROM grp LIMIT $1 OFFSET $2",
         )
-        .fetch_all(&mut *conn)
-        .await
-        .ok()?;
+        .bind(page_size as i32)
+        .bind(offset as i32)
+        .fetch_all(&self.pool)
+        .await;
+        if res.is_err() {
+            log::error!("get_groups error: {:?}", res.as_ref().err());
+            return None;
+        }
+        let res = res.unwrap();
         let mut groups: Vec<Group> = Vec::new();
-        for row in res {
-            let guid = guid_into_uuid(row.guid).unwrap_or("".to_string());
-            let team = guid_into_uuid(row.team).unwrap_or("".to_string());
+        for row in &res {
+            let guid_bytes: Vec<u8> = row.try_get::<Vec<u8>, _>("guid").unwrap_or_default();
+            let team_bytes: Vec<u8> = row.try_get::<Vec<u8>, _>("team").unwrap_or_default();
+            let guid = guid_into_uuid(guid_bytes).unwrap_or("".to_string());
+            let team = guid_into_uuid(team_bytes).unwrap_or("".to_string());
             groups.push(Group {
-                guid: guid,
-                name: row.name,
-                team: team,
-                note: row.note,
-                created_at: row.created_at.into(),
+                guid,
+                name: row.try_get::<String, _>("name").unwrap_or_default(),
+                team,
+                note: row.try_get::<Option<String>, _>("note").unwrap_or(None),
+                created_at: row
+                    .try_get::<String, _>("created_at")
+                    .unwrap_or_default()
+                    .into(),
                 access_to: Vec::<String>::new(),
                 accessed_from: Vec::<String>::new(),
-                info: row.info,
+                info: row.try_get::<String, _>("info").unwrap_or("{}".to_string()),
             });
         }
         Some(groups)
     }
 
-    /// Delete a shared address book, all rules associated with it and all peers associated with it
-    ///
-    /// # Arguments
-    ///
-    /// * `guid` - address book uuid in string format
-    ///
-    /// # Returns
-    ///
-    /// Option<()>
     pub async fn delete_shared_address_book(&self, guid: &str) -> Option<()> {
-        let mut conn = self.pool.acquire().await.unwrap();
         let ab_guid = Uuid::parse_str(guid);
         if ab_guid.is_err() {
             log::error!("delete_ab error: {:?}", ab_guid);
             return None;
         }
         let ab_guid = ab_guid.unwrap().as_bytes().to_vec();
-        let res = sqlx::query!(
-            r#"
-            BEGIN;
-            DELETE FROM ab_peer WHERE ab = ?;
-            DELETE FROM ab_rule WHERE ab = ?;
-            DELETE FROM ab WHERE guid = ?;
-            COMMIT;
-            "#,
-            ab_guid,ab_guid,ab_guid
-        )
-        .execute(&mut *conn)
-        .await;
+
+        sqlx::query("DELETE FROM ab_peer WHERE ab = $1")
+            .bind(&ab_guid)
+            .execute(&self.pool)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM ab_rule WHERE ab = $1")
+            .bind(&ab_guid)
+            .execute(&self.pool)
+            .await
+            .ok();
+        let res = sqlx::query("DELETE FROM ab WHERE guid = $1")
+            .bind(&ab_guid)
+            .execute(&self.pool)
+            .await;
         if res.is_err() {
-            log::error!("delete_ab error: {:?}", res);
+            log::error!("delete_ab error: {:?}", res.as_ref().err());
             return None;
         }
         Some(())
     }
 
     pub async fn get_shared_address_books(&self, user_id: UserId) -> Option<Vec<AddressBook>> {
-        let mut conn = self.pool.acquire().await.unwrap();
-        let res = sqlx::query!(
-            r#"
-            SELECT
+        let res = sqlx::query(
+            r#"SELECT
                 ab.guid,
                 ab.name,
                 ab.owner,
@@ -1378,25 +1257,25 @@ impl Database {
             JOIN
                 (SELECT ab, MAX(rule) as rule
                 FROM ab_rule
-                WHERE user = ? OR grp IN (SELECT grp FROM user WHERE guid = ?)
+                WHERE "user" = $1 OR grp IN (SELECT grp FROM "user" WHERE guid = $1)
                 GROUP BY ab) as MaxRule
             ON ab.guid = MaxRule.ab
             WHERE
-                personal = 0
-        "#,
-            user_id,
-            user_id
+                personal = 0"#,
         )
-        .fetch_all(&mut *conn)
+        .bind(&user_id)
+        .fetch_all(&self.pool)
         .await
         .ok()?;
         let mut address_books: Vec<AddressBook> = Vec::new();
         for row in res {
-            let access_level = row.rule as u32;
+            let guid_bytes: Vec<u8> = row.try_get::<Vec<u8>, _>("guid").unwrap_or_default();
+            let owner_bytes: Vec<u8> = row.try_get::<Vec<u8>, _>("owner").unwrap_or_default();
+            let access_level = row.try_get::<i64, _>("rule").unwrap_or(0) as u32;
             address_books.push(AddressBook {
-                ab: guid_into_uuid(row.guid).unwrap_or("".to_string()),
-                name: Some(row.name),
-                owner: Some(row.owner),
+                ab: guid_into_uuid(guid_bytes).unwrap_or("".to_string()),
+                name: Some(row.try_get::<String, _>("name").unwrap_or_default()),
+                owner: Some(owner_bytes),
                 rule: Some(access_level),
                 ..Default::default()
             });
@@ -1404,17 +1283,20 @@ impl Database {
         Some(address_books)
     }
 
-    pub async fn get_ab_rules(&self, offset: u32, page_size: u32, ab: &str) -> Option<Vec<AbRule>> {
-        let mut conn = self.pool.acquire().await.unwrap();
+    pub async fn get_ab_rules(
+        &self,
+        _offset: u32,
+        _page_size: u32,
+        ab: &str,
+    ) -> Option<Vec<AbRule>> {
         let ab_guid = Uuid::parse_str(ab);
         if ab_guid.is_err() {
             log::error!("get_ab_rules error: {:?}", ab_guid);
             return None;
         }
         let ab_guid = ab_guid.unwrap().as_bytes().to_vec();
-        let res = sqlx::query!(
-            r#"
-            SELECT
+        let res = sqlx::query(
+            r#"SELECT
                 r.guid,
                 u.name as username,
                 g.name as groupname,
@@ -1422,30 +1304,31 @@ impl Database {
             FROM
                 ab_rule r
             LEFT JOIN
-                user u ON u.guid = r.user
+                "user" u ON u.guid = r."user"
             LEFT JOIN
                 grp g ON g.guid = r.grp
             WHERE
-                ab = ?
-        "#,
-            ab_guid
+                ab = $1"#,
         )
-        .fetch_all(&mut *conn)
+        .bind(&ab_guid)
+        .fetch_all(&self.pool)
         .await;
         if res.is_err() {
-            log::error!("get_ab_rules error: {:?}", res);
+            log::error!("get_ab_rules error: {:?}", res.as_ref().err());
             return None;
         }
         let res = res.unwrap();
         let mut ab_rules = Vec::new();
         for row in res {
-            let uuid = guid_into_uuid(row.guid).unwrap_or("".to_string());
-            let user = row.username;
-            let group = row.groupname;
+            let guid_bytes: Vec<u8> = row.try_get::<Vec<u8>, _>("guid").unwrap_or_default();
+            let uuid = guid_into_uuid(guid_bytes).unwrap_or("".to_string());
+            let user: Option<String> = row.try_get::<Option<String>, _>("username").unwrap_or(None);
+            let group: Option<String> =
+                row.try_get::<Option<String>, _>("groupname").unwrap_or(None);
             let ab_rule = AbRule {
-                user: Some(user),
-                group: Some(group),
-                rule: row.rule as u32,
+                user,
+                group,
+                rule: row.try_get::<i32, _>("rule").unwrap_or(0) as u32,
                 guid: uuid,
             };
             ab_rules.push(ab_rule);
@@ -1454,30 +1337,24 @@ impl Database {
     }
 
     pub async fn delete_ab_rule(&self, rule: &str) -> Option<()> {
-        let mut conn = self.pool.acquire().await.unwrap();
         let rule_guid = Uuid::parse_str(rule);
         if rule_guid.is_err() {
             log::error!("delete_ab_rule error: {:?}", rule_guid);
             return None;
         }
         let rule_guid = rule_guid.unwrap().as_bytes().to_vec();
-        let res = sqlx::query!(
-            r#"
-            DELETE FROM ab_rule WHERE guid = ?
-        "#,
-            rule_guid
-        )
-        .execute(&mut *conn)
-        .await;
+        let res = sqlx::query("DELETE FROM ab_rule WHERE guid = $1")
+            .bind(&rule_guid)
+            .execute(&self.pool)
+            .await;
         if res.is_err() {
-            log::error!("delete_ab_rule error: {:?}", res);
+            log::error!("delete_ab_rule error: {:?}", res.as_ref().err());
             return None;
         }
         Some(())
     }
 
     pub async fn add_ab_rule(&self, rule: AbRule) -> Option<()> {
-        let mut conn = self.pool.acquire().await.unwrap();
         let rule_guid = Uuid::new_v4().as_bytes().to_vec();
         let ab_guid = Uuid::parse_str(&rule.guid);
         if ab_guid.is_err() {
@@ -1507,28 +1384,26 @@ impl Database {
             None
         };
 
-        let res = sqlx::query!(
-            r#"
-            INSERT OR IGNORE INTO ab_rule (guid, ab, user, grp, rule)
-                VALUES (?, ?, ?, ?, ?)
-        "#,
-            rule_guid,
-            ab_guid,
-            user_guid,
-            group_guid,
-            rule.rule
+        let rule_val = rule.rule as i32;
+        let res = sqlx::query(
+            "INSERT INTO ab_rule (guid, ab, \"user\", grp, rule) \
+             VALUES ($1, $2, $3, $4, $5) ON CONFLICT DO NOTHING",
         )
-        .execute(&mut *conn)
+        .bind(&rule_guid)
+        .bind(&ab_guid)
+        .bind(&user_guid)
+        .bind(&group_guid)
+        .bind(rule_val)
+        .execute(&self.pool)
         .await;
         if res.is_err() {
-            log::error!("add_ab_rule error: {:?}", res);
+            log::error!("add_ab_rule error: {:?}", res.as_ref().err());
             return None;
         }
         Some(())
     }
 
     pub async fn get_peers_count(&self, platform: Platform) -> u32 {
-        let mut conn = self.pool.acquire().await.unwrap();
         let filter = match platform {
             Platform::Windows => "windows%",
             Platform::Linux => "linux%",
@@ -1537,164 +1412,126 @@ impl Database {
             Platform::All => "%",
             _ => "unknown%",
         };
-        let res = sqlx::query!(
-            r#"
-            SELECT
-                COUNT(*) as count
-            FROM
-                peer
-            WHERE
-                json_extract(info,'$.os') like ?
-        "#,
-            filter
-        )
-        .fetch_one(&mut *conn)
-        .await
-        .ok();
+
+        let sql = match self.backend {
+            Backend::Sqlite => {
+                "SELECT COUNT(*) as count FROM peer WHERE json_extract(info,'$.os') LIKE $1"
+                    .to_string()
+            }
+            Backend::Postgres => {
+                "SELECT COUNT(*) as count FROM peer WHERE info::json->>'os' LIKE $1".to_string()
+            }
+        };
+
+        let res = sqlx::query(&sql)
+            .bind(filter)
+            .fetch_one(&self.pool)
+            .await
+            .ok();
         if res.is_none() {
             return 0;
         }
         let res = res.unwrap();
-        res.count as u32
+        res.try_get::<i64, _>("count").unwrap_or(0) as u32
     }
 
     pub async fn get_cpus_count(&self) -> Vec<CpuCount> {
-        let mut conn = self.pool.acquire().await.unwrap();
-        // for avoiding compiltion error you can use the following query it is included in the build.rs
-        // INSERT OR IGNORE INTO peer (guid, id, uuid, pk, created_at, "user", status, note, region, strategy, info, last_online) VALUES
-        //     (x'95CC7775BA37481DAD7214A4F6CE5A94', 'TESTUSER', randomblob(16), randomblob(16), '1901-01-01 12:00:00', randomblob(16), 0, '', NULL, randomblob(16), '{}', '1901-01-01 12:00:00');
-        // Note: that the build.rs will not remove the peer from the database
-        // for removing the peer from the database you can use the following query
-        // DELETE FROM peer WHERE guid = x'95CC7775BA37481DAD7214A4F6CE5A94';
-        let res = sqlx::query!(
-            r#"
-            SELECT 
-                COALESCE(trim(json_extract(info,'$.cpu')),"unknown") as cpu, 
-                COUNT(*) AS machine_count
-            FROM 
-                peer 
-            GROUP BY 
-                cpu;
-        "#
-        )
-        .fetch_all(&mut *conn)
-        .await
-        .ok();
+        let sql = match self.backend {
+            Backend::Sqlite => {
+                "SELECT COALESCE(trim(json_extract(info,'$.cpu')),'unknown') as cpu, \
+                 COUNT(*) AS machine_count FROM peer GROUP BY cpu"
+                    .to_string()
+            }
+            Backend::Postgres => {
+                "SELECT COALESCE(trim(info::json->>'cpu'),'unknown') as cpu, \
+                 COUNT(*) AS machine_count FROM peer GROUP BY cpu"
+                    .to_string()
+            }
+        };
+
+        let res = sqlx::query(&sql).fetch_all(&self.pool).await.ok();
         if res.is_none() {
             return Vec::new();
         }
         let res = res.unwrap();
         let mut cpu_counts = Vec::new();
         for row in res {
-            let cpu = row.cpu.unwrap_or_else(|| "unknown".to_string());
-            let total = row.machine_count.unwrap_or(0) as u32;
+            let cpu = row
+                .try_get::<String, _>("cpu")
+                .unwrap_or_else(|_| "unknown".to_string());
+            let total = row.try_get::<i64, _>("machine_count").unwrap_or(0) as u32;
             cpu_counts.push(CpuCount { cpu, total });
         }
         cpu_counts
     }
 
-    /// Get a group given its guid
-    ///
-    /// # Arguments
-    ///
-    /// * `guid` - group guid in string format
-    ///
-    /// # Returns
-    ///
-    /// Option<Group>
     pub async fn get_group(&self, guid: &str) -> Option<Group> {
-        let mut conn = self.pool.acquire().await.unwrap();
         let group_guid = Uuid::parse_str(guid);
         if group_guid.is_err() {
             log::error!("get_group error: {:?}", group_guid);
             return None;
         }
         let group_guid = group_guid.unwrap().as_bytes().to_vec();
-        let res = sqlx::query!(
-            r#"
-            SELECT
-                guid,
-                team,
-                name,
-                note,
-                created_at as "created_at!: String",
-                info as "info!: String"
-            FROM
-                grp
-            WHERE
-                guid = ?
-        "#,
-            group_guid
+        let res = sqlx::query(
+            "SELECT guid, team, name, note, created_at, info FROM grp WHERE guid = $1",
         )
-        .fetch_one(&mut *conn)
+        .bind(&group_guid)
+        .fetch_one(&self.pool)
         .await;
         if res.is_err() {
-            log::error!("get_group error: {:?}", res);
+            log::error!("get_group error: {:?}", res.as_ref().err());
             return None;
         }
         let res = res.unwrap();
-        let guid = guid_into_uuid(res.guid).unwrap_or("".to_string());
-        let team = guid_into_uuid(res.team).unwrap_or("".to_string());
+        let guid_bytes: Vec<u8> = res.try_get::<Vec<u8>, _>("guid").unwrap_or_default();
+        let team_bytes: Vec<u8> = res.try_get::<Vec<u8>, _>("team").unwrap_or_default();
+        let guid = guid_into_uuid(guid_bytes).unwrap_or("".to_string());
+        let team = guid_into_uuid(team_bytes).unwrap_or("".to_string());
         Some(Group {
-            guid: guid,
-            name: res.name,
-            team: team,
-            note: res.note,
-            created_at: res.created_at.into(),
+            guid,
+            name: res.try_get::<String, _>("name").unwrap_or_default(),
+            team,
+            note: res.try_get::<Option<String>, _>("note").unwrap_or(None),
+            created_at: res
+                .try_get::<String, _>("created_at")
+                .unwrap_or_default()
+                .into(),
             access_to: Vec::<String>::new(),
             accessed_from: Vec::<String>::new(),
-            info: res.info,
+            info: res
+                .try_get::<String, _>("info")
+                .unwrap_or("{}".to_string()),
         })
     }
 
-    /// Create a new group
-    ///
-    /// # Arguments
-    ///
-    /// * `name` - group name
-    /// * `team` - team name ( must exist in the database )
-    /// * `note` - group note
-    ///
-    /// # Returns
-    ///
-    /// Option<()>
     pub async fn create_group(&self, name: &str, team: &str, note: &str) -> Option<()> {
-        let mut conn = self.pool.acquire().await.unwrap();
         let group_guid = Uuid::new_v4().as_bytes().to_vec();
 
-        let res = sqlx::query!(
-            r#"
-            INSERT OR IGNORE INTO grp(guid, team, name, note, created_at, info)
-                VALUES (?, (SELECT guid FROM team  WHERE name = ?) , ?, ?, current_timestamp, '{}')
-        "#,
-            group_guid,
-            team,
-            name,
-            note
+        let res = sqlx::query(
+            "INSERT INTO grp(guid, team, name, note, created_at, info) \
+             VALUES ($1, (SELECT guid FROM team WHERE name = $2), $3, $4, current_timestamp, '{}') \
+             ON CONFLICT DO NOTHING",
         )
-        .execute(&mut *conn)
+        .bind(&group_guid)
+        .bind(team)
+        .bind(name)
+        .bind(note)
+        .execute(&self.pool)
         .await;
         if res.is_err() {
-            log::error!("create_group error: {:?}", res);
+            log::error!("create_group error: {:?}", res.as_ref().err());
             return None;
         }
         Some(())
     }
 
-    /// Update a group
-    ///
-    /// # Arguments
-    ///
-    /// * `guid` - uuid of the group in string format
-    /// * `name` - group name
-    /// * `team` - team name ( must exist in the database )
-    /// * `note` - group note
-    ///
-    /// # Returns
-    ///
-    /// Option<()>
-    pub async fn update_group(&self, guid: &str, name: &str, team: &str, note: &str) -> Option<()> {
-        let mut conn = self.pool.acquire().await.unwrap();
+    pub async fn update_group(
+        &self,
+        guid: &str,
+        name: &str,
+        team: &str,
+        note: &str,
+    ) -> Option<()> {
         let group_guid = Uuid::parse_str(guid);
         if group_guid.is_err() {
             log::error!("update_group error: {:?}", group_guid);
@@ -1702,36 +1539,24 @@ impl Database {
         }
         let group_guid = group_guid.unwrap().as_bytes().to_vec();
 
-        let res = sqlx::query!(
-            r#"
-            UPDATE grp SET team = (SELECT guid FROM team  WHERE name = ?), name = ?, note = ?, created_at = current_timestamp
-                WHERE guid = ?
-        "#,
-            team,
-            name,
-            note,
-            group_guid
+        let res = sqlx::query(
+            "UPDATE grp SET team = (SELECT guid FROM team WHERE name = $1), \
+             name = $2, note = $3, created_at = current_timestamp WHERE guid = $4",
         )
-        .execute(&mut *conn)
+        .bind(team)
+        .bind(name)
+        .bind(note)
+        .bind(&group_guid)
+        .execute(&self.pool)
         .await;
         if res.is_err() {
-            log::error!("update_group error: {:?}", res);
+            log::error!("update_group error: {:?}", res.as_ref().err());
             return None;
         }
         Some(())
     }
 
-    /// Delete a group
-    ///
-    /// # Arguments
-    ///
-    /// * `guid` - uuid of the group in string format
-    ///
-    /// # Returns
-    ///
-    /// Option<()>
     pub async fn delete_group(&self, guid: &str) -> Option<()> {
-        let mut conn = self.pool.acquire().await.unwrap();
         let group_guid = Uuid::parse_str(guid);
         if group_guid.is_err() {
             log::error!("delete_group error: {:?}", group_guid);
@@ -1739,33 +1564,18 @@ impl Database {
         }
         let group_guid = group_guid.unwrap().as_bytes().to_vec();
 
-        let res = sqlx::query!(
-            r#"
-            DELETE FROM grp WHERE guid = ?
-        "#,
-            group_guid
-        )
-        .execute(&mut *conn)
-        .await;
+        let res = sqlx::query("DELETE FROM grp WHERE guid = $1")
+            .bind(&group_guid)
+            .execute(&self.pool)
+            .await;
         if res.is_err() {
-            log::error!("delete_group error: {:?}", res);
+            log::error!("delete_group error: {:?}", res.as_ref().err());
             return None;
         }
         Some(())
     }
 
-    /// Create a shared address book for a group with one default rule for its owner
-    ///
-    /// # Arguments
-    ///
-    /// * `name` - address book name
-    /// * `owner` - group owner uuid in string format
-    ///
-    /// # Returns
-    ///
-    /// Option<String> - address book uuid
     pub async fn add_shared_address_book(&self, name: &str, owner: &str) -> Option<String> {
-        let mut conn = self.pool.acquire().await.unwrap();
         let ab_guid = Uuid::new_v4().as_bytes().to_vec();
         let rule_guid = Uuid::new_v4().as_bytes().to_vec();
         let owner_guid = Uuid::parse_str(owner);
@@ -1775,44 +1585,38 @@ impl Database {
         }
         let owner_guid = owner_guid.unwrap().as_bytes().to_vec();
 
-        let res = sqlx::query!(
-            r#"
-            BEGIN;
-            INSERT OR IGNORE INTO ab(guid, name, owner, personal, info)
-                VALUES (?, ?, ?, 0, '{}');
-            INSERT OR IGNORE INTO ab_rule(guid,ab,user,grp,rule) VALUES(?,?,?,NULL,3);
-            COMMIT;
-        "#,
-            ab_guid,
-            name,
-            owner_guid,
-            rule_guid,
-            ab_guid,
-            owner_guid
+        let res = sqlx::query(
+            "INSERT INTO ab(guid, name, owner, personal, info) \
+             VALUES ($1, $2, $3, 0, '{}') ON CONFLICT DO NOTHING",
         )
-        .execute(&mut *conn)
+        .bind(&ab_guid)
+        .bind(name)
+        .bind(&owner_guid)
+        .execute(&self.pool)
         .await;
         if res.is_err() {
-            log::error!("add_shared_address_book error: {:?}", res);
+            log::error!("add_shared_address_book ab error: {:?}", res.as_ref().err());
+            return None;
+        }
+
+        let res = sqlx::query(
+            "INSERT INTO ab_rule(guid, ab, \"user\", grp, rule) \
+             VALUES ($1, $2, $3, NULL, 3) ON CONFLICT DO NOTHING",
+        )
+        .bind(&rule_guid)
+        .bind(&ab_guid)
+        .bind(&owner_guid)
+        .execute(&self.pool)
+        .await;
+        if res.is_err() {
+            log::error!("add_shared_address_book rule error: {:?}", res.as_ref().err());
             return None;
         }
 
         Some(guid_into_uuid(ab_guid)?)
     }
 
-    /// Update a shared address book
-    /// Only the name can be updated
-    /// 
-    /// # Arguments
-    /// 
-    /// * `guid` - address book uuid in string format
-    /// * `name` - address book name
-    /// 
-    /// # Returns
-    /// 
-    /// Option<()>
     pub async fn update_shared_address_book(&self, guid: &str, name: &str) -> Option<()> {
-        let mut conn = self.pool.acquire().await.unwrap();
         let ab_guid = Uuid::parse_str(guid);
         if ab_guid.is_err() {
             log::error!("update_shared_address_book error: {:?}", ab_guid);
@@ -1820,17 +1624,13 @@ impl Database {
         }
         let ab_guid = ab_guid.unwrap().as_bytes().to_vec();
 
-        let res = sqlx::query!(
-            r#"
-            UPDATE ab SET name = ? WHERE guid = ?
-        "#,
-            name,
-            ab_guid
-        )
-        .execute(&mut *conn)
-        .await;
+        let res = sqlx::query("UPDATE ab SET name = $1 WHERE guid = $2")
+            .bind(name)
+            .bind(&ab_guid)
+            .execute(&self.pool)
+            .await;
         if res.is_err() {
-            log::error!("update_shared_address_book error: {:?}", res);
+            log::error!("update_shared_address_book error: {:?}", res.as_ref().err());
             return None;
         }
         Some(())
@@ -1842,7 +1642,7 @@ mod tests {
     use super::*;
     use utils::AbTag;
 
-    async fn test_db() -> Database {
+    async fn test_db_sqlite() -> Database {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("test.db");
         let db = Database::open(&path).await;
@@ -1850,9 +1650,66 @@ mod tests {
         db
     }
 
-    #[tokio::test]
-    async fn find_default_admin_user() {
-        let db = test_db().await;
+    use tokio::sync::OnceCell;
+    use testcontainers::runners::AsyncRunner;
+    use testcontainers::ContainerAsync;
+    use testcontainers_modules::postgres::Postgres;
+
+    struct PgContainer {
+        _container: ContainerAsync<Postgres>,
+        base_url: String,
+    }
+
+    static PG: OnceCell<PgContainer> = OnceCell::const_new();
+
+    async fn get_pg_container() -> &'static PgContainer {
+        PG.get_or_init(|| async {
+            let container = Postgres::default()
+                .start()
+                .await
+                .expect("failed to start postgres container");
+            let port = container.get_host_port_ipv4(5432).await.unwrap();
+            let base_url = format!("postgres://postgres:postgres@127.0.0.1:{}", port);
+            PgContainer { _container: container, base_url }
+        }).await
+    }
+
+    async fn test_db_postgres() -> Database {
+        install_default_drivers();
+        let pg = get_pg_container().await;
+        let db_name = format!("test_{}", Uuid::new_v4().as_simple());
+        let admin_url = format!("{}/postgres", pg.base_url);
+        let admin_pool = AnyPool::connect(&admin_url).await.unwrap();
+        sqlx::query(&format!("CREATE DATABASE \"{}\"", db_name))
+            .execute(&admin_pool)
+            .await
+            .unwrap();
+        admin_pool.close().await;
+
+        let test_url = format!("{}/{}", pg.base_url, db_name);
+        Database::new(&test_url).await.unwrap()
+    }
+
+    macro_rules! db_test {
+        ($name:ident, |$db:ident| $body:block) => {
+            paste::paste! {
+                #[tokio::test]
+                async fn [<$name _sqlite>]() {
+                    let $db = test_db_sqlite().await;
+                    $body
+                }
+
+                #[tokio::test]
+                #[cfg_attr(not(feature = "postgres-tests"), ignore)]
+                async fn [<$name _postgres>]() {
+                    let $db = test_db_postgres().await;
+                    $body
+                }
+            }
+        };
+    }
+
+    db_test!(find_default_admin_user, |db| {
         let (_, result) = db.find_user_by_name("admin").await;
         assert!(result.is_some());
         let (user_id, email, info) = result.unwrap();
@@ -1860,18 +1717,14 @@ mod tests {
         assert_eq!(email, Some("admin@example.org".to_string()));
         assert!(info.admin);
         assert!(info.active);
-    }
+    });
 
-    #[tokio::test]
-    async fn find_nonexistent_user() {
-        let db = test_db().await;
+    db_test!(find_nonexistent_user, |db| {
         let (_, result) = db.find_user_by_name("nonexistent").await;
         assert!(result.is_none());
-    }
+    });
 
-    #[tokio::test]
-    async fn get_hashed_password_for_admin() {
-        let db = test_db().await;
+    db_test!(get_hashed_password_for_admin, |db| {
         let (conn, user) = db.find_user_by_name("admin").await;
         let (user_id, _, _) = user.unwrap();
         let (_, pw_info) = db.get_user_hashed_password(conn, user_id).await;
@@ -1879,35 +1732,29 @@ mod tests {
         let pw_info = pw_info.unwrap();
         assert_eq!(pw_info.username, "admin");
         assert!(pw_info.password.starts_with("$2b$"));
-    }
+    });
 
-    #[tokio::test]
-    async fn get_hashed_password_by_username() {
-        let db = test_db().await;
+    db_test!(get_hashed_password_by_username, |db| {
         let conn = DatabaseConnection {
-            conn: db.pool.acquire().await.unwrap(),
+            pool: db.pool.clone(),
         };
         let (_, pw_info) = db
             .get_user_hashed_password_with_username(conn, "admin".to_string())
             .await;
         assert!(pw_info.is_some());
         assert_eq!(pw_info.unwrap().username, "admin");
-    }
+    });
 
-    #[tokio::test]
-    async fn admin_password_is_hello_world() {
-        let db = test_db().await;
+    db_test!(admin_password_is_hello_world, |db| {
         let (conn, user) = db.find_user_by_name("admin").await;
         let (user_id, _, _) = user.unwrap();
         let (_, pw_info) = db.get_user_hashed_password(conn, user_id).await;
         let pw_info = pw_info.unwrap();
         let checker = UserPasswordInfo::from_password("Hello,world!");
         assert!(checker.check(pw_info));
-    }
+    });
 
-    #[tokio::test]
-    async fn add_user_and_find() {
-        let db = test_db().await;
+    db_test!(add_user_and_find, |db| {
         let result = db
             .add_user(
                 "testuser".to_string(),
@@ -1923,11 +1770,9 @@ mod tests {
         let (_, _, info) = found.unwrap();
         assert!(info.active);
         assert!(!info.admin);
-    }
+    });
 
-    #[tokio::test]
-    async fn add_admin_user() {
-        let db = test_db().await;
+    db_test!(add_admin_user, |db| {
         db.add_user(
             "superadmin".to_string(),
             "pass".to_string(),
@@ -1939,11 +1784,9 @@ mod tests {
         let (_, found) = db.find_user_by_name("superadmin").await;
         let (_, _, info) = found.unwrap();
         assert!(info.admin);
-    }
+    });
 
-    #[tokio::test]
-    async fn update_user_password() {
-        let db = test_db().await;
+    db_test!(update_user_password, |db| {
         let result = db
             .update_user_password(
                 "admin".to_string(),
@@ -1953,18 +1796,16 @@ mod tests {
             .await;
         assert!(result.is_some());
         let conn = DatabaseConnection {
-            conn: db.pool.acquire().await.unwrap(),
+            pool: db.pool.clone(),
         };
         let (_, pw_info) = db
             .get_user_hashed_password_with_username(conn, "admin".to_string())
             .await;
         let checker = UserPasswordInfo::from_password("newpass");
         assert!(checker.check(pw_info.unwrap()));
-    }
+    });
 
-    #[tokio::test]
-    async fn update_user_password_wrong_old() {
-        let db = test_db().await;
+    db_test!(update_user_password_wrong_old, |db| {
         let result = db
             .update_user_password(
                 "admin".to_string(),
@@ -1973,72 +1814,58 @@ mod tests {
             )
             .await;
         assert!(result.is_none());
-    }
+    });
 
-    #[tokio::test]
-    async fn reset_user_password() {
-        let db = test_db().await;
+    db_test!(reset_user_password, |db| {
         let result = db
             .reset_user_password("admin".to_string(), "reset123".to_string())
             .await;
         assert!(result.is_some());
         let conn = DatabaseConnection {
-            conn: db.pool.acquire().await.unwrap(),
+            pool: db.pool.clone(),
         };
         let (_, pw_info) = db
             .get_user_hashed_password_with_username(conn, "admin".to_string())
             .await;
         let checker = UserPasswordInfo::from_password("reset123");
         assert!(checker.check(pw_info.unwrap()));
-    }
+    });
 
-    #[tokio::test]
-    async fn reset_password_nonexistent_user() {
-        let db = test_db().await;
+    db_test!(reset_password_nonexistent_user, |db| {
         let result = db
             .reset_user_password("nobody".to_string(), "pass".to_string())
             .await;
         assert!(result.is_none());
-    }
+    });
 
-    #[tokio::test]
-    async fn ui_get_all_users_returns_admin() {
-        let db = test_db().await;
+    db_test!(ui_get_all_users_returns_admin, |db| {
         let users = db.ui_get_all_users().await;
         assert!(users.is_some());
         let users = users.unwrap();
         assert!(!users.is_empty());
         assert!(users.iter().any(|u| u.username == "admin"));
-    }
+    });
 
-    #[tokio::test]
-    async fn ui_get_user_info() {
-        let db = test_db().await;
+    db_test!(ui_get_user_info, |db| {
         let info = db.ui_get_user_info("admin".to_string()).await;
         assert!(info.is_some());
         let info = info.unwrap();
         assert_eq!(info.username, "admin");
         assert!(info.admin);
         assert!(info.active);
-    }
+    });
 
-    #[tokio::test]
-    async fn ui_get_user_info_nonexistent() {
-        let db = test_db().await;
+    db_test!(ui_get_user_info_nonexistent, |db| {
         let info = db.ui_get_user_info("nobody".to_string()).await;
         assert!(info.is_none());
-    }
+    });
 
-    #[tokio::test]
-    async fn delete_user_invalid_uuid() {
-        let db = test_db().await;
+    db_test!(delete_user_invalid_uuid, |db| {
         let result = db.delete_user("not-a-uuid").await;
         assert!(result.is_none());
-    }
+    });
 
-    #[tokio::test]
-    async fn user_change_status() {
-        let db = test_db().await;
+    db_test!(user_change_status, |db| {
         let (_, user) = db.find_user_by_name("admin").await;
         let (user_id, _, _) = user.unwrap();
         let guid = Uuid::from_slice(&user_id).unwrap().to_string();
@@ -2047,20 +1874,30 @@ mod tests {
         let (_, found) = db.find_user_by_name("admin").await;
         let (_, _, info) = found.unwrap();
         assert!(!info.active);
-    }
+    });
 
-    #[tokio::test]
-    async fn user_change_status_invalid_uuid() {
-        let db = test_db().await;
+    db_test!(user_change_status_invalid_uuid, |db| {
         let result = db.user_change_status("invalid", 0).await;
         assert!(result.is_none());
-    }
+    });
 
-    #[tokio::test]
-    async fn get_all_users_with_pagination() {
-        let db = test_db().await;
-        db.add_user("user1".to_string(), "p".to_string(), "u1@e.com".to_string(), false, "Default".to_string()).await;
-        db.add_user("user2".to_string(), "p".to_string(), "u2@e.com".to_string(), false, "Default".to_string()).await;
+    db_test!(get_all_users_with_pagination, |db| {
+        db.add_user(
+            "user1".to_string(),
+            "p".to_string(),
+            "u1@e.com".to_string(),
+            false,
+            "Default".to_string(),
+        )
+        .await;
+        db.add_user(
+            "user2".to_string(),
+            "p".to_string(),
+            "u2@e.com".to_string(),
+            false,
+            "Default".to_string(),
+        )
+        .await;
         let all = db.get_all_users(None, None, 1, 100).await;
         assert!(all.is_some());
         assert!(all.unwrap().len() >= 3);
@@ -2068,57 +1905,45 @@ mod tests {
         let page = db.get_all_users(None, None, 1, 1).await;
         assert!(page.is_some());
         assert_eq!(page.unwrap().len(), 1);
-    }
+    });
 
-    #[tokio::test]
-    async fn get_all_users_with_name_filter() {
-        let db = test_db().await;
+    db_test!(get_all_users_with_name_filter, |db| {
         let filtered = db.get_all_users(Some("admin"), None, 1, 100).await;
         assert!(filtered.is_some());
         assert_eq!(filtered.unwrap().len(), 1);
-    }
+    });
 
-    #[tokio::test]
-    async fn get_all_users_current_zero_defaults_to_one() {
-        let db = test_db().await;
+    db_test!(get_all_users_current_zero_defaults_to_one, |db| {
         let result = db.get_all_users(None, None, 0, 100).await;
         assert!(result.is_some());
-    }
+    });
 
-    #[tokio::test]
-    async fn get_ab_personal_guid_for_admin() {
-        let db = test_db().await;
+    db_test!(get_ab_personal_guid_for_admin, |db| {
         let (_, user) = db.find_user_by_name("admin").await;
         let (user_id, _, _) = user.unwrap();
         let guid = db.get_ab_personal_guid(user_id).await;
         assert!(guid.is_some());
         assert!(Uuid::parse_str(&guid.unwrap()).is_ok());
-    }
+    });
 
-    #[tokio::test]
-    async fn get_groups_returns_default() {
-        let db = test_db().await;
+    db_test!(get_groups_returns_default, |db| {
         let groups = db.get_groups(0, 100).await;
         assert!(groups.is_some());
         let groups = groups.unwrap();
         assert!(!groups.is_empty());
         assert!(groups.iter().any(|g| g.name == "Default"));
-    }
+    });
 
-    #[tokio::test]
-    async fn create_and_get_group() {
-        let db = test_db().await;
+    db_test!(create_and_get_group, |db| {
         let result = db.create_group("TestGroup", "Default", "A note").await;
         assert!(result.is_some());
         let groups = db.get_groups(0, 100).await.unwrap();
         let found = groups.iter().find(|g| g.name == "TestGroup");
         assert!(found.is_some());
         assert_eq!(found.unwrap().note, Some("A note".to_string()));
-    }
+    });
 
-    #[tokio::test]
-    async fn update_group() {
-        let db = test_db().await;
+    db_test!(update_group, |db| {
         db.create_group("OldName", "Default", "old").await;
         let groups = db.get_groups(0, 100).await.unwrap();
         let group = groups.iter().find(|g| g.name == "OldName").unwrap();
@@ -2129,11 +1954,9 @@ mod tests {
         let updated = db.get_group(&group.guid).await;
         assert!(updated.is_some());
         assert_eq!(updated.unwrap().name, "NewName");
-    }
+    });
 
-    #[tokio::test]
-    async fn delete_group() {
-        let db = test_db().await;
+    db_test!(delete_group, |db| {
         db.create_group("ToDelete", "Default", "").await;
         let groups = db.get_groups(0, 100).await.unwrap();
         let group = groups.iter().find(|g| g.name == "ToDelete").unwrap();
@@ -2141,25 +1964,19 @@ mod tests {
         assert!(result.is_some());
         let after = db.get_group(&group.guid).await;
         assert!(after.is_none());
-    }
+    });
 
-    #[tokio::test]
-    async fn delete_group_invalid_uuid() {
-        let db = test_db().await;
+    db_test!(delete_group_invalid_uuid, |db| {
         let result = db.delete_group("bad-uuid").await;
         assert!(result.is_none());
-    }
+    });
 
-    #[tokio::test]
-    async fn get_group_invalid_uuid() {
-        let db = test_db().await;
+    db_test!(get_group_invalid_uuid, |db| {
         let result = db.get_group("bad-uuid").await;
         assert!(result.is_none());
-    }
+    });
 
-    #[tokio::test]
-    async fn add_user_with_group() {
-        let db = test_db().await;
+    db_test!(add_user_with_group, |db| {
         let result = db
             .add_user(
                 "groupuser".to_string(),
@@ -2172,11 +1989,9 @@ mod tests {
         assert!(result.is_some());
         let (_, found) = db.find_user_by_name("groupuser").await;
         assert!(found.is_some());
-    }
+    });
 
-    #[tokio::test]
-    async fn add_user_nonexistent_group_fails() {
-        let db = test_db().await;
+    db_test!(add_user_nonexistent_group_fails, |db| {
         let result = db
             .add_user(
                 "baduser".to_string(),
@@ -2187,11 +2002,9 @@ mod tests {
             )
             .await;
         assert!(result.is_none());
-    }
+    });
 
-    #[tokio::test]
-    async fn ab_tag_crud() {
-        let db = test_db().await;
+    db_test!(ab_tag_crud, |db| {
         let (_, user) = db.find_user_by_name("admin").await;
         let (user_id, _, _) = user.unwrap();
         let ab_guid = db.get_ab_personal_guid(user_id).await.unwrap();
@@ -2225,11 +2038,9 @@ mod tests {
         assert!(result.is_some());
         let tag = db.get_ab_tag(&ab_guid, "critical").await;
         assert!(tag.is_none());
-    }
+    });
 
-    #[tokio::test]
-    async fn ab_tag_invalid_uuid() {
-        let db = test_db().await;
+    db_test!(ab_tag_invalid_uuid, |db| {
         let tag = AbTag {
             name: "t".to_string(),
             color: 0,
@@ -2250,21 +2061,17 @@ mod tests {
             .is_none()
         );
         assert!(db.delete_tag_from_ab("bad", "t").await.is_none());
-    }
+    });
 
-    #[tokio::test]
-    async fn get_ab_tag_nonexistent() {
-        let db = test_db().await;
+    db_test!(get_ab_tag_nonexistent, |db| {
         let (_, user) = db.find_user_by_name("admin").await;
         let (user_id, _, _) = user.unwrap();
         let ab_guid = db.get_ab_personal_guid(user_id).await.unwrap();
         let tag = db.get_ab_tag(&ab_guid, "nonexistent").await;
         assert!(tag.is_none());
-    }
+    });
 
-    #[tokio::test]
-    async fn shared_address_book_crud() {
-        let db = test_db().await;
+    db_test!(shared_address_book_crud, |db| {
         let (_, user) = db.find_user_by_name("admin").await;
         let (user_id, _, _) = user.unwrap();
         let owner_uuid = Uuid::from_slice(&user_id).unwrap().to_string();
@@ -2283,68 +2090,50 @@ mod tests {
 
         let result = db.delete_shared_address_book(&ab_guid).await;
         assert!(result.is_some());
-    }
+    });
 
-    #[tokio::test]
-    async fn shared_address_book_invalid_owner() {
-        let db = test_db().await;
+    db_test!(shared_address_book_invalid_owner, |db| {
         let result = db.add_shared_address_book("Test", "bad-uuid").await;
         assert!(result.is_none());
-    }
+    });
 
-    #[tokio::test]
-    async fn delete_shared_address_book_invalid_uuid() {
-        let db = test_db().await;
+    db_test!(delete_shared_address_book_invalid_uuid, |db| {
         assert!(db.delete_shared_address_book("bad").await.is_none());
-    }
+    });
 
-    #[tokio::test]
-    async fn update_shared_address_book_invalid_uuid() {
-        let db = test_db().await;
+    db_test!(update_shared_address_book_invalid_uuid, |db| {
         assert!(db.update_shared_address_book("bad", "n").await.is_none());
-    }
+    });
 
-    #[tokio::test]
-    async fn get_peers_count_empty() {
-        let db = test_db().await;
+    db_test!(get_peers_count_empty, |db| {
         let count = db.get_peers_count(Platform::All).await;
         assert_eq!(count, 0);
-    }
+    });
 
-    #[tokio::test]
-    async fn get_cpus_count_empty() {
-        let db = test_db().await;
+    db_test!(get_cpus_count_empty, |db| {
         let cpus = db.get_cpus_count().await;
         assert!(cpus.is_empty());
-    }
+    });
 
-    #[tokio::test]
-    async fn get_all_peers_empty() {
-        let db = test_db().await;
+    db_test!(get_all_peers_empty, |db| {
         let peers = db.get_all_peers().await;
         assert!(peers.is_some());
         assert!(peers.unwrap().is_empty());
-    }
+    });
 
-    #[tokio::test]
-    async fn get_shared_address_books_for_admin() {
-        let db = test_db().await;
+    db_test!(get_shared_address_books_for_admin, |db| {
         let (_, user) = db.find_user_by_name("admin").await;
         let (user_id, _, _) = user.unwrap();
         let abs = db.get_shared_address_books(user_id).await;
         assert!(abs.is_some());
-    }
+    });
 
-    #[tokio::test]
-    async fn legacy_address_book_not_found() {
-        let db = test_db().await;
+    db_test!(legacy_address_book_not_found, |db| {
         let result = db.get_legacy_address_book(vec![0, 1, 2]).await;
         assert!(result.is_none());
-    }
+    });
 
-    #[tokio::test]
-    async fn update_legacy_address_books() {
-        let db = test_db().await;
+    db_test!(update_legacy_address_books, |db| {
         let (_, user) = db.find_user_by_name("admin").await;
         let (user_id, _, _) = user.unwrap();
         let ab = AddressBook {
@@ -2358,7 +2147,7 @@ mod tests {
         let fetched = db.get_legacy_address_book(user_id).await;
         assert!(fetched.is_some());
         assert!(fetched.unwrap().ab.contains("123"));
-    }
+    });
 
     fn make_ab_peer(id: &str) -> AbPeer {
         AbPeer {
@@ -2378,19 +2167,15 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn ab_peer_crud_invalid_uuid() {
-        let db = test_db().await;
+    db_test!(ab_peer_crud_invalid_uuid, |db| {
         let peer = make_ab_peer("test");
         assert!(db.add_peer_to_ab("bad-uuid", peer).await.is_none());
         assert!(db.get_peers_from_ab("bad-uuid").await.is_none());
         assert!(db.get_ab_peer("bad-uuid", "test").await.is_none());
         assert!(db.delete_peer_from_ab("bad-uuid", "test").await.is_none());
-    }
+    });
 
-    #[tokio::test]
-    async fn ab_rules_invalid_uuid() {
-        let db = test_db().await;
+    db_test!(ab_rules_invalid_uuid, |db| {
         assert!(db.get_ab_rules(0, 100, "bad").await.is_none());
         assert!(db.delete_ab_rule("bad").await.is_none());
         let rule = AbRule {
@@ -2400,13 +2185,17 @@ mod tests {
             rule: 1,
         };
         assert!(db.add_ab_rule(rule).await.is_none());
-    }
+    });
 
-    #[tokio::test]
-    async fn user_update_name_and_status() {
-        let db = test_db().await;
-        db.add_user("updatable".to_string(), "pass".to_string(), "upd@e.com".to_string(), false, "Default".to_string())
-            .await;
+    db_test!(user_update_name_and_status, |db| {
+        db.add_user(
+            "updatable".to_string(),
+            "pass".to_string(),
+            "upd@e.com".to_string(),
+            false,
+            "Default".to_string(),
+        )
+        .await;
         let (_, user) = db.find_user_by_name("updatable").await;
         let (user_id, _, _) = user.unwrap();
 
@@ -2428,13 +2217,17 @@ mod tests {
         let (_, _, info) = found.unwrap();
         assert!(!info.active);
         assert!(info.admin);
-    }
+    });
 
-    #[tokio::test]
-    async fn user_update_password_matching() {
-        let db = test_db().await;
-        db.add_user("pwuser".to_string(), "old".to_string(), "pw@e.com".to_string(), false, "Default".to_string())
-            .await;
+    db_test!(user_update_password_matching, |db| {
+        db.add_user(
+            "pwuser".to_string(),
+            "old".to_string(),
+            "pw@e.com".to_string(),
+            false,
+            "Default".to_string(),
+        )
+        .await;
         let (_, user) = db.find_user_by_name("pwuser").await;
         let (user_id, _, _) = user.unwrap();
 
@@ -2451,18 +2244,16 @@ mod tests {
         };
         db.user_update(user_id, params).await;
         let conn = DatabaseConnection {
-            conn: db.pool.acquire().await.unwrap(),
+            pool: db.pool.clone(),
         };
         let (_, pw_info) = db
             .get_user_hashed_password_with_username(conn, "pwuser".to_string())
             .await;
         let checker = UserPasswordInfo::from_password("newpass");
         assert!(checker.check(pw_info.unwrap()));
-    }
+    });
 
-    #[tokio::test]
-    async fn heartbeat_no_peer() {
-        let db = test_db().await;
+    db_test!(heartbeat_no_peer, |db| {
         let hb = utils::HeartbeatRequest {
             id: "test".to_string(),
             uuid: BASE64_STANDARD.encode("nonexistent"),
@@ -2471,11 +2262,9 @@ mod tests {
         };
         let result = db.update_heartbeat(hb).await;
         assert!(result.is_none());
-    }
+    });
 
-    #[tokio::test]
-    async fn heartbeat_invalid_base64() {
-        let db = test_db().await;
+    db_test!(heartbeat_invalid_base64, |db| {
         let hb = utils::HeartbeatRequest {
             id: "test".to_string(),
             uuid: "not-base64!!!".to_string(),
@@ -2484,5 +2273,5 @@ mod tests {
         };
         let result = db.update_heartbeat(hb).await;
         assert!(result.is_none());
-    }
+    });
 }
