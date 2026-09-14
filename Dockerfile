@@ -13,7 +13,6 @@ RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/
 
 WORKDIR /app
 COPY --from=builder /app/target/release/sctgdesk-api-server .
-COPY --from=builder /app/db_v2.sqlite3 .
 
 EXPOSE 21114
 
