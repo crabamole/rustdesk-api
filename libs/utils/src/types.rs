@@ -481,6 +481,8 @@ pub struct OidcAuthRequest {
     pub id: String,
     pub op: String,
     pub uuid: String,
+    #[serde(default, rename = "redirectUri")]
+    pub redirect_uri: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, JsonSchema, Clone, Debug)]
@@ -561,6 +563,7 @@ pub struct OidcState {
     pub provider: Option<Arc<dyn OAuthProvider>>,
     pub name: Option<String>,
     pub email: Option<String>,
+    pub client_redirect_uri: Option<String>,
 }
 impl Default for OidcState {
     fn default() -> Self {
@@ -574,6 +577,7 @@ impl Default for OidcState {
             provider: None,
             name: None,
             email: None,
+            client_redirect_uri: None,
         }
     }
 }

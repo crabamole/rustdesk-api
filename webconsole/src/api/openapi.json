@@ -2829,6 +2829,10 @@
           },
           "uuid": {
             "type": "string"
+          },
+          "redirectUri": {
+            "type": "string",
+            "nullable": true
           }
         }
       },

@@ -43,7 +43,6 @@ This website use:
                 </div>
             </form>
             <div>
-                <a ref="oidc_link" href="#" class="text-sm font-medium text-indigo-600 hover:text-indigo-500"></a>
                 <div class="pt-1.5" v-for="oauthprovider in oauthproviders">
                     <button @click="oidcAuth_step1(oauthprovider)"
                         class="flex w-full h-12 items-center justify-center rounded-md bg-gray-600 px-3 py-1.5 text-sm font-semibold leading-6 text-white shadow-sm hover:bg-gray-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600">Sign
@@ -69,8 +68,6 @@ const router = useRouter();
 
 const name = ref("");
 const password = ref("");
-
-const oidc_link = ref(null as HTMLAnchorElement | null);
 
 type OauthProvider = {
     name: string;
@@ -135,6 +132,7 @@ function oidcAuth_step1(provider: OauthProvider) {
         password: password.value
     });
     const loginApi = new LoginApi(configuration);
+    const redirectUri = window.location.origin + '/ui/login';
     const oidcAuthRequest = {
         deviceInfo: {
             name: navigator.appName,
@@ -143,63 +141,50 @@ function oidcAuth_step1(provider: OauthProvider) {
         },
         id: userStore.id,
         op: provider.rustdesk_name,
-        uuid: userStore.uuid_base64
+        uuid: userStore.uuid_base64,
+        redirectUri: redirectUri,
     }
-    userStore.oidc_provider = capitalizeFirstLetter(provider.name);
-    loginApi.oidcAuth(oidcAuthRequest).then(async (response) => {
-        console.log(response);
-        userStore.oidc_code = response.data.code;
-
-        oidc_link.value.href = response.data.url;
-        oidc_link.value.innerText = `Please authenticate with ${userStore.oidc_provider}...`;
-        oidc_link.value.target = "_blank";
-
-        const timeout = new Date().getTime() + 30000; // 30s en millisecondes
-        while (new Date().getTime() < timeout) {
-            const result = await oidcAuth_step2();
-            if (result) {
-                router.push({ name: 'index' });
-                return;
-            }
-            await new Promise(resolve => setTimeout(resolve, 2000));
+    loginApi.oidcAuth(oidcAuthRequest).then((response) => {
+        if (!response.data.url) {
+            setLoginResult("OIDC provider not configured");
+            return;
         }
+        sessionStorage.setItem('oidc_id', userStore.id);
+        sessionStorage.setItem('oidc_uuid', userStore.uuid_base64);
+        window.location.href = response.data.url;
     }).catch((error) => {
         console.log(error);
+        setLoginResult("OIDC authentication failed");
     });
 }
 
-/**
- * Performs the second step of the OIDC authentication process.
- *
- * @return {Promise<boolean>} A promise that resolves to true if the authentication is successful,
- *                           or false otherwise.
- */
-function oidcAuth_step2(): Promise<boolean> {
-    const configuration = new Configuration({
-        basePath: basePath,
-        username: name.value,
-        password: password.value
-    });
+function handleOidcCallback(oidcCode: string) {
+    const id = sessionStorage.getItem('oidc_id');
+    const uuid = sessionStorage.getItem('oidc_uuid');
+    sessionStorage.removeItem('oidc_id');
+    sessionStorage.removeItem('oidc_uuid');
+    if (!id || !uuid) {
+        setLoginResult("OIDC session expired, please try again");
+        return;
+    }
+    const configuration = new Configuration({ basePath: basePath });
     const loginApi = new LoginApi(configuration);
-    return new Promise((resolve, reject) => {
-        loginApi.oidcState(userStore.oidc_code, userStore.id, userStore.uuid_base64).then((response) => {
-            console.log(response);
-            if (response.data.access_token !== undefined) {
-                userStore.user = {
-                    name: response.data.user.name,
-                    admin: response.data.user.is_admin,
-                    email: response.data.user.email,
-                };
-                userStore.api_configuration = configuration;
-                userStore.api_configuration.accessToken = response.data.access_token;
-                resolve(true);
-            } else {
-                resolve(false);
-            }
-        }).catch((error) => {
-            console.log(error);
-            resolve(false);
-        });
+    loginApi.oidcState(oidcCode, id, uuid).then((response) => {
+        if (response.data.access_token !== undefined) {
+            userStore.user = {
+                name: response.data.user.name,
+                admin: response.data.user.is_admin,
+                email: response.data.user.email,
+            };
+            userStore.api_configuration = configuration;
+            userStore.api_configuration.accessToken = response.data.access_token;
+            router.push({ name: 'index' });
+        } else {
+            setLoginResult("OIDC login failed");
+        }
+    }).catch((error) => {
+        console.log(error);
+        setLoginResult("OIDC login failed");
     });
 }
 
@@ -219,6 +204,20 @@ onMounted(() => {
     })
     userStore.uuid_base64 = generateUUIDBase64Encoded();
     userStore.id = Math.random().toString(36).substring(2, 15);
+
+    const params = new URLSearchParams(window.location.search);
+    const oidcCode = params.get('oidc_code');
+    const oidcError = params.get('oidc_error');
+    if (oidcCode) {
+        window.history.replaceState({}, '', window.location.pathname);
+        handleOidcCallback(oidcCode);
+        return;
+    }
+    if (oidcError) {
+        window.history.replaceState({}, '', window.location.pathname);
+        setLoginResult("OIDC login failed");
+    }
+
     const configuration = new Configuration({
         basePath: basePath,
         username: name.value,

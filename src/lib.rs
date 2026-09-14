@@ -155,7 +155,6 @@ pub async fn build_rocket_with_db(figment: Figment, db_path: &str) -> Rocket<Bui
                 strategies,
                 oidc_auth,
                 oidc_state,
-                oidc_callback,
                 oidc_add,
                 oidc_get,
                 ab_peer_add,
@@ -191,6 +190,7 @@ pub async fn build_rocket_with_db(figment: Figment, db_path: &str) -> Rocket<Bui
             webconsole_vue,
             openapi_snippet,
             openapi_snippet_map,
+            oidc_callback,
         ])
         .mount(
             "/api/doc/",
@@ -1069,6 +1069,7 @@ async fn oidc_auth(
                 provider: Some(provider_trait_object),
                 name: None,
                 email: None,
+                client_redirect_uri: request.redirect_uri.clone(),
             },
         )
         .await;
@@ -1104,24 +1105,41 @@ async fn oidc_auth(
 /// # Example
 ///
 /// GET /api/oidc/callback?code=authorization_code&state=session_code
-#[openapi(tag = "login")]
 #[get("/api/oidc/callback?<code>&<state>")]
 async fn oidc_callback(
     apistate: &State<ApiState>,
     code: &str,
     state: &str,
-) -> rocket::response::content::RawHtml<String> {
+) -> OidcCallbackResponse {
     let oidc_code = state;
     let oidc_authorization_code = code;
+    let client_redirect_uri = apistate
+        .get_oidc_session(oidc_code.to_string())
+        .await
+        .and_then(|s| s.client_redirect_uri);
     let updated_oidc_session = apistate
         .oidc_session_exchange_code(oidc_authorization_code.to_string(), oidc_code.to_string())
         .await;
-    let (status, message) = if updated_oidc_session.is_none() {
-        ("error", "Login failed. Please close this window and try again.")
+
+    if let Some(redirect_uri) = client_redirect_uri {
+        let separator = if redirect_uri.contains('?') { "&" } else { "?" };
+        if updated_oidc_session.is_some() {
+            return OidcCallbackResponse::Redirect(Redirect::found(format!(
+                "{redirect_uri}{separator}oidc_code={oidc_code}"
+            )));
+        } else {
+            return OidcCallbackResponse::Redirect(Redirect::found(format!(
+                "{redirect_uri}{separator}oidc_error=login_failed"
+            )));
+        }
+    }
+
+    let message = if updated_oidc_session.is_none() {
+        "Login failed. Please close this window and try again."
     } else {
-        ("ok", "Login successful!")
+        "Login successful!"
     };
-    rocket::response::content::RawHtml(format!(
+    OidcCallbackResponse::Html(rocket::response::content::RawHtml(format!(
         r#"<!DOCTYPE html>
 <html><head><title>RustDesk Login</title></head>
 <body>
@@ -1130,7 +1148,13 @@ async fn oidc_callback(
 try {{ window.close(); }} catch(e) {{}}
 </script>
 </body></html>"#
-    ))
+    )))
+}
+
+#[derive(Responder)]
+enum OidcCallbackResponse {
+    Redirect(Redirect),
+    Html(rocket::response::content::RawHtml<String>),
 }
 
 /// # OIDC State

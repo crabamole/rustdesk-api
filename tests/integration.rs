@@ -900,7 +900,7 @@ async fn test_oidc_callback_invalid_session() {
         .await;
     assert_eq!(resp.status(), Status::Ok);
     let body = resp.into_string().await.unwrap();
-    assert_eq!(body, "ERROR");
+    assert!(body.contains("Login failed"), "expected login failure message, got: {body}");
 }
 
 #[rocket::async_test]

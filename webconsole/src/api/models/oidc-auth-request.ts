@@ -44,4 +44,10 @@ export interface OidcAuthRequest {
      * @memberof OidcAuthRequest
      */
     uuid: string;
+
+    /**
+     * @type {string}
+     * @memberof OidcAuthRequest
+     */
+    redirectUri?: string;
 }
