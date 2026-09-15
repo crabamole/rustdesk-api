@@ -73,6 +73,18 @@ async fn main() -> Result<(), rocket::Error> {
         .merge(("ident", format!("SCTGDeskApiServer/{}", env!("CARGO_PKG_VERSION"))))
         .merge(("limits", Limits::new().limit("json", 2.mebibytes())));
 
+    #[cfg(all(unix, feature = "coverage"))]
+    {
+        extern "C" {
+            fn __llvm_profile_write_file() -> i32;
+        }
+        unsafe {
+            let _ = signal_hook::low_level::register(signal_hook::consts::SIGUSR1, || {
+                let _ = __llvm_profile_write_file();
+            });
+        }
+    }
+
     // Launch Rocket
     let _rocket = build_rocket(figment).await.ignite().await?.launch().await?;
     
