@@ -1075,46 +1075,6 @@
         }
       }
     },
-    "/api/oidc/callback": {
-      "get": {
-        "tags": [
-          "login"
-        ],
-        "summary": "OIDC Auth Callback",
-        "description": "This function is an API endpoint that serves as the OAuth2 callback. It exchanges the authorization code for an access token and stores it in the state. It is tagged with \"login\" for OpenAPI documentation.\n\n## Parameters\n\n- `code`: The authorization code received from the OIDC provider.\n\n- `state`: The state parameter received from the OIDC provider. This is the session code.\n\n## Returns\n\nIf successful, this function returns \"OK\".  <br> If the session does not exist or the code exchange fails, this function returns \"ERROR\".  <br>\n\n## Errors\n\nThis function will return an error if the system is in maintenance mode, or if the session does not exist or the code exchange fails.\n\n# Example\n\nGET /api/oidc/callback?code=authorization_code&state=session_code",
-        "operationId": "oidc_callback",
-        "parameters": [
-          {
-            "name": "code",
-            "in": "query",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "state",
-            "in": "query",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "",
-            "content": {
-              "text/plain": {
-                "schema": {
-                  "type": "string"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
     "/api/oidc/settings": {
       "get": {
         "tags": [
@@ -2829,6 +2789,11 @@
           },
           "uuid": {
             "type": "string"
+          },
+          "redirectUri": {
+            "default": null,
+            "type": "string",
+            "nullable": true
           }
         }
       },
