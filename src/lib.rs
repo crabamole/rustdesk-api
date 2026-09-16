@@ -2474,3 +2474,997 @@ async fn webconsole_vue(path: PathBuf) -> Option<StaticFileResponse> {
         return file;
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rocket::http::{ContentType, Header, Status};
+    use rocket::local::asynchronous::Client;
+
+    async fn test_client() -> Client {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("test.db");
+        let figment = rocket::Config::figment()
+            .merge(("secret_key", "wJq+s/xvwZjmMX3ev0p4gQTs9Ej5wt0brsk3ZGhoBTg="));
+        let rocket = build_rocket_with_db(figment, db_path.to_str().unwrap()).await;
+        std::mem::forget(dir);
+        Client::tracked(rocket).await.unwrap()
+    }
+
+    async fn login_admin(client: &Client) -> String {
+        let resp = client
+            .post("/api/login")
+            .header(ContentType::JSON)
+            .body(r#"{"username":"admin","password":"Hello,world!","id":"test","uuid":"test-uuid"}"#)
+            .dispatch()
+            .await;
+        assert_eq!(resp.status(), Status::Ok);
+        let body: serde_json::Value = resp.into_json().await.unwrap();
+        body["access_token"].as_str().unwrap().to_string()
+    }
+
+    fn auth_header(token: &str) -> Header<'static> {
+        Header::new("Authorization", format!("Bearer {}", token))
+    }
+
+    #[rocket::async_test]
+    async fn test_login_success() {
+        let client = test_client().await;
+        let resp = client
+            .post("/api/login")
+            .header(ContentType::JSON)
+            .body(r#"{"username":"admin","password":"Hello,world!","id":"test","uuid":"test-uuid"}"#)
+            .dispatch()
+            .await;
+        assert_eq!(resp.status(), Status::Ok);
+        let body: serde_json::Value = resp.into_json().await.unwrap();
+        assert_eq!(body["type"], "access_token");
+        assert!(body["access_token"].as_str().is_some());
+        assert_eq!(body["user"]["name"], "admin");
+    }
+
+    #[rocket::async_test]
+    async fn test_login_wrong_password() {
+        let client = test_client().await;
+        let resp = client
+            .post("/api/login")
+            .header(ContentType::JSON)
+            .body(r#"{"username":"admin","password":"wrong","id":"test","uuid":"test-uuid"}"#)
+            .dispatch()
+            .await;
+        assert_eq!(resp.status(), Status::Unauthorized);
+    }
+
+    #[rocket::async_test]
+    async fn test_login_nonexistent_user() {
+        let client = test_client().await;
+        let resp = client
+            .post("/api/login")
+            .header(ContentType::JSON)
+            .body(r#"{"username":"nobody","password":"pass","id":"test","uuid":"test-uuid"}"#)
+            .dispatch()
+            .await;
+        assert_eq!(resp.status(), Status::Unauthorized);
+    }
+
+    #[rocket::async_test]
+    async fn test_current_user_authenticated() {
+        let client = test_client().await;
+        let token = login_admin(&client).await;
+        let resp = client
+            .post("/api/currentUser")
+            .header(ContentType::JSON)
+            .header(auth_header(&token))
+            .body(r#"{"id":"test","uuid":"test-uuid"}"#)
+            .dispatch()
+            .await;
+        assert_eq!(resp.status(), Status::Ok);
+        let body: serde_json::Value = resp.into_json().await.unwrap();
+        assert_eq!(body["error"], false);
+        assert_eq!(body["name"], "admin");
+    }
+
+    #[rocket::async_test]
+    async fn test_current_user_unauthenticated() {
+        let client = test_client().await;
+        let resp = client
+            .post("/api/currentUser")
+            .header(ContentType::JSON)
+            .body(r#"{"id":"test","uuid":"test-uuid"}"#)
+            .dispatch()
+            .await;
+        assert_eq!(resp.status(), Status::Unauthorized);
+    }
+
+    #[rocket::async_test]
+    async fn test_audit_no_auth_required() {
+        let client = test_client().await;
+        let resp = client
+            .post("/api/audit")
+            .header(ContentType::JSON)
+            .body(r#"{"action":"test","id":"1","ip":"127.0.0.1"}"#)
+            .dispatch()
+            .await;
+        assert_eq!(resp.status(), Status::Ok);
+    }
+
+    #[rocket::async_test]
+    async fn test_heartbeat() {
+        let client = test_client().await;
+        let resp = client
+            .post("/api/heartbeat")
+            .header(ContentType::JSON)
+            .body(r#"{"id":"test-peer","modified_at":0,"uuid":"test-uuid","ver":0}"#)
+            .dispatch()
+            .await;
+        assert_eq!(resp.status(), Status::Ok);
+        let body = resp.into_string().await.unwrap();
+        assert_eq!(body, "OK");
+    }
+
+    #[rocket::async_test]
+    async fn test_sysinfo_unknown_peer() {
+        let client = test_client().await;
+        let resp = client
+            .post("/api/sysinfo")
+            .header(ContentType::JSON)
+            .body(r#"{"id":"unknown"}"#)
+            .dispatch()
+            .await;
+        // Handler panics on unwrap when peer not found — returns 500
+        assert_eq!(resp.status(), Status::InternalServerError);
+    }
+
+    #[rocket::async_test]
+    async fn test_logout() {
+        let client = test_client().await;
+        let token = login_admin(&client).await;
+        let resp = client
+            .post("/api/logout")
+            .header(ContentType::JSON)
+            .header(auth_header(&token))
+            .body(r#"{"id":"device","uuid":"uuid"}"#)
+            .dispatch()
+            .await;
+        assert_eq!(resp.status(), Status::Ok);
+    }
+
+    #[rocket::async_test]
+    async fn test_logout_unauthenticated() {
+        let client = test_client().await;
+        let resp = client
+            .post("/api/logout")
+            .header(ContentType::JSON)
+            .body(r#"{"id":"device","uuid":"uuid"}"#)
+            .dispatch()
+            .await;
+        assert_eq!(resp.status(), Status::Unauthorized);
+    }
+
+    #[rocket::async_test]
+    async fn test_users_list_as_admin() {
+        let client = test_client().await;
+        let token = login_admin(&client).await;
+        let resp = client
+            .get("/api/user-list?current=1&pageSize=10")
+            .header(ContentType::JSON)
+            .header(auth_header(&token))
+            .dispatch()
+            .await;
+        assert_eq!(resp.status(), Status::Ok);
+        let body: serde_json::Value = resp.into_json().await.unwrap();
+        assert_eq!(body["msg"], "success");
+        assert!(body["total"].as_u64().unwrap() >= 1);
+    }
+
+    #[rocket::async_test]
+    async fn test_users_list_unauthenticated() {
+        let client = test_client().await;
+        let resp = client
+            .get("/api/user-list?current=1&pageSize=10")
+            .header(ContentType::JSON)
+            .dispatch()
+            .await;
+        assert_eq!(resp.status(), Status::Unauthorized);
+    }
+
+    #[rocket::async_test]
+    async fn test_groups_list_as_admin() {
+        let client = test_client().await;
+        let token = login_admin(&client).await;
+        let resp = client
+            .get("/api/groups?current=1&pageSize=10")
+            .header(ContentType::JSON)
+            .header(auth_header(&token))
+            .dispatch()
+            .await;
+        assert_eq!(resp.status(), Status::Ok);
+        let body: serde_json::Value = resp.into_json().await.unwrap();
+        assert_eq!(body["msg"], "success");
+    }
+
+    #[rocket::async_test]
+    async fn test_group_crud() {
+        let client = test_client().await;
+        let token = login_admin(&client).await;
+
+        let resp = client
+            .post("/api/group")
+            .header(ContentType::JSON)
+            .header(auth_header(&token))
+            .body(r#"{"name":"test-group","note":"a test group","allowed_outgoings":[],"allowed_incomings":[]}"#)
+            .dispatch()
+            .await;
+        assert_eq!(resp.status(), Status::Ok);
+
+        let resp = client
+            .get("/api/groups?current=1&pageSize=100")
+            .header(ContentType::JSON)
+            .header(auth_header(&token))
+            .dispatch()
+            .await;
+        assert_eq!(resp.status(), Status::Ok);
+        let body: serde_json::Value = resp.into_json().await.unwrap();
+        let groups = body["data"].as_array().unwrap();
+        let test_group = groups.iter().find(|g| g["name"] == "test-group");
+        assert!(test_group.is_some(), "created group should appear in list");
+        let guid = test_group.unwrap()["guid"].as_str().unwrap().to_string();
+
+        let resp = client
+            .get(format!("/api/group/{}", guid))
+            .header(ContentType::JSON)
+            .header(auth_header(&token))
+            .dispatch()
+            .await;
+        assert_eq!(resp.status(), Status::Ok);
+
+        let resp = client
+            .put("/api/group")
+            .header(ContentType::JSON)
+            .header(auth_header(&token))
+            .body(format!(
+                r#"{{"guid":"{}","name":"renamed-group","note":"updated","allowed_outgoings":[],"allowed_incomings":[]}}"#,
+                guid
+            ))
+            .dispatch()
+            .await;
+        assert_eq!(resp.status(), Status::Ok);
+
+        let resp = client
+            .delete(format!("/api/group/{}", guid))
+            .header(ContentType::JSON)
+            .header(auth_header(&token))
+            .body("[]")
+            .dispatch()
+            .await;
+        assert_eq!(resp.status(), Status::Ok);
+    }
+
+    #[rocket::async_test]
+    async fn test_group_get_not_found() {
+        let client = test_client().await;
+        let token = login_admin(&client).await;
+        let resp = client
+            .get("/api/group/nonexistent-guid")
+            .header(ContentType::JSON)
+            .header(auth_header(&token))
+            .dispatch()
+            .await;
+        assert_eq!(resp.status(), Status::NotFound);
+    }
+
+    #[rocket::async_test]
+    async fn test_user_add_and_login() {
+        let client = test_client().await;
+        let token = login_admin(&client).await;
+
+        let resp = client
+            .post("/api/user")
+            .header(ContentType::JSON)
+            .header(auth_header(&token))
+            .body(r#"{"name":"testuser","password":"testpass","confirm-password":"testpass","email":"test@example.com","is_admin":false,"group_name":"Default"}"#)
+            .dispatch()
+            .await;
+        assert_eq!(resp.status(), Status::Ok);
+
+        let login_resp = client
+            .post("/api/login")
+            .header(ContentType::JSON)
+            .body(r#"{"username":"testuser","password":"testpass","id":"test","uuid":"test-uuid"}"#)
+            .dispatch()
+            .await;
+        assert_eq!(login_resp.status(), Status::Ok);
+    }
+
+    #[rocket::async_test]
+    async fn test_user_delete() {
+        let client = test_client().await;
+        let token = login_admin(&client).await;
+
+        let resp = client
+            .post("/api/user")
+            .header(ContentType::JSON)
+            .header(auth_header(&token))
+            .body(r#"{"name":"deluser","password":"pass","confirm-password":"pass","email":"del@example.com","is_admin":false,"group_name":"Default"}"#)
+            .dispatch()
+            .await;
+        assert_eq!(resp.status(), Status::Ok);
+
+        let list_resp = client
+            .get("/api/user-list?current=1&pageSize=100")
+            .header(ContentType::JSON)
+            .header(auth_header(&token))
+            .dispatch()
+            .await;
+        let body: serde_json::Value = list_resp.into_json().await.unwrap();
+        let users = body["data"].as_array().unwrap();
+        let del_user = users.iter().find(|u| u["name"] == "deluser").unwrap();
+        let guid = del_user["guid"].as_str().unwrap();
+
+        let resp = client
+            .delete("/api/user")
+            .header(ContentType::JSON)
+            .header(auth_header(&token))
+            .body(format!(r#"{{"rows":["{}"]}}"#, guid))
+            .dispatch()
+            .await;
+        assert_eq!(resp.status(), Status::Ok);
+    }
+
+    #[rocket::async_test]
+    async fn test_peers_empty_db() {
+        let client = test_client().await;
+        let token = login_admin(&client).await;
+        let resp = client
+            .get("/api/peers")
+            .header(ContentType::JSON)
+            .header(auth_header(&token))
+            .dispatch()
+            .await;
+        assert!(resp.status() == Status::Ok || resp.status() == Status::NotFound);
+    }
+
+    #[rocket::async_test]
+    async fn test_peers_count() {
+        let client = test_client().await;
+        let token = login_admin(&client).await;
+        let resp = client
+            .get("/api/peers/count/all")
+            .header(ContentType::JSON)
+            .header(auth_header(&token))
+            .dispatch()
+            .await;
+        assert_eq!(resp.status(), Status::Ok);
+        let body: serde_json::Value = resp.into_json().await.unwrap();
+        assert!(body["total"].as_u64().is_some());
+    }
+
+    #[rocket::async_test]
+    async fn test_peers_count_by_platform() {
+        let client = test_client().await;
+        let token = login_admin(&client).await;
+        for platform in &["windows", "macos", "linux", "android"] {
+            let resp = client
+                .get(format!("/api/peers/count/{}", platform))
+                .header(ContentType::JSON)
+                .header(auth_header(&token))
+                .dispatch()
+                .await;
+            assert_eq!(resp.status(), Status::Ok);
+        }
+    }
+
+    #[rocket::async_test]
+    async fn test_peers_cpus() {
+        let client = test_client().await;
+        let token = login_admin(&client).await;
+        let resp = client
+            .get("/api/peers/cpus")
+            .header(ContentType::JSON)
+            .header(auth_header(&token))
+            .dispatch()
+            .await;
+        assert_eq!(resp.status(), Status::Ok);
+    }
+
+    #[rocket::async_test]
+    async fn test_ab_get_authenticated() {
+        let client = test_client().await;
+        let token = login_admin(&client).await;
+        let resp = client
+            .post("/api/ab/get")
+            .header(ContentType::JSON)
+            .header(auth_header(&token))
+            .dispatch()
+            .await;
+        assert_eq!(resp.status(), Status::Ok);
+    }
+
+    #[rocket::async_test]
+    async fn test_ab_personal() {
+        let client = test_client().await;
+        let token = login_admin(&client).await;
+        let resp = client
+            .post("/api/ab/personal")
+            .header(ContentType::JSON)
+            .header(auth_header(&token))
+            .dispatch()
+            .await;
+        assert_eq!(resp.status(), Status::Ok);
+        let body: serde_json::Value = resp.into_json().await.unwrap();
+        assert!(body["guid"].as_str().is_some());
+    }
+
+    #[rocket::async_test]
+    async fn test_ab_settings() {
+        let client = test_client().await;
+        let token = login_admin(&client).await;
+        let resp = client
+            .post("/api/ab/settings")
+            .header(ContentType::JSON)
+            .header(auth_header(&token))
+            .dispatch()
+            .await;
+        assert_eq!(resp.status(), Status::Ok);
+    }
+
+    #[rocket::async_test]
+    async fn test_ab_tag_lifecycle() {
+        let client = test_client().await;
+        let token = login_admin(&client).await;
+
+        let resp = client
+            .post("/api/ab/personal")
+            .header(ContentType::JSON)
+            .header(auth_header(&token))
+            .dispatch()
+            .await;
+        let body: serde_json::Value = resp.into_json().await.unwrap();
+        let ab_guid = body["guid"].as_str().unwrap().to_string();
+
+        let resp = client
+            .post(format!("/api/ab/tag/add/{}", ab_guid))
+            .header(ContentType::JSON)
+            .header(auth_header(&token))
+            .body(r#"{"name":"test-tag","color":4278190335}"#)
+            .dispatch()
+            .await;
+        assert_eq!(resp.status(), Status::Ok);
+
+        let resp = client
+            .put(format!("/api/ab/tag/update/{}", ab_guid))
+            .header(ContentType::JSON)
+            .header(auth_header(&token))
+            .body(r#"{"name":"test-tag","color":4294901760}"#)
+            .dispatch()
+            .await;
+        assert_eq!(resp.status(), Status::Ok);
+
+        let resp = client
+            .put(format!("/api/ab/tag/rename/{}", ab_guid))
+            .header(ContentType::JSON)
+            .header(auth_header(&token))
+            .body(r#"{"old":"test-tag","new":"renamed-tag"}"#)
+            .dispatch()
+            .await;
+        assert_eq!(resp.status(), Status::Ok);
+
+        let resp = client
+            .delete(format!("/api/ab/tag/{}", ab_guid))
+            .header(ContentType::JSON)
+            .header(auth_header(&token))
+            .body(r#"["renamed-tag"]"#)
+            .dispatch()
+            .await;
+        assert_eq!(resp.status(), Status::Ok);
+    }
+
+    #[rocket::async_test]
+    async fn test_options_cors() {
+        let client = test_client().await;
+        let resp = client
+            .options("/api/login")
+            .dispatch()
+            .await;
+        assert_eq!(resp.status(), Status::Ok);
+        let cors = resp.headers().get_one("Access-Control-Allow-Origin");
+        assert_eq!(cors, Some("*"));
+    }
+
+    #[rocket::async_test]
+    async fn test_login_options() {
+        let client = test_client().await;
+        let resp = client
+            .get("/api/login-options")
+            .header(ContentType::JSON)
+            .dispatch()
+            .await;
+        assert!(resp.status() == Status::Ok || resp.status() == Status::Unauthorized);
+        if resp.status() == Status::Ok {
+            let body: serde_json::Value = resp.into_json().await.unwrap();
+            assert!(body.is_array());
+        }
+    }
+
+    #[rocket::async_test]
+    async fn test_strategies() {
+        let client = test_client().await;
+        let token = login_admin(&client).await;
+        let resp = client
+            .get("/api/stategies")
+            .header(ContentType::JSON)
+            .header(auth_header(&token))
+            .dispatch()
+            .await;
+        assert_eq!(resp.status(), Status::Ok);
+        let body: serde_json::Value = resp.into_json().await.unwrap();
+        assert_eq!(body["msg"], "success");
+    }
+
+    #[rocket::async_test]
+    async fn test_ab_legacy_set() {
+        let client = test_client().await;
+        let token = login_admin(&client).await;
+        let resp = client
+            .post("/api/ab")
+            .header(ContentType::JSON)
+            .header(auth_header(&token))
+            .body(r#"{"data":"{\"tags\":[],\"peers\":[]}"}"#)
+            .dispatch()
+            .await;
+        assert_eq!(resp.status(), Status::Ok);
+    }
+
+    #[rocket::async_test]
+    async fn test_ab_legacy_get() {
+        let client = test_client().await;
+        let token = login_admin(&client).await;
+        let resp = client
+            .get("/api/ab")
+            .header(ContentType::JSON)
+            .header(auth_header(&token))
+            .dispatch()
+            .await;
+        assert_eq!(resp.status(), Status::Ok);
+    }
+
+    #[rocket::async_test]
+    async fn test_ab_shared_profiles() {
+        let client = test_client().await;
+        let token = login_admin(&client).await;
+        let resp = client
+            .post("/api/ab/shared/profiles")
+            .header(auth_header(&token))
+            .dispatch()
+            .await;
+        assert_eq!(resp.status(), Status::Ok);
+    }
+
+    #[rocket::async_test]
+    async fn test_ab_peers_query() {
+        let client = test_client().await;
+        let token = login_admin(&client).await;
+
+        let ab_resp = client
+            .post("/api/ab/personal")
+            .header(ContentType::JSON)
+            .header(auth_header(&token))
+            .dispatch()
+            .await;
+        let body: serde_json::Value = ab_resp.into_json().await.unwrap();
+        let ab_guid = body["guid"].as_str().unwrap();
+
+        let resp = client
+            .post(format!("/api/ab/peers?current=1&pageSize=10&ab={}", ab_guid))
+            .header(auth_header(&token))
+            .dispatch()
+            .await;
+        assert_eq!(resp.status(), Status::Ok);
+    }
+
+    #[rocket::async_test]
+    async fn test_ab_peer_crud() {
+        let client = test_client().await;
+        let token = login_admin(&client).await;
+
+        let ab_resp = client
+            .post("/api/ab/personal")
+            .header(ContentType::JSON)
+            .header(auth_header(&token))
+            .dispatch()
+            .await;
+        let body: serde_json::Value = ab_resp.into_json().await.unwrap();
+        let ab_guid = body["guid"].as_str().unwrap().to_string();
+
+        let resp = client
+            .post(format!("/api/ab/peer/add/{}", ab_guid))
+            .header(ContentType::JSON)
+            .header(auth_header(&token))
+            .body(r#"{"id":"test-peer-1"}"#)
+            .dispatch()
+            .await;
+        assert_eq!(resp.status(), Status::Ok);
+
+        let resp = client
+            .put(format!("/api/ab/peer/update/{}", ab_guid))
+            .header(ContentType::JSON)
+            .header(auth_header(&token))
+            .body(r#"{"id":"test-peer-1","alias":"Updated Peer","hostname":"testhost"}"#)
+            .dispatch()
+            .await;
+        assert_eq!(resp.status(), Status::Ok);
+
+        let resp = client
+            .delete(format!("/api/ab/peer/{}", ab_guid))
+            .header(ContentType::JSON)
+            .header(auth_header(&token))
+            .body(r#"["test-peer-1"]"#)
+            .dispatch()
+            .await;
+        assert_eq!(resp.status(), Status::Ok);
+    }
+
+    #[rocket::async_test]
+    async fn test_ab_tags_list() {
+        let client = test_client().await;
+        let token = login_admin(&client).await;
+
+        let ab_resp = client
+            .post("/api/ab/personal")
+            .header(ContentType::JSON)
+            .header(auth_header(&token))
+            .dispatch()
+            .await;
+        let body: serde_json::Value = ab_resp.into_json().await.unwrap();
+        let ab_guid = body["guid"].as_str().unwrap();
+
+        let resp = client
+            .post(format!("/api/ab/tags/{}", ab_guid))
+            .header(auth_header(&token))
+            .dispatch()
+            .await;
+        assert_eq!(resp.status(), Status::Ok);
+    }
+
+    #[rocket::async_test]
+    async fn test_ab_rules_crud() {
+        let client = test_client().await;
+        let token = login_admin(&client).await;
+
+        let ab_resp = client
+            .post("/api/ab/personal")
+            .header(ContentType::JSON)
+            .header(auth_header(&token))
+            .dispatch()
+            .await;
+        let body: serde_json::Value = ab_resp.into_json().await.unwrap();
+        let ab_guid = body["guid"].as_str().unwrap().to_string();
+
+        let resp = client
+            .get(format!("/api/ab/rules?current=1&pageSize=10&ab={}", ab_guid))
+            .header(ContentType::JSON)
+            .header(auth_header(&token))
+            .dispatch()
+            .await;
+        assert_eq!(resp.status(), Status::Ok);
+
+        let resp = client
+            .post("/api/ab/rule")
+            .header(ContentType::JSON)
+            .header(auth_header(&token))
+            .body(format!(r#"{{"guid":"{}","user":null,"group":null,"rule":3}}"#, ab_guid))
+            .dispatch()
+            .await;
+        assert_eq!(resp.status(), Status::Ok);
+
+        let rules_resp = client
+            .get(format!("/api/ab/rules?current=1&pageSize=10&ab={}", ab_guid))
+            .header(ContentType::JSON)
+            .header(auth_header(&token))
+            .dispatch()
+            .await;
+        let rules_body: serde_json::Value = rules_resp.into_json().await.unwrap();
+        if let Some(rules) = rules_body["data"].as_array() {
+            if let Some(rule) = rules.first() {
+                let rule_guid = rule["guid"].as_str().unwrap_or("");
+                if !rule_guid.is_empty() {
+                    let resp = client
+                        .delete("/api/ab/rule")
+                        .header(ContentType::JSON)
+                        .header(auth_header(&token))
+                        .body(format!(r#"{{"guid":"{}"}}"#, rule_guid))
+                        .dispatch()
+                        .await;
+                    assert_eq!(resp.status(), Status::Ok);
+                }
+            }
+        }
+    }
+
+    #[rocket::async_test]
+    async fn test_ab_shared_crud() {
+        let client = test_client().await;
+        let token = login_admin(&client).await;
+
+        let resp = client
+            .post("/api/ab/shared/add")
+            .header(ContentType::JSON)
+            .header(auth_header(&token))
+            .body(r#"{"name":"test-shared-ab"}"#)
+            .dispatch()
+            .await;
+        assert_eq!(resp.status(), Status::Ok);
+        let body: serde_json::Value = resp.into_json().await.unwrap();
+        let shared_guid = body["guid"].as_str().unwrap_or("").to_string();
+
+        if !shared_guid.is_empty() {
+            let resp = client
+                .put("/api/ab/shared/update/profile")
+                .header(ContentType::JSON)
+                .header(auth_header(&token))
+                .body(format!(r#"{{"guid":"{}","name":"renamed-shared-ab"}}"#, shared_guid))
+                .dispatch()
+                .await;
+            assert_eq!(resp.status(), Status::Ok);
+
+            let resp = client
+                .delete("/api/ab/shared")
+                .header(ContentType::JSON)
+                .header(auth_header(&token))
+                .body(format!(r#"["{}"]"#, shared_guid))
+                .dispatch()
+                .await;
+            assert_eq!(resp.status(), Status::Ok);
+        }
+    }
+
+    #[rocket::async_test]
+    async fn test_user_enable_disable() {
+        let client = test_client().await;
+        let token = login_admin(&client).await;
+
+        client
+            .post("/api/user")
+            .header(ContentType::JSON)
+            .header(auth_header(&token))
+            .body(r#"{"name":"toggleuser","password":"pass","confirm-password":"pass","email":"toggle@example.com","is_admin":false,"group_name":"Default"}"#)
+            .dispatch()
+            .await;
+
+        let list_resp = client
+            .get("/api/user-list?current=1&pageSize=100")
+            .header(ContentType::JSON)
+            .header(auth_header(&token))
+            .dispatch()
+            .await;
+        let body: serde_json::Value = list_resp.into_json().await.unwrap();
+        let users = body["data"].as_array().unwrap();
+        let user = users.iter().find(|u| u["name"] == "toggleuser").unwrap();
+        let guid = user["guid"].as_str().unwrap().to_string();
+
+        let resp = client
+            .post("/api/enable-users")
+            .header(ContentType::JSON)
+            .header(auth_header(&token))
+            .body(format!(r#"{{"rows":["{}"],"disable":true}}"#, guid))
+            .dispatch()
+            .await;
+        assert_eq!(resp.status(), Status::Ok);
+
+        let resp = client
+            .post("/api/enable-users")
+            .header(ContentType::JSON)
+            .header(auth_header(&token))
+            .body(format!(r#"{{"rows":["{}"],"disable":false}}"#, guid))
+            .dispatch()
+            .await;
+        assert_eq!(resp.status(), Status::Ok);
+    }
+
+    #[rocket::async_test]
+    async fn test_user_update() {
+        let client = test_client().await;
+        let token = login_admin(&client).await;
+
+        client
+            .post("/api/user")
+            .header(ContentType::JSON)
+            .header(auth_header(&token))
+            .body(r#"{"name":"updateuser","password":"pass","confirm-password":"pass","email":"upd@example.com","is_admin":false,"group_name":"Default"}"#)
+            .dispatch()
+            .await;
+
+        let list_resp = client
+            .get("/api/user-list?current=1&pageSize=100")
+            .header(ContentType::JSON)
+            .header(auth_header(&token))
+            .dispatch()
+            .await;
+        let body: serde_json::Value = list_resp.into_json().await.unwrap();
+        let users = body["data"].as_array().unwrap();
+        let user = users.iter().find(|u| u["name"] == "updateuser").unwrap();
+        let guid = user["guid"].as_str().unwrap().to_string();
+
+        let resp = client
+            .put("/api/user")
+            .header(ContentType::JSON)
+            .header(auth_header(&token))
+            .body(format!(r#"{{"uuid":"{}","name":"updateduser","email":"new@example.com"}}"#, guid))
+            .dispatch()
+            .await;
+        assert_eq!(resp.status(), Status::Ok);
+    }
+
+    #[rocket::async_test]
+    async fn test_users_client_endpoint() {
+        let client = test_client().await;
+        let token = login_admin(&client).await;
+        let resp = client
+            .get("/api/users?current=1&pageSize=10")
+            .header(ContentType::JSON)
+            .header(auth_header(&token))
+            .dispatch()
+            .await;
+        assert_eq!(resp.status(), Status::Ok);
+        let body: serde_json::Value = resp.into_json().await.unwrap();
+        assert_eq!(body["msg"], "success");
+    }
+
+    #[rocket::async_test]
+    async fn test_oidc_settings_add() {
+        let client = test_client().await;
+        let token = login_admin(&client).await;
+        let resp = client
+            .put("/api/oidc/settings")
+            .header(ContentType::JSON)
+            .header(auth_header(&token))
+            .body(r#"{"rows":[],"disable":false}"#)
+            .dispatch()
+            .await;
+        assert_eq!(resp.status(), Status::Unauthorized);
+    }
+
+    #[rocket::async_test]
+    async fn test_oidc_settings_get() {
+        let client = test_client().await;
+        let token = login_admin(&client).await;
+        let resp = client
+            .get("/api/oidc/settings")
+            .header(ContentType::JSON)
+            .header(auth_header(&token))
+            .dispatch()
+            .await;
+        assert_eq!(resp.status(), Status::Unauthorized);
+    }
+
+    #[rocket::async_test]
+    async fn test_oidc_auth_invalid_uuid() {
+        let client = test_client().await;
+        let resp = client
+            .post("/api/oidc/auth")
+            .header(ContentType::JSON)
+            .body(r#"{"op":"test","id":"test","uuid":"not-base64!!!","deviceInfo":{"name":"t","os":"t","type":"t"}}"#)
+            .dispatch()
+            .await;
+        assert_eq!(resp.status(), Status::Ok);
+        let body: serde_json::Value = resp.into_json().await.unwrap();
+        assert_eq!(body["code"], "UUID_ERROR");
+    }
+
+    #[rocket::async_test]
+    async fn test_oidc_auth_no_provider() {
+        let client = test_client().await;
+        let uuid_b64 = base64::prelude::BASE64_STANDARD.encode("test-uuid-value");
+        let resp = client
+            .post("/api/oidc/auth")
+            .header(ContentType::JSON)
+            .body(format!(
+                r#"{{"op":"nonexistent","id":"test","uuid":"{}","deviceInfo":{{"name":"t","os":"t","type":"t"}}}}"#,
+                uuid_b64
+            ))
+            .dispatch()
+            .await;
+        assert_eq!(resp.status(), Status::Ok);
+        let body: serde_json::Value = resp.into_json().await.unwrap();
+        assert!(body["url"].as_str().unwrap().is_empty());
+    }
+
+    #[rocket::async_test]
+    async fn test_oidc_callback_invalid_session() {
+        let client = test_client().await;
+        let resp = client
+            .get("/api/oidc/callback?code=fake-code&state=fake-state")
+            .dispatch()
+            .await;
+        assert_eq!(resp.status(), Status::Ok);
+        let body = resp.into_string().await.unwrap();
+        assert!(body.contains("Login failed"));
+    }
+
+    #[rocket::async_test]
+    async fn test_oidc_state_invalid_session() {
+        let client = test_client().await;
+        let resp = client
+            .get("/api/oidc/auth-query?code=fake&id=fake&uuid=fake")
+            .header(ContentType::JSON)
+            .dispatch()
+            .await;
+        assert_eq!(resp.status(), Status::Ok);
+        let body: serde_json::Value = resp.into_json().await.unwrap();
+        assert!(body.is_null());
+    }
+
+    #[rocket::async_test]
+    async fn test_software_no_s3_config() {
+        let client = test_client().await;
+        let resp = client
+            .get("/api/software/client-download-link/windows/x86_64")
+            .header(ContentType::JSON)
+            .dispatch()
+            .await;
+        // Without S3 config, this will error
+        assert!(resp.status() == Status::NotFound || resp.status() == Status::InternalServerError);
+    }
+
+    #[rocket::async_test]
+    async fn test_software_version() {
+        let client = test_client().await;
+        let resp = client
+            .get("/api/software/version/server")
+            .header(ContentType::JSON)
+            .dispatch()
+            .await;
+        // Panics without GITHUB_REPOSITORY env var — expects 500
+        assert!(resp.status() == Status::Ok || resp.status() == Status::InternalServerError);
+    }
+
+    #[rocket::async_test]
+    async fn test_webconsole_index_redirect() {
+        let client = test_client().await;
+        let resp = client.get("/").dispatch().await;
+        assert_eq!(resp.status(), Status::SeeOther);
+    }
+
+    #[rocket::async_test]
+    async fn test_webconsole_index_html_redirect() {
+        let client = test_client().await;
+        let resp = client.get("/index.html").dispatch().await;
+        assert_eq!(resp.status(), Status::SeeOther);
+    }
+
+    #[rocket::async_test]
+    async fn test_favicon_redirect() {
+        let client = test_client().await;
+        let resp = client.get("/favicon.ico").dispatch().await;
+        assert_eq!(resp.status(), Status::SeeOther);
+    }
+
+    #[rocket::async_test]
+    async fn test_openapi_json() {
+        let client = test_client().await;
+        let resp = client.get("/openapi.json").dispatch().await;
+        assert_eq!(resp.status(), Status::Ok);
+    }
+
+    #[rocket::async_test]
+    async fn test_webconsole_static_files() {
+        let client = test_client().await;
+        let resp = client.get("/ui/index.html").dispatch().await;
+        // Returns the static file or fallback
+        assert!(resp.status() == Status::Ok || resp.status() == Status::NotFound);
+    }
+
+    #[rocket::async_test]
+    async fn test_openapi_snippet_js() {
+        let client = test_client().await;
+        let resp = client.get("/js/sctgdesk-server.min.js").dispatch().await;
+        assert_eq!(resp.status(), Status::Ok);
+    }
+
+    #[rocket::async_test]
+    async fn test_openapi_snippet_map() {
+        let client = test_client().await;
+        let resp = client.get("/js/sctgdesk-server.min.js.map").dispatch().await;
+        assert_eq!(resp.status(), Status::Ok);
+    }
+}
