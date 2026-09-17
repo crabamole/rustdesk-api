@@ -135,6 +135,10 @@ pub async fn build_rocket_with_db(figment: Figment, db_path: &str) -> Rocket<Bui
                 ab,
                 current_user,
                 audit,
+                audit_conn,
+                audit_conn_active,
+                audit_file,
+                audit_alarm,
                 logout,
                 heartbeat,
                 sysinfo,
@@ -445,11 +449,68 @@ async fn current_user(
     Ok(Json(reply))
 }
 
-/// Audit
-#[openapi(tag = "todo")]
+/// Audit (legacy endpoint, delegates to conn handler)
+#[openapi(tag = "audit")]
 #[post("/api/audit", format = "application/json", data = "<request>")]
 async fn audit(state: &State<ApiState>, request: Json<AuditRequest>) {
     log::debug!("audit: {:?}", request);
+    state.check_maintenance().await;
+}
+
+/// Audit connection events
+#[openapi(tag = "audit")]
+#[post("/api/audit/conn", format = "application/json", data = "<request>")]
+async fn audit_conn(
+    state: &State<ApiState>,
+    request: Json<utils::AuditConnRequest>,
+) -> String {
+    log::debug!("audit_conn: {:?}", request);
+    let result = state.audit_conn(&request).await;
+    state.check_maintenance().await;
+    match result {
+        Some(guid) => serde_json::to_string(&guid).unwrap_or_default(),
+        None => String::new(),
+    }
+}
+
+/// Query active audit connection
+#[openapi(tag = "audit")]
+#[get("/api/audit/conn/active?<id>&<session_id>&<conn_type>")]
+async fn audit_conn_active(
+    state: &State<ApiState>,
+    id: &str,
+    session_id: &str,
+    conn_type: &str,
+) -> String {
+    log::debug!("audit_conn_active: id={}, session_id={}, conn_type={}", id, session_id, conn_type);
+    let result = state.find_active_audit_conn(id, session_id, conn_type).await;
+    match result {
+        Some(guid) => serde_json::to_string(&guid).unwrap_or_default(),
+        None => serde_json::to_string("").unwrap_or_default(),
+    }
+}
+
+/// Audit file transfer events
+#[openapi(tag = "audit")]
+#[post("/api/audit/file", format = "application/json", data = "<request>")]
+async fn audit_file(
+    state: &State<ApiState>,
+    request: Json<utils::AuditFileRequest>,
+) {
+    log::debug!("audit_file: {:?}", request);
+    state.audit_file(&request).await;
+    state.check_maintenance().await;
+}
+
+/// Audit alarm events
+#[openapi(tag = "audit")]
+#[post("/api/audit/alarm", format = "application/json", data = "<request>")]
+async fn audit_alarm(
+    state: &State<ApiState>,
+    request: Json<utils::AuditAlarmRequest>,
+) {
+    log::debug!("audit_alarm: {:?}", request);
+    state.audit_alarm(&request).await;
     state.check_maintenance().await;
 }
 
@@ -2583,6 +2644,135 @@ mod tests {
             .post("/api/audit")
             .header(ContentType::JSON)
             .body(r#"{"action":"test","id":"1","ip":"127.0.0.1"}"#)
+            .dispatch()
+            .await;
+        assert_eq!(resp.status(), Status::Ok);
+    }
+
+    #[rocket::async_test]
+    async fn test_audit_conn_new() {
+        let client = test_client().await;
+        let resp = client
+            .post("/api/audit/conn")
+            .header(ContentType::JSON)
+            .body(r#"{"id":"peer1","uuid":"dXVpZA==","conn_id":1,"session_id":100,"nonce":"n1","ip":"10.0.0.1","action":"new"}"#)
+            .dispatch()
+            .await;
+        assert_eq!(resp.status(), Status::Ok);
+        let body = resp.into_string().await.unwrap();
+        assert!(!body.is_empty());
+        let guid: String = serde_json::from_str(&body).unwrap();
+        assert!(!guid.is_empty());
+    }
+
+    #[rocket::async_test]
+    async fn test_audit_conn_close() {
+        let client = test_client().await;
+        let resp = client
+            .post("/api/audit/conn")
+            .header(ContentType::JSON)
+            .body(r#"{"id":"peer2","uuid":"dXVpZA==","conn_id":1,"session_id":200,"nonce":"n2","ip":"10.0.0.2","action":"new"}"#)
+            .dispatch()
+            .await;
+        assert_eq!(resp.status(), Status::Ok);
+        let body = resp.into_string().await.unwrap();
+        let guid: String = serde_json::from_str(&body).unwrap();
+
+        let resp = client
+            .post("/api/audit/conn")
+            .header(ContentType::JSON)
+            .body(format!(r#"{{"id":"peer2","uuid":"dXVpZA==","conn_id":1,"session_id":200,"nonce":"n3","ip":"10.0.0.2","action":"close","conn_audit_ref":"{}"}}"#, guid))
+            .dispatch()
+            .await;
+        assert_eq!(resp.status(), Status::Ok);
+    }
+
+    #[rocket::async_test]
+    async fn test_audit_conn_active() {
+        let client = test_client().await;
+        let resp = client
+            .post("/api/audit/conn")
+            .header(ContentType::JSON)
+            .body(r#"{"id":"peer3","uuid":"dXVpZA==","conn_id":1,"session_id":300,"nonce":"n4","ip":"10.0.0.3","action":"new"}"#)
+            .dispatch()
+            .await;
+        assert_eq!(resp.status(), Status::Ok);
+        let body = resp.into_string().await.unwrap();
+        let expected_guid: String = serde_json::from_str(&body).unwrap();
+
+        let resp = client
+            .get("/api/audit/conn/active?id=peer3&session_id=300&conn_type=0")
+            .dispatch()
+            .await;
+        assert_eq!(resp.status(), Status::Ok);
+        let body = resp.into_string().await.unwrap();
+        let guid: String = serde_json::from_str(&body).unwrap();
+        assert_eq!(guid, expected_guid);
+    }
+
+    #[rocket::async_test]
+    async fn test_audit_file() {
+        let client = test_client().await;
+        let resp = client
+            .post("/api/audit/file")
+            .header(ContentType::JSON)
+            .body(r#"{"id":"peer4","uuid":"dXVpZA==","peer_id":"remote1","conn_id":1,"type":1,"path":"/tmp/file.txt","is_file":true,"info":"{}","nonce":"nf1"}"#)
+            .dispatch()
+            .await;
+        assert_eq!(resp.status(), Status::Ok);
+    }
+
+    #[rocket::async_test]
+    async fn test_audit_alarm() {
+        let client = test_client().await;
+        let resp = client
+            .post("/api/audit/alarm")
+            .header(ContentType::JSON)
+            .body(r#"{"id":"peer5","uuid":"dXVpZA==","typ":1,"info":"{}","conn_id":1,"nonce":"na1"}"#)
+            .dispatch()
+            .await;
+        assert_eq!(resp.status(), Status::Ok);
+    }
+
+    #[rocket::async_test]
+    async fn test_audit_conn_nonce_dedup() {
+        let client = test_client().await;
+        let resp = client
+            .post("/api/audit/conn")
+            .header(ContentType::JSON)
+            .body(r#"{"id":"peer6","uuid":"dXVpZA==","conn_id":1,"session_id":600,"nonce":"dedup1","ip":"10.0.0.6","action":"new"}"#)
+            .dispatch()
+            .await;
+        let body1 = resp.into_string().await.unwrap();
+        let guid1: String = serde_json::from_str(&body1).unwrap();
+
+        let resp = client
+            .post("/api/audit/conn")
+            .header(ContentType::JSON)
+            .body(r#"{"id":"peer6","uuid":"dXVpZA==","conn_id":1,"session_id":600,"nonce":"dedup1","ip":"10.0.0.6","action":"new"}"#)
+            .dispatch()
+            .await;
+        let body2 = resp.into_string().await.unwrap();
+        let guid2: String = serde_json::from_str(&body2).unwrap();
+
+        assert_eq!(guid1, guid2);
+    }
+
+    #[rocket::async_test]
+    async fn test_audit_file_nonce_dedup() {
+        let client = test_client().await;
+        let resp = client
+            .post("/api/audit/file")
+            .header(ContentType::JSON)
+            .body(r#"{"id":"peer7","uuid":"dXVpZA==","peer_id":"remote7","conn_id":1,"type":1,"path":"/tmp/f.txt","is_file":true,"info":"{}","nonce":"fdedup1"}"#)
+            .dispatch()
+            .await;
+        assert_eq!(resp.status(), Status::Ok);
+
+        let resp = client
+            .post("/api/audit/file")
+            .header(ContentType::JSON)
+            .body(r#"{"id":"peer7","uuid":"dXVpZA==","peer_id":"remote7","conn_id":1,"type":1,"path":"/tmp/f.txt","is_file":true,"info":"{}","nonce":"fdedup1"}"#)
             .dispatch()
             .await;
         assert_eq!(resp.status(), Status::Ok);

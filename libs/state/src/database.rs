@@ -1716,6 +1716,190 @@ impl Database {
         }
         Some(())
     }
+
+    pub async fn insert_audit_conn(
+        &self,
+        guid: &[u8],
+        conn_type: Option<i8>,
+        remote: &[u8],
+        local: Option<&[u8]>,
+        note: Option<&str>,
+        info: &str,
+    ) -> Option<()> {
+        sqlx::query(
+            "INSERT INTO audit_conn (guid, type, remote, local, note, info) VALUES ($1, $2, $3, $4, $5, $6)",
+        )
+        .bind(guid)
+        .bind(conn_type.map(|t| t as i16))
+        .bind(remote)
+        .bind(local)
+        .bind(note)
+        .bind(info)
+        .execute(&self.pool)
+        .await
+        .ok()?;
+        Some(())
+    }
+
+    pub async fn update_audit_conn_end_time(&self, guid: &[u8]) -> Option<()> {
+        let now_expr = match self.backend {
+            Backend::Sqlite => "strftime('%Y-%m-%d %H:%M:%f', 'now')",
+            Backend::Postgres => "to_char(NOW(), 'YYYY-MM-DD HH24:MI:SS.MS')",
+        };
+        let sql = format!(
+            "UPDATE audit_conn SET end_time = {} WHERE guid = $1",
+            now_expr
+        );
+        sqlx::query(&sql)
+            .bind(guid)
+            .execute(&self.pool)
+            .await
+            .ok()?;
+        Some(())
+    }
+
+    pub async fn update_audit_conn_note(&self, guid: &[u8], note: &str) -> Option<()> {
+        sqlx::query("UPDATE audit_conn SET note = $1 WHERE guid = $2")
+            .bind(note)
+            .bind(guid)
+            .execute(&self.pool)
+            .await
+            .ok()?;
+        Some(())
+    }
+
+    pub async fn find_active_audit_conn(
+        &self,
+        peer_id: &str,
+        session_id: &str,
+        conn_type: &str,
+    ) -> Option<Vec<u8>> {
+        let conn_type_i: i16 = conn_type.parse().unwrap_or(0);
+        let row = sqlx::query(
+            "SELECT guid FROM audit_conn WHERE remote = $1 AND type = $2 AND end_time IS NULL ORDER BY created_at DESC",
+        )
+        .bind(peer_id.as_bytes())
+        .bind(conn_type_i)
+        .fetch_all(&self.pool)
+        .await
+        .ok()?;
+
+        for r in &row {
+            let guid: Vec<u8> = r.try_get("guid").ok()?;
+            let info_str: String = sqlx::query("SELECT info FROM audit_conn WHERE guid = $1")
+                .bind(&guid)
+                .fetch_one(&self.pool)
+                .await
+                .ok()?
+                .try_get("info")
+                .ok()?;
+            if let Ok(info) = serde_json::from_str::<serde_json::Value>(&info_str) {
+                if info.get("session_id").and_then(|v| v.as_i64()).map(|s| s.to_string()).as_deref() == Some(session_id) {
+                    return Some(guid);
+                }
+            }
+        }
+        None
+    }
+
+    pub async fn find_audit_conn_by_nonce(&self, nonce: &str) -> Option<Vec<u8>> {
+        let rows = sqlx::query("SELECT guid, info FROM audit_conn ORDER BY created_at DESC")
+            .fetch_all(&self.pool)
+            .await
+            .ok()?;
+        for r in &rows {
+            let info_str: String = r.try_get("info").ok()?;
+            if let Ok(info) = serde_json::from_str::<serde_json::Value>(&info_str) {
+                if info.get("nonce").and_then(|v| v.as_str()) == Some(nonce) {
+                    return Some(r.try_get("guid").ok()?);
+                }
+            }
+        }
+        None
+    }
+
+    pub async fn find_audit_file_by_nonce(&self, nonce: &str) -> bool {
+        let rows = sqlx::query("SELECT info FROM audit_file ORDER BY created_at DESC")
+            .fetch_all(&self.pool)
+            .await
+            .unwrap_or_default();
+        for r in &rows {
+            if let Ok(info_str) = r.try_get::<String, _>("info") {
+                if let Ok(info) = serde_json::from_str::<serde_json::Value>(&info_str) {
+                    if info.get("nonce").and_then(|v| v.as_str()) == Some(nonce) {
+                        return true;
+                    }
+                }
+            }
+        }
+        false
+    }
+
+    pub async fn find_audit_alarm_by_nonce(&self, nonce: &str) -> bool {
+        let rows = sqlx::query("SELECT info FROM audit_alarm ORDER BY created_at DESC")
+            .fetch_all(&self.pool)
+            .await
+            .unwrap_or_default();
+        for r in &rows {
+            if let Ok(info_str) = r.try_get::<String, _>("info") {
+                if let Ok(info) = serde_json::from_str::<serde_json::Value>(&info_str) {
+                    if info.get("nonce").and_then(|v| v.as_str()) == Some(nonce) {
+                        return true;
+                    }
+                }
+            }
+        }
+        false
+    }
+
+    pub async fn insert_audit_file(
+        &self,
+        guid: &[u8],
+        remote: &[u8],
+        local: Option<&[u8]>,
+        file_type: i8,
+        path: &str,
+        is_file: bool,
+        info: &str,
+    ) -> Option<()> {
+        let is_file_i: i8 = if is_file { 1 } else { 0 };
+        sqlx::query(
+            "INSERT INTO audit_file (guid, remote, local, type, path, is_file, info) VALUES ($1, $2, $3, $4, $5, $6, $7)",
+        )
+        .bind(guid)
+        .bind(remote)
+        .bind(local)
+        .bind(file_type as i16)
+        .bind(path)
+        .bind(is_file_i as i16)
+        .bind(info)
+        .execute(&self.pool)
+        .await
+        .ok()?;
+        Some(())
+    }
+
+    pub async fn insert_audit_alarm(
+        &self,
+        guid: &[u8],
+        alarm_type: i8,
+        info: &str,
+        user: Option<&[u8]>,
+        device: Option<&[u8]>,
+    ) -> Option<()> {
+        sqlx::query(
+            "INSERT INTO audit_alarm (guid, type, info, \"user\", device) VALUES ($1, $2, $3, $4, $5)",
+        )
+        .bind(guid)
+        .bind(alarm_type as i16)
+        .bind(info)
+        .bind(user)
+        .bind(device)
+        .execute(&self.pool)
+        .await
+        .ok()?;
+        Some(())
+    }
 }
 
 #[cfg(test)]
@@ -2332,6 +2516,67 @@ mod tests {
             .await;
         let checker = UserPasswordInfo::from_password("newpass");
         assert!(checker.check(pw_info.unwrap()));
+    });
+
+    db_test!(insert_audit_conn, |db| {
+        let guid = Uuid::new_v4();
+        let info = r#"{"nonce":"test1","session_id":100}"#;
+        let result = db.insert_audit_conn(guid.as_bytes(), Some(0), b"peer1", None, None, info).await;
+        assert!(result.is_some());
+    });
+
+    db_test!(audit_conn_end_time, |db| {
+        let guid = Uuid::new_v4();
+        let info = r#"{"nonce":"test2","session_id":200}"#;
+        db.insert_audit_conn(guid.as_bytes(), None, b"peer2", None, None, info).await;
+        let result = db.update_audit_conn_end_time(guid.as_bytes()).await;
+        assert!(result.is_some());
+    });
+
+    db_test!(find_active_audit_conn_match, |db| {
+        let guid = Uuid::new_v4();
+        let info = r#"{"nonce":"test3","session_id":300}"#;
+        db.insert_audit_conn(guid.as_bytes(), Some(0), b"peer3", None, None, info).await;
+        let found = db.find_active_audit_conn("peer3", "300", "0").await;
+        assert!(found.is_some());
+        assert_eq!(found.unwrap(), guid.as_bytes().to_vec());
+    });
+
+    db_test!(find_active_audit_conn_closed, |db| {
+        let guid = Uuid::new_v4();
+        let info = r#"{"nonce":"test4","session_id":400}"#;
+        db.insert_audit_conn(guid.as_bytes(), Some(0), b"peer4", None, None, info).await;
+        db.update_audit_conn_end_time(guid.as_bytes()).await;
+        let found = db.find_active_audit_conn("peer4", "400", "0").await;
+        assert!(found.is_none());
+    });
+
+    db_test!(insert_audit_file_basic, |db| {
+        let guid = Uuid::new_v4();
+        let info = r#"{"nonce":"ftest1"}"#;
+        let result = db.insert_audit_file(guid.as_bytes(), b"remote1", Some(b"local1"), 1, "/tmp/f.txt", true, info).await;
+        assert!(result.is_some());
+    });
+
+    db_test!(insert_audit_alarm_basic, |db| {
+        let guid = Uuid::new_v4();
+        let info = r#"{"nonce":"atest1"}"#;
+        let result = db.insert_audit_alarm(guid.as_bytes(), 1, info, None, Some(b"device1")).await;
+        assert!(result.is_some());
+    });
+
+    db_test!(find_audit_conn_by_nonce_match, |db| {
+        let guid = Uuid::new_v4();
+        let info = r#"{"nonce":"unique_nonce_1","session_id":500}"#;
+        db.insert_audit_conn(guid.as_bytes(), None, b"peer5", None, None, info).await;
+        let found = db.find_audit_conn_by_nonce("unique_nonce_1").await;
+        assert!(found.is_some());
+        assert_eq!(found.unwrap(), guid.as_bytes().to_vec());
+    });
+
+    db_test!(find_audit_conn_by_nonce_miss, |db| {
+        let found = db.find_audit_conn_by_nonce("nonexistent").await;
+        assert!(found.is_none());
     });
 
     db_test!(heartbeat_no_peer, |db| {

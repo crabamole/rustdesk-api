@@ -185,6 +185,72 @@ pub struct AuditRequest {
     pub uuid: String,
 }
 
+#[derive(Deserialize, Debug, JsonSchema)]
+pub struct AuditConnRequest {
+    #[serde(default)]
+    pub id: String,
+    #[serde(default)]
+    pub uuid: String,
+    #[serde(default)]
+    pub conn_id: i64,
+    #[serde(default)]
+    pub session_id: i64,
+    #[serde(default)]
+    pub nonce: String,
+    #[serde(default)]
+    pub ip: String,
+    #[serde(default)]
+    pub action: String,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub os_login: Option<String>,
+    #[serde(default)]
+    pub conn_audit_ref: Option<String>,
+    #[serde(default)]
+    pub note: Option<String>,
+}
+
+#[derive(Deserialize, Debug, JsonSchema)]
+pub struct AuditFileRequest {
+    #[serde(default)]
+    pub id: String,
+    #[serde(default)]
+    pub uuid: String,
+    #[serde(default)]
+    pub peer_id: String,
+    #[serde(default)]
+    pub conn_id: i64,
+    #[serde(default, rename = "type")]
+    pub file_type: i8,
+    #[serde(default)]
+    pub path: String,
+    #[serde(default)]
+    pub is_file: bool,
+    #[serde(default)]
+    pub info: String,
+    #[serde(default)]
+    pub nonce: String,
+}
+
+#[derive(Deserialize, Debug, JsonSchema)]
+pub struct AuditAlarmRequest {
+    #[serde(default)]
+    pub id: String,
+    #[serde(default)]
+    pub uuid: String,
+    #[serde(default)]
+    pub typ: i8,
+    #[serde(default)]
+    pub info: String,
+    #[serde(default)]
+    pub conn_id: i64,
+    #[serde(default)]
+    pub nonce: String,
+    #[serde(default)]
+    pub conn_audit_ref: Option<String>,
+}
+
 // {
 //    peers: [{id: "abcd", username: "", hostname: "", platform: "", alias: "", tags: ["", "", ...]}, ...],
 //    tags: [],

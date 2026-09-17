@@ -677,6 +677,120 @@ impl ApiState {
     pub async fn update_shared_address_book(&self, guid: &str, name: &str) -> Option<()> {
         self.db.update_shared_address_book(guid, name).await
     }
+
+    pub async fn audit_conn(&self, request: &utils::AuditConnRequest) -> Option<String> {
+        let action = request.action.to_lowercase();
+        match action.as_str() {
+            "new" => {
+                if !request.nonce.is_empty() {
+                    if let Some(existing) = self.db.find_audit_conn_by_nonce(&request.nonce).await {
+                        let uuid = uuid::Uuid::from_slice(&existing).ok()?;
+                        return Some(uuid.to_string());
+                    }
+                }
+                let guid = uuid::Uuid::new_v4();
+                let info = serde_json::json!({
+                    "id": request.id,
+                    "uuid": request.uuid,
+                    "conn_id": request.conn_id,
+                    "session_id": request.session_id,
+                    "nonce": request.nonce,
+                    "ip": request.ip,
+                });
+                self.db.insert_audit_conn(
+                    guid.as_bytes(),
+                    Some(0),
+                    request.id.as_bytes(),
+                    None,
+                    request.note.as_deref(),
+                    &info.to_string(),
+                ).await?;
+                Some(guid.to_string())
+            }
+            "close" => {
+                if let Some(ref conn_audit_ref) = request.conn_audit_ref {
+                    if let Ok(guid) = uuid::Uuid::parse_str(conn_audit_ref) {
+                        self.db.update_audit_conn_end_time(guid.as_bytes()).await;
+                    }
+                } else if !request.nonce.is_empty() {
+                    if let Some(existing) = self.db.find_audit_conn_by_nonce(&request.nonce).await {
+                        self.db.update_audit_conn_end_time(&existing).await;
+                    }
+                }
+                None
+            }
+            "login" => {
+                if let Some(ref conn_audit_ref) = request.conn_audit_ref {
+                    if let Ok(guid) = uuid::Uuid::parse_str(conn_audit_ref) {
+                        let note = serde_json::json!({
+                            "name": request.name,
+                            "os_login": request.os_login,
+                        });
+                        self.db.update_audit_conn_note(guid.as_bytes(), &note.to_string()).await;
+                    }
+                }
+                None
+            }
+            _ => {
+                log::debug!("audit_conn: unknown action {}", action);
+                None
+            }
+        }
+    }
+
+    pub async fn audit_file(&self, request: &utils::AuditFileRequest) -> Option<()> {
+        if !request.nonce.is_empty() && self.db.find_audit_file_by_nonce(&request.nonce).await {
+            return Some(());
+        }
+        let guid = uuid::Uuid::new_v4();
+        let info = serde_json::json!({
+            "conn_id": request.conn_id,
+            "nonce": request.nonce,
+            "uuid": request.uuid,
+            "info": request.info,
+        });
+        self.db.insert_audit_file(
+            guid.as_bytes(),
+            request.peer_id.as_bytes(),
+            Some(request.id.as_bytes()),
+            request.file_type,
+            &request.path,
+            request.is_file,
+            &info.to_string(),
+        ).await
+    }
+
+    pub async fn audit_alarm(&self, request: &utils::AuditAlarmRequest) -> Option<()> {
+        if !request.nonce.is_empty() && self.db.find_audit_alarm_by_nonce(&request.nonce).await {
+            return Some(());
+        }
+        let guid = uuid::Uuid::new_v4();
+        let info = serde_json::json!({
+            "conn_id": request.conn_id,
+            "nonce": request.nonce,
+            "uuid": request.uuid,
+            "info": request.info,
+            "conn_audit_ref": request.conn_audit_ref,
+        });
+        self.db.insert_audit_alarm(
+            guid.as_bytes(),
+            request.typ,
+            &info.to_string(),
+            None,
+            Some(request.id.as_bytes()),
+        ).await
+    }
+
+    pub async fn find_active_audit_conn(
+        &self,
+        id: &str,
+        session_id: &str,
+        conn_type: &str,
+    ) -> Option<String> {
+        let guid = self.db.find_active_audit_conn(id, session_id, conn_type).await?;
+        let uuid = uuid::Uuid::from_slice(&guid).ok()?;
+        Some(uuid.to_string())
+    }
 }
 
 #[cfg(test)]
