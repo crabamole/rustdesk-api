@@ -19,6 +19,8 @@ use rocket::{
 };
 use sctgdesk_api_server::build_rocket;
 use clap::{Arg, Command};
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
+use getrandom::getrandom;
 
 #[rocket::main]
 async fn main() -> Result<(), rocket::Error> {
@@ -44,12 +46,6 @@ async fn main() -> Result<(), rocket::Error> {
             .help("Sets the log level for the server")
             .to_owned()
             .default_value("debug"))
-        .arg(Arg::new("secret_key")
-            .long("secret_key")
-            .value_name("SECRET_KEY")
-            .help("Sets the secret key for the server")
-            .to_owned()
-            .default_value("wJq+s/xvwZjmMX3ev0p4gQTs9Ej5wt0brsk3ZGhoBTg="))
         .get_matches();
 
     // Get values from command line arguments
@@ -62,7 +58,9 @@ async fn main() -> Result<(), rocket::Error> {
         "debug" => LogLevel::Debug,
         _ => LogLevel::Debug,
     };
-    let secret_key = matches.get_one::<String>("secret_key").unwrap();
+    let mut key_bytes = [0u8; 32];
+    getrandom(&mut key_bytes).expect("failed to generate random secret key");
+    let secret_key = BASE64.encode(key_bytes);
 
     // Configure Rocket
     let figment = rocket::Config::figment()
