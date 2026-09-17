@@ -22,7 +22,6 @@ use crate::{
 use std::{
     collections::HashMap,
     default::Default,
-    path::Path,
     sync::atomic::{AtomicU64, Ordering},
     time::SystemTime,
 };
@@ -37,9 +36,6 @@ use utils::{
 
 pub struct ApiState {
     last_maintenance_time: AtomicU64,
-    access_tokens: RwLock<HashMap<Token, AccessTokenInfo>>,
-    sessions: RwLock<SessionsState>,
-    users: RwLock<HashMap<UserId, UserInfo>>,
     address_books: RwLock<HashMap<UserId, AddressBookInfo>>,
     oidc_sessions: RwLock<HashMap<String, OidcState>>,
     pub(crate) db: Database,
@@ -53,22 +49,9 @@ pub struct AccessTokenInfo {
 }
 
 #[derive(Debug, Default)]
-struct SessionsState {
-    counter: SessionId,
-    sessions: HashMap<SessionId, SessionInfo>,
-}
-
-#[derive(Debug, Default)]
 pub struct UserInfo {
-    sessions_count: usize,
     pub username: String,
     pub admin: bool,
-}
-
-#[derive(Debug, Default)]
-struct SessionInfo {
-    #[allow(dead_code)]
-    user_id: UserId,
 }
 
 #[derive(Debug, Clone)]
@@ -92,9 +75,6 @@ impl ApiState {
         let db = Database::new(db_url).await.expect("Failed to open database");
         Self {
             last_maintenance_time: AtomicU64::new(0),
-            access_tokens: Default::default(),
-            sessions: Default::default(),
-            users: Default::default(),
             address_books: Default::default(),
             db,
             oidc_sessions: Default::default(),
@@ -192,50 +172,27 @@ impl ApiState {
         ))
     }
 
-    async fn get_access_token(&self, user_id: Vec<u8>, username: &String, is_admin: bool) -> Token {
+    async fn get_access_token(&self, user_id: Vec<u8>, _username: &String, _is_admin: bool) -> Token {
         let access_token = Token::new_random();
+        let token_id = access_token.to_base64();
 
-        let mut state_access_tokens = self.access_tokens.write().await;
-        let mut state_sessions = self.sessions.write().await;
-        let mut state_users = self.users.write().await;
+        self.db.insert_session(&token_id, &user_id, 2592000).await;
 
-        state_sessions.counter += 1;
-        let session_id = state_sessions.counter;
-
-        if let Some(user_info) = state_users.get_mut(&user_id) {
-            user_info.sessions_count += 1;
-        } else {
-            let user_info = UserInfo {
-                sessions_count: 1,
-                username: username.clone(),
-                admin: is_admin,
-            };
-            state_users.insert(user_id.clone(), user_info);
-
-            let mut state_address_books = self.address_books.write().await;
-            if let Some(abi) = state_address_books.get_mut(&user_id) {
-                abi.remove_after_flush = false;
-            }
+        let mut state_address_books = self.address_books.write().await;
+        if let Some(abi) = state_address_books.get_mut(&user_id) {
+            abi.remove_after_flush = false;
         }
 
-        let session_info = SessionInfo {
-            user_id: user_id.clone(),
-        };
-
-        let access_token_info = AccessTokenInfo {
-            session_id,
-            user_id,
-        };
-
-        let _ = state_sessions.sessions.insert(session_id, session_info);
-        let _ = state_access_tokens.insert(access_token.clone(), access_token_info);
         access_token
     }
 
     pub async fn find_session(&self, access_token: &Token) -> Option<AccessTokenInfo> {
-        let state_access_tokens = self.access_tokens.read().await;
-
-        state_access_tokens.get(access_token).map(|t| t.clone())
+        let token_id = access_token.to_base64();
+        let user_id = self.db.find_session_user(&token_id).await?;
+        Some(AccessTokenInfo {
+            session_id: 0,
+            user_id,
+        })
     }
 
     pub async fn get_user_address_book(&self, user_id: UserId) -> Option<AddressBook> {
@@ -309,36 +266,28 @@ impl ApiState {
     /// or if removing their session and access token from the state fails.
     /// If the function returns `Some(())`, the logout was successful.
     pub async fn user_logout(&self, user: &AuthenticatedUserInfo) -> Option<()> {
-        let mut state_access_tokens = self.access_tokens.write().await;
-        let mut state_sessions = self.sessions.write().await;
-        let mut state_users = self.users.write().await;
+        let token_id = user.access_token.to_base64();
+        self.db.delete_session(&token_id).await;
 
-        let user_info = state_users.get_mut(&user.user_id)?;
-        user_info.sessions_count -= 1;
-
-        if user_info.sessions_count == 0 {
-            state_users.remove(&user.user_id);
-
+        let remaining = self.db.count_user_sessions(&user.user_id).await;
+        if remaining == 0 {
             let mut state_address_books = self.address_books.write().await;
             if let Some(abi) = state_address_books.get_mut(&user.user_id) {
                 abi.remove_after_flush = true;
             }
         }
 
-        state_sessions.sessions.remove(&user.session_id);
-        state_access_tokens.remove(&user.access_token);
-
         Some(())
     }
 
     pub async fn get_current_user_name(&self, user: &AuthenticatedUserInfo) -> Option<String> {
-        let state_users = self.users.read().await;
-        state_users.get(&user.user_id).map(|ui| ui.username.clone())
+        let (name, _) = self.db.get_user_info_by_id(&user.user_id).await?;
+        Some(name)
     }
 
     pub async fn is_current_user_admin(&self, user: &AuthenticatedUserInfo) -> Option<bool> {
-        let state_users = self.users.read().await;
-        state_users.get(&user.user_id).map(|ui| ui.admin)
+        let (_, admin) = self.db.get_user_info_by_id(&user.user_id).await?;
+        Some(admin)
     }
 
     pub async fn with_user_info<R>(
@@ -346,12 +295,9 @@ impl ApiState {
         user_id: &UserId,
         mut f: impl FnMut(&UserInfo) -> R,
     ) -> Option<R> {
-        let state_users = self.users.read().await;
-        if let Some(user_info) = state_users.get(user_id) {
-            Some(f(user_info))
-        } else {
-            None
-        }
+        let (username, admin) = self.db.get_user_info_by_id(user_id).await?;
+        let user_info = UserInfo { username, admin };
+        Some(f(&user_info))
     }
 
     pub async fn ui_get_all_users(&self) -> Option<Vec<types::UserInfo>> {
@@ -835,8 +781,6 @@ mod tests {
             .unwrap();
         let session = state.find_session(&token).await;
         assert!(session.is_some());
-        let session = session.unwrap();
-        assert_eq!(session.session_id, 1);
     }
 
     #[tokio::test]

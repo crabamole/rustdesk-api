@@ -1616,6 +1616,87 @@ impl Database {
         Some(guid_into_uuid(ab_guid)?)
     }
 
+    pub async fn insert_session(&self, token_id: &str, user_id: &[u8], ttl_secs: i64) -> Option<()> {
+        let expiry_expr = match self.backend {
+            Backend::Sqlite => format!("datetime('now', '+{} seconds')", ttl_secs),
+            Backend::Postgres => format!("NOW() + INTERVAL '{} seconds'", ttl_secs),
+        };
+        let query = format!(
+            "INSERT INTO session (id, ttl_secs, \"user\", expiry_at, created_at) \
+             VALUES ($1, $2, $3, {}, current_timestamp)",
+            expiry_expr
+        );
+        sqlx::query(&query)
+            .bind(token_id)
+            .bind(ttl_secs)
+            .bind(user_id)
+            .execute(&self.pool)
+            .await
+            .ok()?;
+        Some(())
+    }
+
+    pub async fn find_session_user(&self, token_id: &str) -> Option<Vec<u8>> {
+        let now_expr = match self.backend {
+            Backend::Sqlite => "datetime('now')",
+            Backend::Postgres => "NOW()::text",
+        };
+        let query = format!(
+            "SELECT \"user\" FROM session WHERE id = $1 AND expiry_at > {}",
+            now_expr
+        );
+        let row = sqlx::query(&query)
+            .bind(token_id)
+            .fetch_optional(&self.pool)
+            .await
+            .ok()?;
+        row.map(|r| r.try_get::<Vec<u8>, _>("user").unwrap())
+    }
+
+    pub async fn delete_session(&self, token_id: &str) -> Option<()> {
+        sqlx::query("DELETE FROM session WHERE id = $1")
+            .bind(token_id)
+            .execute(&self.pool)
+            .await
+            .ok()?;
+        Some(())
+    }
+
+    pub async fn count_user_sessions(&self, user_id: &[u8]) -> i64 {
+        let now_expr = match self.backend {
+            Backend::Sqlite => "datetime('now')",
+            Backend::Postgres => "NOW()::text",
+        };
+        let query = format!(
+            "SELECT COUNT(*) as count FROM session WHERE \"user\" = $1 AND expiry_at > {}",
+            now_expr
+        );
+        let row = sqlx::query(&query)
+            .bind(user_id)
+            .fetch_one(&self.pool)
+            .await
+            .ok();
+        match row {
+            Some(r) => r.try_get::<i64, _>("count").unwrap_or(0),
+            None => 0,
+        }
+    }
+
+    pub async fn get_user_info_by_id(&self, user_id: &[u8]) -> Option<(String, bool)> {
+        let row = sqlx::query(
+            "SELECT name, role FROM \"user\" WHERE guid = $1 AND status = 1",
+        )
+        .bind(user_id)
+        .fetch_optional(&self.pool)
+        .await
+        .ok()?;
+        row.map(|r| {
+            let name: String = r.try_get::<String, _>("name").unwrap_or_default();
+            let admin: bool = r.try_get::<i32, _>("role").unwrap_or(0) == 1;
+            (name, admin)
+        })
+    }
+
     pub async fn update_shared_address_book(&self, guid: &str, name: &str) -> Option<()> {
         let ab_guid = Uuid::parse_str(guid);
         if ab_guid.is_err() {
