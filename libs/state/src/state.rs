@@ -628,7 +628,7 @@ impl ApiState {
 
     /// Change user status
     pub async fn user_change_status(&self, user: &str, disable: bool) -> Option<()> {
-        self.db.user_change_status(user, disable as u32).await
+        self.db.user_change_status(user, (!disable) as u32).await
     }
 
     /// Get all users
@@ -816,8 +816,7 @@ mod tests {
         let (_, user) = state.db.find_user_by_name("inactive").await;
         let (user_id, _, _) = user.unwrap();
         let guid = uuid::Uuid::from_slice(&user_id).unwrap().to_string();
-        // Note: disable=false maps to status=0 (inactive) due to inverted semantics
-        state.user_change_status(&guid, false).await;
+        state.user_change_status(&guid, true).await;
 
         let pw = UserPasswordInfo::from_password("pass");
         let result = state
