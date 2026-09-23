@@ -23,7 +23,7 @@ Feel free to use it, modify it, but don't forget to publish your modifications.
 
 ## Description
 
-This project, sctgdesk-api-server, is a basic implementation of an API server for Rustdesk. Rustdesk is an open-source remote control software. This implementation is written in Rust, utilizing the Rocket framework. The entire REST API is documented using `rocket_okapi`. Upon launching the server, it serves Rapidoc module at `/api/doc`, which allows visualizing and testing the various API routes. The server is configured to listen on port 21114. It is designed to utilize a SQLite3 database compatible with the Rustdesk-server or Rustdesk-server-pro databases.
+This project, sctgdesk-api-server, is a basic implementation of an API server for Rustdesk. Rustdesk is an open-source remote control software. This implementation is written in Rust, utilizing the Rocket framework. The entire REST API is documented using `rocket_okapi`. Upon launching the server, it serves Rapidoc module at `/api/doc`, which allows visualizing and testing the various API routes. The server is configured to listen on port 21114. It requires a PostgreSQL database (`DATABASE_URL=postgres://user:pass@host:5432/db`); the schema is created and upgraded automatically by built-in migrations.
 
 ## Status
 
@@ -97,10 +97,6 @@ For regenerating the api code, run the following command **after** the server is
 To start the ui development server, run the following commands:
 
 ```bash
-sqlite3 db_v2.sqlite3 <<EOF
-INSERT OR IGNORE INTO peer (guid, id, uuid, pk, created_at, "user", status, note, region, strategy, info, last_online) VALUES
-  (x'018f255622f77778a006702ca5c23715', 'TESTUSER', randomblob(16), randomblob(16), '1901-01-01 12:00:00', randomblob(16), 0, '', NULL, randomblob(16), '{}', '1901-01-01 12:00:00');
-EOF
 cargo build
 cd webconsole && npm ci && npm run devserver &
 cd ..
@@ -118,7 +114,16 @@ The server can be run as a standalone server. To run the server, execute the fol
 In  development mode:
 
 ```bash
-DATABASE_URL=sqlite://$(pwd)/db_v2.sqlite3 cargo run --release
+DATABASE_URL=postgres://postgres:postgres@127.0.0.1:5432/postgres cargo run --release
+```
+
+### Running locally
+
+Start a throwaway PostgreSQL instance and run the server against it:
+
+```bash
+docker run -d --name sctgdesk-pg -e POSTGRES_PASSWORD=postgres -p 5432:5432 postgres:17-alpine
+DATABASE_URL=postgres://postgres:postgres@127.0.0.1:5432/postgres cargo run --release
 ```
 
 In production mode:
@@ -174,36 +179,12 @@ Options:
 
 First you need to install the Rust toolchain. You can install it by following the instructions at [https://www.rust-lang.org/tools/install](https://www.rust-lang.org/tools/install).
 
-You also need to install the SQLite3 development libraries. On Ubuntu, you can install them with the following command:
-
-```bash
-sudo apt install libsqlite3-dev
-```
-
-on MacOS:
-
-```bash
-brew install sqlite3
-```
-
-on Windows:
-
-```bash
-choco install sqlite
-```
-
 You also need nodejs and npm to build the webconsole. You can install them by following the instructions at [https://nodejs.org/en/download/](https://nodejs.org/en/download/).
 
-To build the server on *nix, execute the following command:
+To build the server, execute the following command:
 
 ```bash
-DATABASE_URL=sqlite://$(pwd)/db_v2.sqlite3 && cargo build --release
-```
-
-To build the server on Windows, execute the following command:
-
-```bash
-set "DATABASE_URL=sqlite://%CD%/db_v2.sqlite3" && cargo build --release --target x86_64-pc-windows-msvc
+cargo build --release
 ```
 
 ## Integration with Rustdesk-Server

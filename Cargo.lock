@@ -3444,7 +3444,6 @@ dependencies = [
  "signal-hook",
  "sqlx",
  "state 0.1.0",
- "tempfile",
  "tokio",
  "url",
  "urlencoding",
