@@ -20,8 +20,6 @@ bcrypt = "0.15"
 rocket = { version = "0.5", features = ["json", "secrets"] }
 sqlx = { version = "0.8", features = [
     "runtime-tokio-rustls",
-    "any",
-    "sqlite",
     "postgres",
     "macros",
     "chrono",

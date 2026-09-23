@@ -18,11 +18,10 @@ use crate::types;
 use crate::UserId;
 use serde::Serialize;
 use sqlx::{
-    any::{install_default_drivers, AnyPoolOptions},
-    AnyPool, Row,
+    postgres::{PgPool, PgPoolOptions},
+    Row,
 };
 use std::env;
-use std::path::Path;
 use utils::guid_into_uuid;
 use utils::types::AddressBook;
 use utils::AbPeer;
@@ -39,22 +38,13 @@ use base64::prelude::{Engine as _, BASE64_STANDARD};
 
 use uuid::Uuid;
 
-const SCHEMA_SQLITE: &str = include_str!("../../../db_v2/create/db_sqlite.sql");
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Backend {
-    Sqlite,
-    Postgres,
-}
-
 #[derive(Clone)]
 pub struct Database {
-    pool: AnyPool,
-    backend: Backend,
+    pool: PgPool,
 }
 
 pub struct DatabaseConnection {
-    pool: AnyPool,
+    pool: PgPool,
 }
 
 pub struct DatabaseUserInfo {
@@ -78,79 +68,21 @@ macro_rules! unwrap_or_return_tuple {
     };
 }
 
-fn split_sql(sql: &str) -> Vec<&str> {
-    sql.split(';')
-        .map(|s| s.trim())
-        .filter(|s| !s.is_empty() && !s.starts_with("--"))
-        .collect()
-}
-
-fn normalize_url(url: &str) -> String {
-    if url.starts_with("sqlite://")
-        || url.starts_with("postgres://")
-        || url.starts_with("postgresql://")
-    {
-        url.to_string()
-    } else {
-        format!("sqlite://{}", url)
-    }
-}
+pub type DbError = Box<dyn std::error::Error + Send + Sync>;
 
 impl Database {
-    pub async fn open<P: AsRef<Path>>(db_filename: P) -> Self {
-        let url = format!("sqlite://{}", db_filename.as_ref().display());
-        Self::new(&url).await.expect("Failed to open database")
-    }
-
-    pub async fn new(url: &str) -> Result<Self, Box<dyn std::error::Error>> {
-        install_default_drivers();
-
-        let url = normalize_url(url);
-        let backend = if url.starts_with("postgres") {
-            Backend::Postgres
-        } else {
-            Backend::Sqlite
-        };
-
-        if backend == Backend::Sqlite {
-            let path = url.strip_prefix("sqlite://").unwrap_or(&url);
-            if !Path::new(path).exists() {
-                std::fs::File::create(path).ok();
-            }
-        }
-
+    /// One attempt: connect and apply migrations.
+    pub async fn new(url: &str) -> Result<Self, DbError> {
         let max_connections: u32 = env::var("MAX_DATABASE_CONNECTIONS")
             .ok()
             .and_then(|s| s.parse().ok())
             .unwrap_or((num_cpus::get() * 4) as u32);
-
-        let pool = AnyPoolOptions::new()
+        let pool = PgPoolOptions::new()
             .max_connections(max_connections)
-            .connect(&url)
+            .connect(url)
             .await?;
-
-        let db = Database { pool, backend };
-        db.init_db().await?;
-        Ok(db)
-    }
-
-    pub fn backend(&self) -> Backend {
-        self.backend
-    }
-
-    async fn init_db(&self) -> Result<(), sqlx::migrate::MigrateError> {
-        match self.backend {
-            Backend::Postgres => sqlx::migrate!("./migrations").run(&self.pool).await,
-            Backend::Sqlite => {
-                // Removed in Task 3.
-                for statement in split_sql(SCHEMA_SQLITE) {
-                    if let Err(e) = sqlx::query(statement).execute(&self.pool).await {
-                        log::debug!("init_db statement error (may be expected): {:?}", e);
-                    }
-                }
-                Ok(())
-            }
-        }
+        sqlx::migrate!("./migrations").run(&pool).await?;
+        Ok(Database { pool })
     }
 
     pub async fn find_user_by_name(
@@ -175,8 +107,8 @@ impl Database {
 
         let user_id: UserId = res.try_get::<Vec<u8>, _>("guid").unwrap();
         let email: Option<String> = res.try_get::<Option<String>, _>("email").unwrap_or(None);
-        let status: i32 = res.try_get::<i32, _>("status").unwrap_or(0);
-        let role: i32 = res.try_get::<i32, _>("role").unwrap_or(0);
+        let status: i16 = res.try_get::<i16, _>("status").unwrap_or(0);
+        let role: i16 = res.try_get::<i16, _>("role").unwrap_or(0);
         let dbi = DatabaseUserInfo {
             active: status == 1,
             admin: role == 1,
@@ -355,8 +287,8 @@ impl Database {
         for row in rows {
             let info = types::UserInfo {
                 id: row.try_get::<Vec<u8>, _>("id").unwrap_or_default(),
-                active: row.try_get::<i32, _>("status").unwrap_or(0) != 0,
-                admin: row.try_get::<i32, _>("role").unwrap_or(0) != 0,
+                active: row.try_get::<i16, _>("status").unwrap_or(0) != 0,
+                admin: row.try_get::<i16, _>("role").unwrap_or(0) != 0,
                 username: row.try_get::<String, _>("username").unwrap_or_default(),
                 password: row.try_get::<String, _>("password").unwrap_or_default(),
                 address_book: row.try_get::<String, _>("ab").unwrap_or_default(),
@@ -390,8 +322,8 @@ impl Database {
 
         Some(types::UserInfo {
             id: row.try_get::<Vec<u8>, _>("id").unwrap_or_default(),
-            active: row.try_get::<i32, _>("status").unwrap_or(0) != 0,
-            admin: row.try_get::<i32, _>("role").unwrap_or(0) != 0,
+            active: row.try_get::<i16, _>("status").unwrap_or(0) != 0,
+            admin: row.try_get::<i16, _>("role").unwrap_or(0) != 0,
             username: row.try_get::<String, _>("username").unwrap_or_default(),
             password: row.try_get::<String, _>("password").unwrap_or_default(),
             address_book: row.try_get::<String, _>("ab").unwrap_or_default(),
@@ -406,7 +338,7 @@ impl Database {
     ) -> Option<UserId> {
         let password_hashed = UserPasswordInfo::hash_password(password.as_str());
         let guid = Uuid::new_v4().as_bytes().to_vec();
-        let role: i32 = if admin { 1 } else { 0 };
+        let role: i16 = if admin { 1 } else { 0 };
 
         sqlx::query(
             "INSERT INTO \"user\" (guid, status, role, name, password, grp, team) \
@@ -556,7 +488,7 @@ impl Database {
             random_password
         );
         let name = format!("{}'s Personal Address Book", id);
-        let status_val: i32 = if status { 1 } else { 0 };
+        let status_val: i16 = if status { 1 } else { 0 };
 
         let res = sqlx::query(
             "INSERT INTO \"user\"(guid, grp, team, status, role, name, email, password) \
@@ -613,8 +545,8 @@ impl Database {
         let res = res.unwrap();
         let user_id: UserId = res.try_get::<Vec<u8>, _>("guid").unwrap();
         let dbi = DatabaseUserInfo {
-            active: res.try_get::<i32, _>("status").unwrap_or(0) == 1,
-            admin: res.try_get::<i32, _>("role").unwrap_or(0) == 1,
+            active: res.try_get::<i16, _>("status").unwrap_or(0) == 1,
+            admin: res.try_get::<i16, _>("role").unwrap_or(0) == 1,
         };
         Some((user_id, res.try_get::<String, _>("name").unwrap(), dbi))
     }
@@ -920,7 +852,7 @@ impl Database {
         let group_guid: Vec<u8> = res[0].try_get::<Vec<u8>, _>("guid").unwrap();
         let ab_guid = Uuid::new_v4().as_bytes().to_vec();
         let password_hashed = UserPasswordInfo::hash_password(password.as_str());
-        let role: i32 = if is_admin { 1 } else { 0 };
+        let role: i16 = if is_admin { 1 } else { 0 };
 
         let res = sqlx::query(
             "INSERT INTO \"user\"(guid, grp, team, status, role, name, password, email) \
@@ -963,7 +895,7 @@ impl Database {
             return None;
         }
         let guid = guid.unwrap().as_bytes().to_vec();
-        let status_val = status as i32;
+        let status_val = status as i16;
         let res = sqlx::query("UPDATE \"user\" SET status = $1 WHERE guid = $2")
             .bind(status_val)
             .bind(&guid)
@@ -1037,8 +969,8 @@ impl Database {
                     .unwrap_or(None)
                     .unwrap_or_default(),
                 note: row.try_get::<Option<String>, _>("note").unwrap_or(None),
-                status: row.try_get::<i32, _>("status").unwrap_or(0),
-                is_admin: row.try_get::<i32, _>("role").unwrap_or(0) != 0,
+                status: row.try_get::<i16, _>("status").unwrap_or(0) as i32,
+                is_admin: row.try_get::<i16, _>("role").unwrap_or(0) != 0,
                 group_name: row
                     .try_get::<Option<String>, _>("group_name")
                     .unwrap_or(None)
@@ -1143,13 +1075,13 @@ impl Database {
             let last_online: String = row
                 .try_get::<String, _>("last_online")
                 .unwrap_or_default();
-            let status: i32 = row.try_get::<i32, _>("status").unwrap_or(0);
+            let status: i16 = row.try_get::<i16, _>("status").unwrap_or(0);
             peers.push(Peer {
                 id: row.try_get::<String, _>("id").unwrap_or_default(),
                 guid: uuid,
                 info: peer_info,
                 last_online: last_online.into(),
-                status: status,
+                status: status as i32,
                 strategy_name: "-".to_string(),
             });
         }
@@ -1304,7 +1236,7 @@ impl Database {
             let ab_rule = AbRule {
                 user,
                 group,
-                rule: row.try_get::<i32, _>("rule").unwrap_or(0) as u32,
+                rule: row.try_get::<i16, _>("rule").unwrap_or(0) as u32,
                 guid: uuid,
             };
             ab_rules.push(ab_rule);
@@ -1360,7 +1292,7 @@ impl Database {
             None
         };
 
-        let rule_val = rule.rule as i32;
+        let rule_val = rule.rule as i16;
         let res = sqlx::query(
             "INSERT INTO ab_rule (guid, ab, \"user\", grp, rule) \
              VALUES ($1, $2, $3, $4, $5) ON CONFLICT DO NOTHING",
@@ -1391,17 +1323,9 @@ impl Database {
             _ => "unknown%",
         };
 
-        let sql = match self.backend {
-            Backend::Sqlite => {
-                "SELECT COUNT(*) as count FROM peer WHERE json_extract(info,'$.os') LIKE $1"
-                    .to_string()
-            }
-            Backend::Postgres => {
-                "SELECT COUNT(*) as count FROM peer WHERE info::json->>'os' ILIKE $1".to_string()
-            }
-        };
+        let sql = "SELECT COUNT(*) as count FROM peer WHERE info::json->>'os' ILIKE $1";
 
-        let res = sqlx::query(&sql)
+        let res = sqlx::query(sql)
             .bind(filter)
             .fetch_one(&self.pool)
             .await
@@ -1414,20 +1338,10 @@ impl Database {
     }
 
     pub async fn get_cpus_count(&self) -> Vec<CpuCount> {
-        let sql = match self.backend {
-            Backend::Sqlite => {
-                "SELECT COALESCE(trim(json_extract(info,'$.cpu')),'unknown') as cpu, \
-                 COUNT(*) AS machine_count FROM peer GROUP BY cpu"
-                    .to_string()
-            }
-            Backend::Postgres => {
-                "SELECT COALESCE(trim(info::json->>'cpu'),'unknown') as cpu, \
-                 COUNT(*) AS machine_count FROM peer GROUP BY cpu"
-                    .to_string()
-            }
-        };
+        let sql = "SELECT COALESCE(trim(info::json->>'cpu'),'unknown') as cpu, \
+             COUNT(*) AS machine_count FROM peer GROUP BY cpu";
 
-        let res = sqlx::query(&sql).fetch_all(&self.pool).await.ok();
+        let res = sqlx::query(sql).fetch_all(&self.pool).await.ok();
         if res.is_none() {
             return Vec::new();
         }
@@ -1595,10 +1509,7 @@ impl Database {
     }
 
     pub async fn insert_session(&self, token_id: &str, user_id: &[u8], ttl_secs: i64) -> Option<()> {
-        let expiry_expr = match self.backend {
-            Backend::Sqlite => format!("datetime('now', '+{} seconds')", ttl_secs),
-            Backend::Postgres => format!("NOW() + INTERVAL '{} seconds'", ttl_secs),
-        };
+        let expiry_expr = format!("NOW() + INTERVAL '{} seconds'", ttl_secs);
         let query = format!(
             "INSERT INTO session (id, ttl_secs, \"user\", expiry_at, created_at) \
              VALUES ($1, $2, $3, {}, current_timestamp)",
@@ -1606,7 +1517,7 @@ impl Database {
         );
         sqlx::query(&query)
             .bind(token_id)
-            .bind(ttl_secs)
+            .bind(ttl_secs as i32)
             .bind(user_id)
             .execute(&self.pool)
             .await
@@ -1615,10 +1526,7 @@ impl Database {
     }
 
     pub async fn find_session_user(&self, token_id: &str) -> Option<Vec<u8>> {
-        let now_expr = match self.backend {
-            Backend::Sqlite => "datetime('now')",
-            Backend::Postgres => "NOW()::text",
-        };
+        let now_expr = "NOW()::text";
         let query = format!(
             "SELECT \"user\" FROM session WHERE id = $1 AND expiry_at > {}",
             now_expr
@@ -1641,10 +1549,7 @@ impl Database {
     }
 
     pub async fn count_user_sessions(&self, user_id: &[u8]) -> i64 {
-        let now_expr = match self.backend {
-            Backend::Sqlite => "datetime('now')",
-            Backend::Postgres => "NOW()::text",
-        };
+        let now_expr = "NOW()::text";
         let query = format!(
             "SELECT COUNT(*) as count FROM session WHERE \"user\" = $1 AND expiry_at > {}",
             now_expr
@@ -1670,7 +1575,7 @@ impl Database {
         .ok()?;
         row.map(|r| {
             let name: String = r.try_get::<String, _>("name").unwrap_or_default();
-            let admin: bool = r.try_get::<i32, _>("role").unwrap_or(0) == 1;
+            let admin: bool = r.try_get::<i16, _>("role").unwrap_or(0) == 1;
             (name, admin)
         })
     }
@@ -1720,10 +1625,7 @@ impl Database {
     }
 
     pub async fn update_audit_conn_end_time(&self, guid: &[u8]) -> Option<()> {
-        let now_expr = match self.backend {
-            Backend::Sqlite => "strftime('%Y-%m-%d %H:%M:%f', 'now')",
-            Backend::Postgres => "to_char(NOW(), 'YYYY-MM-DD HH24:MI:SS.MS')",
-        };
+        let now_expr = "to_char(NOW(), 'YYYY-MM-DD HH24:MI:SS.MS')";
         let sql = format!(
             "UPDATE audit_conn SET end_time = {} WHERE guid = $1",
             now_expr
@@ -2576,4 +2478,20 @@ mod tests {
         let result = db.update_heartbeat(hb).await;
         assert!(result.is_none());
     });
+
+    db_test!(smallint_columns_decode_correctly, |db| {
+        let (_, admin) = db.find_user_by_name("admin").await;
+        let (_, _, info) = admin.expect("admin missing");
+        assert!(info.admin, "role smallint decoded wrong");
+        assert!(info.active, "status smallint decoded wrong");
+        let users = db.ui_get_all_users().await.unwrap();
+        assert!(users.iter().any(|u| u.username == "admin" && u.admin));
+        let (name, is_admin) = db.get_user_info_by_id(&admin_guid(&db).await).await.unwrap();
+        assert_eq!((name.as_str(), is_admin), ("admin", true));
+    });
+
+    async fn admin_guid(db: &Database) -> Vec<u8> {
+        let (_, u) = db.find_user_by_name("admin").await;
+        u.unwrap().0
+    }
 }

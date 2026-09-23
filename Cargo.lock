@@ -4670,7 +4670,6 @@ dependencies = [
  "rocket_okapi",
  "serde",
  "serde_json",
- "sqlx",
  "tracing",
  "url",
  "uuid",
