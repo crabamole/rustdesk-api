@@ -36,9 +36,10 @@ impl Token {
     }
 
     pub fn from_str<S: AsRef<str>>(str: S) -> Result<Self, base64::DecodeError> {
-        let bytes = BASE64_URL_SAFE_NO_PAD.decode(str.as_ref()).unwrap();
-        let mut buf = [0u8; TOKEN_LENGTH];
-        buf.copy_from_slice(&bytes);
+        let bytes = BASE64_URL_SAFE_NO_PAD.decode(str.as_ref())?;
+        let buf: [u8; TOKEN_LENGTH] = bytes
+            .try_into()
+            .map_err(|b: Vec<u8>| base64::DecodeError::InvalidLength(b.len()))?;
         Ok(Self(buf))
     }
 }
@@ -90,9 +91,14 @@ mod tests {
     }
 
     #[test]
-    #[should_panic]
-    fn from_str_invalid_base64_panics() {
-        let _ = Token::from_str("not-valid-base64!!!");
+    fn from_str_invalid_base64_is_error() {
+        assert!(Token::from_str("not-valid-base64!!!").is_err());
+    }
+
+    #[test]
+    fn from_str_wrong_length_is_error() {
+        // Valid base64, but 3 bytes instead of TOKEN_LENGTH.
+        assert!(Token::from_str("AAAA").is_err());
     }
 
     #[test]

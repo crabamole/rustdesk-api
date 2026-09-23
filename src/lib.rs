@@ -1953,7 +1953,15 @@ async fn user_update(
         total: 1,
         data: "[{}]".to_string(),
     };
-    let user_update = request.0;
+    let mut user_update = request.0;
+    if !is_admin {
+        // A non-admin may edit only their own profile fields, never the
+        // fields that control identity or privileges.
+        user_update.name = None;
+        user_update.is_admin = None;
+        user_update.group_name = None;
+        user_update.status = None;
+    }
     state.user_update(guid, user_update).await;
     Ok(Json(response))
 }
@@ -2119,7 +2127,9 @@ async fn software(key: &str) -> Result<Json<SoftwareResponse>, status::NotFound<
 #[get("/api/software/version/server", format = "application/json")]
 async fn software_version() -> Json<SoftwareVersionResponse> {
     log::debug!("software_version");
-    let version = env::var("MAIN_PKG_VERSION").unwrap();
+    // MAIN_PKG_VERSION is an optional runtime override; nothing sets it by
+    // default, so fall back to this crate's version instead of panicking.
+    let version = env::var("MAIN_PKG_VERSION").unwrap_or(env!("CARGO_PKG_VERSION").to_string());
     let response = SoftwareVersionResponse {
         server: Some(version),
         client: Some(extract_version().await.unwrap_or("0.0.0".to_string())),
@@ -2801,8 +2811,9 @@ mod tests {
             .body(r#"{"id":"unknown"}"#)
             .dispatch()
             .await;
-        // Handler panics on unwrap when peer not found — returns 500
-        assert_eq!(resp.status(), Status::InternalServerError);
+        // No uuid means no peer can be matched.
+        assert_eq!(resp.status(), Status::Ok);
+        assert_eq!(resp.into_string().await.unwrap(), "ID_NOT_FOUND");
     }
 
     #[rocket::async_test]
@@ -3604,8 +3615,7 @@ mod tests {
             .header(ContentType::JSON)
             .dispatch()
             .await;
-        // Panics without GITHUB_REPOSITORY env var — expects 500
-        assert!(resp.status() == Status::Ok || resp.status() == Status::InternalServerError);
+        assert_eq!(resp.status(), Status::Ok);
     }
 
     #[rocket::async_test]

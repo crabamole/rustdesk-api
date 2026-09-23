@@ -6,7 +6,6 @@ use serde_json::Value;
 async fn test_client() -> (Client, tempfile::TempDir) {
     let dir = tempfile::tempdir().unwrap();
     let db_path = dir.path().join("test.db");
-    std::env::set_var("MAIN_PKG_VERSION", "1.0.0-test");
     let figment = rocket::Config::figment()
         .merge(("port", 0))
         .merge(("secret_key", "hPRYyVRiMyxpw5sBB1XeCMN1kFsDCqKvBi2QJxBVHQk="));
@@ -148,7 +147,26 @@ async fn test_sysinfo() {
         .await;
     assert_eq!(resp.status(), Status::Ok);
     let body = resp.into_string().await.unwrap();
-    assert!(body == "ID_NOT_FOUND" || body == "SYSINFO_UPDATED");
+    // "abc" is not valid padded base64, so no peer can match it.
+    assert_eq!(body, "ID_NOT_FOUND");
+}
+
+#[rocket::async_test]
+async fn test_sysinfo_unknown_or_missing_uuid() {
+    let (client, _dir) = test_client().await;
+    for body in [
+        r#"{"id":"x","uuid":"dW5rbm93bi1wZWVy","hostname":"h"}"#,
+        r#"{"id":"x","hostname":"h"}"#,
+    ] {
+        let resp = client
+            .post("/api/sysinfo")
+            .header(ContentType::JSON)
+            .body(body)
+            .dispatch()
+            .await;
+        assert_eq!(resp.status(), Status::Ok, "{body}");
+        assert_eq!(resp.into_string().await.unwrap(), "ID_NOT_FOUND", "{body}");
+    }
 }
 
 #[rocket::async_test]
@@ -765,7 +783,8 @@ async fn test_software_version() {
         .await;
     assert_eq!(resp.status(), Status::Ok);
     let body: Value = resp.into_json().await.unwrap();
-    assert!(body["server"].as_str().is_some());
+    // Without a MAIN_PKG_VERSION override the server reports its own version.
+    assert_eq!(body["server"], env!("CARGO_PKG_VERSION"));
 }
 
 #[rocket::async_test]
@@ -922,4 +941,139 @@ async fn test_openapi_json() {
     assert_eq!(resp.status(), Status::Ok);
     let body: Value = resp.into_json().await.unwrap();
     assert!(body["openapi"].as_str().is_some());
+}
+
+/// Create a non-admin user as admin, log in as it, and return (token, guid).
+async fn create_and_login_user(client: &Client, admin_token: &str, name: &str) -> (String, String) {
+    let resp = client
+        .post("/api/user")
+        .header(ContentType::JSON)
+        .header(auth_header(admin_token))
+        .body(format!(r#"{{"name":"{name}","password":"Pass1234!","confirm-password":"Pass1234!","email":"{name}@test.com","is_admin":false,"group_name":"Default"}}"#))
+        .dispatch()
+        .await;
+    assert_eq!(resp.status(), Status::Ok);
+    let user = find_user(client, admin_token, name).await.expect("created user not listed");
+    let resp = client
+        .post("/api/login")
+        .header(ContentType::JSON)
+        .body(format!(r#"{{"username":"{name}","password":"Pass1234!","id":"{name}","uuid":"{name}"}}"#))
+        .dispatch()
+        .await;
+    assert_eq!(resp.status(), Status::Ok);
+    let body: Value = resp.into_json().await.unwrap();
+    (body["access_token"].as_str().unwrap().to_string(), user["guid"].as_str().unwrap().to_string())
+}
+
+async fn find_user(client: &Client, admin_token: &str, name: &str) -> Option<Value> {
+    let resp = client
+        .get(format!("/api/user-list?current=1&pageSize=100&name={name}"))
+        .header(ContentType::JSON)
+        .header(auth_header(admin_token))
+        .dispatch()
+        .await;
+    let body: Value = resp.into_json().await.unwrap();
+    body["data"].as_array().unwrap().iter().find(|u| u["name"] == name).cloned()
+}
+
+#[rocket::async_test]
+async fn test_non_admin_cannot_escalate_via_user_update() {
+    let (client, _dir) = test_client().await;
+    let admin = login_admin(&client).await;
+    let (token, guid) = create_and_login_user(&client, &admin, "escalate").await;
+
+    let resp = client
+        .put("/api/user")
+        .header(ContentType::JSON)
+        .header(auth_header(&token))
+        .body(format!(r#"{{"uuid":"{guid}","is_admin":true,"group_name":"Default","status":1,"name":"renamed"}}"#))
+        .dispatch()
+        .await;
+    assert_eq!(resp.status(), Status::Ok);
+
+    let user = find_user(&client, &admin, "escalate").await.expect("user renamed or missing");
+    assert_eq!(user["is_admin"], false);
+}
+
+#[rocket::async_test]
+async fn test_non_admin_can_update_own_email() {
+    let (client, _dir) = test_client().await;
+    let admin = login_admin(&client).await;
+    let (token, guid) = create_and_login_user(&client, &admin, "selfedit").await;
+
+    let resp = client
+        .put("/api/user")
+        .header(ContentType::JSON)
+        .header(auth_header(&token))
+        .body(format!(r#"{{"uuid":"{guid}","email":"new-selfedit@test.com"}}"#))
+        .dispatch()
+        .await;
+    assert_eq!(resp.status(), Status::Ok);
+    let user = find_user(&client, &admin, "selfedit").await.unwrap();
+    assert_eq!(user["email"], "new-selfedit@test.com");
+}
+
+#[rocket::async_test]
+async fn test_non_admin_cannot_update_other_user() {
+    let (client, _dir) = test_client().await;
+    let admin = login_admin(&client).await;
+    let (token, _) = create_and_login_user(&client, &admin, "attacker").await;
+    let (_, victim) = create_and_login_user(&client, &admin, "victim").await;
+
+    let resp = client
+        .put("/api/user")
+        .header(ContentType::JSON)
+        .header(auth_header(&token))
+        .body(format!(r#"{{"uuid":"{victim}","email":"pwned@test.com"}}"#))
+        .dispatch()
+        .await;
+    assert_eq!(resp.status(), Status::Unauthorized);
+    assert_eq!(find_user(&client, &admin, "victim").await.unwrap()["email"], "victim@test.com");
+}
+
+#[rocket::async_test]
+async fn test_admin_can_promote_user() {
+    let (client, _dir) = test_client().await;
+    let admin = login_admin(&client).await;
+    let (_, guid) = create_and_login_user(&client, &admin, "promoteme").await;
+
+    let resp = client
+        .put("/api/user")
+        .header(ContentType::JSON)
+        .header(auth_header(&admin))
+        .body(format!(r#"{{"uuid":"{guid}","is_admin":true}}"#))
+        .dispatch()
+        .await;
+    assert_eq!(resp.status(), Status::Ok);
+    assert_eq!(find_user(&client, &admin, "promoteme").await.unwrap()["is_admin"], true);
+}
+
+#[rocket::async_test]
+async fn test_malformed_bearer_token_is_unauthorized() {
+    let (client, _dir) = test_client().await;
+    for token in ["invalid-token", "AAAA", "not base64 !!"] {
+        let resp = client
+            .get("/api/peers")
+            .header(ContentType::JSON)
+            .header(auth_header(token))
+            .dispatch()
+            .await;
+        assert_eq!(resp.status(), Status::Unauthorized, "token {token:?}");
+    }
+}
+
+#[rocket::async_test]
+async fn test_user_delete_unknown_guid_counts_zero() {
+    let (client, _dir) = test_client().await;
+    let token = login_admin(&client).await;
+    let resp = client
+        .delete("/api/user")
+        .header(ContentType::JSON)
+        .header(auth_header(&token))
+        .body(r#"{"rows":["00000000-0000-0000-0000-000000000000"]}"#)
+        .dispatch()
+        .await;
+    assert_eq!(resp.status(), Status::Ok);
+    let body: Value = resp.into_json().await.unwrap();
+    assert_eq!(body["total"], 0);
 }

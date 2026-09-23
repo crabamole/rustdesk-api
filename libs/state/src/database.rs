@@ -461,11 +461,15 @@ impl Database {
         }
         let user_id = user_id.unwrap().as_bytes().to_vec();
 
-        sqlx::query("DELETE FROM \"user\" WHERE guid = $1")
+        let deleted = sqlx::query("DELETE FROM \"user\" WHERE guid = $1")
             .bind(&user_id)
             .execute(&self.pool)
             .await
-            .ok()?;
+            .ok()?
+            .rows_affected();
+        if deleted == 0 {
+            return None;
+        }
 
         sqlx::query("DELETE FROM ab_legacy WHERE user_guid = $1")
             .bind(&user_id)
@@ -484,11 +488,11 @@ impl Database {
 
     pub async fn update_systeminfo(&self, systeminfo: utils::SystemInfo) -> Option<()> {
         let mut systeminfo = systeminfo;
-        let uuid = systeminfo.uuid.clone().unwrap();
-
-        let uuid_decoded = BASE64_STANDARD.decode(uuid);
-        if uuid_decoded.is_ok() {
-            let uuid_decoded = uuid_decoded.unwrap();
+        // Peers are keyed by the base64-decoded uuid; without one there is
+        // nothing to update.
+        let uuid = systeminfo.uuid.clone()?;
+        let uuid_decoded = BASE64_STANDARD.decode(uuid).ok();
+        if let Some(uuid_decoded) = uuid_decoded {
             log::debug!(
                 "uuid_decoded: {:?} {:?}",
                 uuid_decoded,
@@ -527,7 +531,7 @@ impl Database {
                 return Some(());
             }
         }
-        Some(())
+        None
     }
 
     pub async fn update_heartbeat(&self, heartbeat: utils::HeartbeatRequest) -> Option<()> {
@@ -1406,7 +1410,9 @@ impl Database {
     pub async fn get_peers_count(&self, platform: Platform) -> u32 {
         let filter = match platform {
             Platform::Windows => "windows%",
-            Platform::Linux => "linux%",
+            // "<distro> / Linux <version>": the distro id varies, so match
+            // the long OS version after the separator.
+            Platform::Linux => "% / linux%",
             Platform::MacOS => "macos%",
             Platform::Android => "android%",
             Platform::All => "%",
@@ -1419,7 +1425,7 @@ impl Database {
                     .to_string()
             }
             Backend::Postgres => {
-                "SELECT COUNT(*) as count FROM peer WHERE info::json->>'os' LIKE $1".to_string()
+                "SELECT COUNT(*) as count FROM peer WHERE info::json->>'os' ILIKE $1".to_string()
             }
         };
 
@@ -2368,6 +2374,76 @@ mod tests {
 
     db_test!(update_shared_address_book_invalid_uuid, |db| {
         assert!(db.update_shared_address_book("bad", "n").await.is_none());
+    });
+
+    /// SQLite databases created before the sqlx::Any port used the legacy
+    /// db.sql schema, where timestamp columns are `datetime`. The Any driver
+    /// cannot decode that type, so init_db's migrations must convert every
+    /// column we select.
+    #[tokio::test]
+    async fn legacy_datetime_schema_is_readable_after_init() {
+        install_default_drivers();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("legacy.db");
+        let url = format!("sqlite://{}?mode=rwc", path.display());
+        {
+            let pool = AnyPoolOptions::new().max_connections(1).connect(&url).await.unwrap();
+            for statement in split_sql(include_str!("../../../db_v2/create/db.sql")) {
+                sqlx::query(statement).execute(&pool).await.unwrap();
+            }
+            pool.close().await;
+        }
+
+        let db = Database::open(&path).await;
+        let groups = db.get_groups(0, 100).await.expect("get_groups failed on legacy schema");
+        let default = groups.iter().find(|g| g.name == "Default").expect("Default group missing");
+        assert_eq!(default.created_at, "2024-04-28 15:32:33");
+        assert!(db.get_group(&default.guid).await.is_some());
+    }
+
+    /// A fresh SQLite DB has no _sqlx_migrations rows, so the second startup
+    /// runs every migration against the new schema; that must be harmless.
+    #[tokio::test]
+    async fn reopening_fresh_sqlite_db_runs_migrations_cleanly() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("fresh.db");
+        let first = Database::open(&path).await;
+        first.create_group("e2e-reopen", "Default", "note").await;
+        first.pool.close().await;
+
+        let db = Database::open(&path).await;
+        let groups = db.get_groups(0, 100).await.expect("get_groups failed after reopen");
+        let names: Vec<_> = groups.iter().map(|g| g.name.as_str()).collect();
+        assert!(names.contains(&"Default"));
+        assert!(names.contains(&"e2e-reopen"));
+    }
+
+    async fn insert_peer_with_os(db: &Database, id: &str, os: &str) {
+        sqlx::query("INSERT INTO peer (guid, id, uuid, pk, info) VALUES ($1, $2, $3, $4, $5)")
+            .bind(Uuid::new_v4().as_bytes().to_vec())
+            .bind(id)
+            .bind(id.as_bytes().to_vec())
+            .bind(vec![0u8; 32])
+            .bind(format!(r#"{{"os":"{os}"}}"#))
+            .execute(&db.pool)
+            .await
+            .unwrap();
+    }
+
+    // The client reports os as "<distribution_id> / <long_os_version>"
+    // (rustdesk src/common.rs). On Linux distribution_id is the distro name,
+    // so Linux cannot be matched by prefix.
+    db_test!(get_peers_count_by_platform, |db| {
+        insert_peer_with_os(&db, "p-ubuntu", "ubuntu / Linux 26.04 Ubuntu").await;
+        insert_peer_with_os(&db, "p-debian", "debian / Linux 12 Debian").await;
+        insert_peer_with_os(&db, "p-win", "windows / Windows 10 Pro").await;
+        insert_peer_with_os(&db, "p-mac", "macos / macOS 15.0 Sequoia").await;
+        insert_peer_with_os(&db, "p-android", "android / Android 14").await;
+        assert_eq!(db.get_peers_count(Platform::Linux).await, 2);
+        assert_eq!(db.get_peers_count(Platform::Windows).await, 1);
+        assert_eq!(db.get_peers_count(Platform::MacOS).await, 1);
+        assert_eq!(db.get_peers_count(Platform::Android).await, 1);
+        assert_eq!(db.get_peers_count(Platform::All).await, 5);
     });
 
     db_test!(get_peers_count_empty, |db| {
