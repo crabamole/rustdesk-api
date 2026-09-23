@@ -1,3 +1,4 @@
+-- Initial schema. Owned by sctgdesk-api-server; hbbs only reads/writes table peer.
 CREATE TABLE IF NOT EXISTS team (
     guid bytea PRIMARY KEY NOT NULL,
     name varchar(100) NOT NULL,
@@ -16,7 +17,6 @@ CREATE TABLE IF NOT EXISTS session (
     expiry_at text NOT NULL,
     created_at text NOT NULL DEFAULT current_timestamp
 );
-INSERT INTO session VALUES('YFMotxzHT7qxoorhyNy/bA==',2592000,'\x018f2556230179eb91a2cffe5ced4236','{"ip":"::ffff:192.168.65.1","device_uuid":"RTlENEQxQ0UtMkY5Mi01ODg2LUE4QzEtMkQ4QjRFOEMwNDUz","os":"macos","type":"client","name":"blingster"}','2024-05-28 15:32:52','2024-04-28 15:32:52') ON CONFLICT DO NOTHING;
 CREATE TABLE IF NOT EXISTS peer (
     guid bytea PRIMARY KEY NOT NULL,
     id varchar(100) NOT NULL,

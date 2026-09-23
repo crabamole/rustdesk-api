@@ -40,7 +40,6 @@ use base64::prelude::{Engine as _, BASE64_STANDARD};
 use uuid::Uuid;
 
 const SCHEMA_SQLITE: &str = include_str!("../../../db_v2/create/db_sqlite.sql");
-const SCHEMA_POSTGRES: &str = include_str!("../../../db_v2/create/db_postgres.sql");
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Backend {
@@ -131,7 +130,7 @@ impl Database {
             .await?;
 
         let db = Database { pool, backend };
-        db.init_db().await;
+        db.init_db().await?;
         Ok(db)
     }
 
@@ -139,44 +138,17 @@ impl Database {
         self.backend
     }
 
-    async fn init_db(&self) {
-        let has_tables = match self.backend {
+    async fn init_db(&self) -> Result<(), sqlx::migrate::MigrateError> {
+        match self.backend {
+            Backend::Postgres => sqlx::migrate!("./migrations").run(&self.pool).await,
             Backend::Sqlite => {
-                let res = sqlx::query("SELECT name FROM sqlite_master WHERE type='table'")
-                    .fetch_all(&self.pool)
-                    .await;
-                match res {
-                    Ok(rows) => !rows.is_empty(),
-                    Err(_) => false,
+                // Removed in Task 3.
+                for statement in split_sql(SCHEMA_SQLITE) {
+                    if let Err(e) = sqlx::query(statement).execute(&self.pool).await {
+                        log::debug!("init_db statement error (may be expected): {:?}", e);
+                    }
                 }
-            }
-            Backend::Postgres => {
-                let res = sqlx::query(
-                    "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public'",
-                )
-                .fetch_all(&self.pool)
-                .await;
-                match res {
-                    Ok(rows) => !rows.is_empty(),
-                    Err(_) => false,
-                }
-            }
-        };
-
-        if has_tables {
-            if self.backend == Backend::Sqlite {
-                let migrator = sqlx::migrate!("../../db_v2/migrations/");
-                migrator.run(&self.pool).await.unwrap();
-            }
-        }
-
-        let schema = match self.backend {
-            Backend::Sqlite => SCHEMA_SQLITE,
-            Backend::Postgres => SCHEMA_POSTGRES,
-        };
-        for statement in split_sql(schema) {
-            if let Err(e) = sqlx::query(statement).execute(&self.pool).await {
-                log::debug!("init_db statement error (may be expected): {:?}", e);
+                Ok(())
             }
         }
     }
@@ -1927,6 +1899,27 @@ mod tests {
                 $body
             }
         };
+    }
+
+    #[tokio::test]
+    async fn migrations_are_applied_and_idempotent() {
+        let url = crate::testing::fresh_database_url().await;
+        let first = Database::new(&url).await.unwrap();
+        let applied: Vec<(i64, bool)> =
+            sqlx::query_as("SELECT version, success FROM _sqlx_migrations ORDER BY version")
+                .fetch_all(&first.pool)
+                .await
+                .unwrap();
+        assert_eq!(applied, vec![(1, true)]);
+        first.pool.close().await;
+
+        // Second start on the same database must not fail or duplicate rows.
+        let second = Database::new(&url).await.unwrap();
+        let (admins,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM \"user\" WHERE name = 'admin'")
+            .fetch_one(&second.pool)
+            .await
+            .unwrap();
+        assert_eq!(admins, 1);
     }
 
     db_test!(find_default_admin_user, |db| {
