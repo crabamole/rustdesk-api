@@ -18,10 +18,11 @@ use crate::types;
 use crate::UserId;
 use serde::Serialize;
 use sqlx::{
-    postgres::{PgPool, PgPoolOptions},
-    Row,
+    postgres::{PgConnection, PgPool, PgPoolOptions},
+    Connection, Row,
 };
 use std::env;
+use std::time::Duration;
 use utils::guid_into_uuid;
 use utils::types::AddressBook;
 use utils::AbPeer;
@@ -70,15 +71,29 @@ macro_rules! unwrap_or_return_tuple {
 
 pub type DbError = Box<dyn std::error::Error + Send + Sync>;
 
+/// A `MigrateError` (checksum mismatch, downgrade, ...) is permanent: it will not heal by
+/// waiting, unlike a connection error. Callers use this to pick a log level.
+fn is_migrate_error(e: &DbError) -> bool {
+    e.downcast_ref::<sqlx::migrate::MigrateError>().is_some()
+}
+
 impl Database {
     /// One attempt: connect and apply migrations.
     pub async fn new(url: &str) -> Result<Self, DbError> {
+        // sqlx's pool retries internally on connection errors until `acquire_timeout` (default
+        // 30s) elapses, then reports the generic "pool timed out" error, hiding the real cause
+        // and stretching our retry cadence past the spec's 1/2/4/5s backoff. Make one plain
+        // connection attempt first so the real error (e.g. connection refused) surfaces
+        // immediately, then build the pool.
+        PgConnection::connect(url).await?.close().await?;
+
         let max_connections: u32 = env::var("MAX_DATABASE_CONNECTIONS")
             .ok()
             .and_then(|s| s.parse().ok())
             .unwrap_or((num_cpus::get() * 4) as u32);
         let pool = PgPoolOptions::new()
             .max_connections(max_connections)
+            .acquire_timeout(Duration::from_secs(5))
             .connect(url)
             .await?;
         sqlx::migrate!("./migrations").run(&pool).await?;
@@ -94,7 +109,17 @@ impl Database {
                 Ok(db) => return db,
                 Err(e) => {
                     let delay = backoff.next_delay();
-                    log::warn!("database not ready ({e}), retrying in {}s", delay.as_secs());
+                    if is_migrate_error(&e) {
+                        // Checksum mismatch, downgrade, etc: these never heal on their own, but
+                        // we still retry (the startupProbe decides when to give up). Log at
+                        // `error` so a CrashLoop from this is diagnosable at a glance.
+                        log::error!(
+                            "database migration failed ({e}), retrying in {}s",
+                            delay.as_secs()
+                        );
+                    } else {
+                        log::warn!("database not ready ({e}), retrying in {}s", delay.as_secs());
+                    }
                     tokio::time::sleep(delay).await;
                 }
             }
@@ -1821,14 +1846,31 @@ mod tests {
 
     #[tokio::test]
     async fn new_fails_fast_on_unreachable_database() {
-        // Port 1 refuses connections; a single attempt must return an error, not hang or panic.
+        // Port 1 refuses connections; a single attempt must return an error, not hang or panic,
+        // and the error must carry the real cause rather than sqlx's internal pool-timeout wrapper.
         let res = tokio::time::timeout(
-            std::time::Duration::from_secs(40),
+            std::time::Duration::from_secs(10),
             Database::new("postgres://postgres:postgres@127.0.0.1:1/none"),
         )
         .await
         .expect("Database::new did not return");
-        assert!(res.is_err());
+        let msg = match res {
+            Ok(_) => panic!("connecting to a port that refuses connections must fail"),
+            Err(e) => e.to_string(),
+        };
+        assert!(
+            !msg.to_lowercase().contains("pool timed out"),
+            "error should surface the underlying cause, not sqlx's pool-timeout wrapper: {msg}"
+        );
+    }
+
+    #[test]
+    fn is_migrate_error_distinguishes_permanent_migration_failures_from_connection_errors() {
+        let migrate: DbError = Box::new(sqlx::migrate::MigrateError::VersionMissing(1));
+        assert!(is_migrate_error(&migrate));
+
+        let connection: DbError = Box::new(std::io::Error::other("connection refused"));
+        assert!(!is_migrate_error(&connection));
     }
 
     #[tokio::test]
