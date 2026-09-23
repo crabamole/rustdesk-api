@@ -1916,6 +1916,24 @@ mod tests {
         assert!(result.is_none());
     });
 
+    db_test!(get_user_for_oauth2_creates_inactive_non_admin_user, |db| {
+        // OAUTH2_CREATE_USER is unset here, so the new user is created inactive (status=0);
+        // role is always hard-coded to 0 (non-admin) for oauth2-provisioned users.
+        assert!(std::env::var("OAUTH2_CREATE_USER").is_err());
+        let result = db
+            .get_user_for_oauth2(
+                "oauth2-test-user".to_string(),
+                "oauth2-test@example.org".to_string(),
+                "oauth2-test-uuid".to_string(),
+            )
+            .await;
+        assert!(result.is_some());
+        let (_, name, info) = result.unwrap();
+        assert_eq!(name, "oauth2-test-user");
+        assert!(!info.active, "status defaults to inactive without OAUTH2_CREATE_USER=1");
+        assert!(!info.admin, "role is always non-admin for oauth2-provisioned users");
+    });
+
     db_test!(get_hashed_password_for_admin, |db| {
         let (conn, user) = db.find_user_by_name("admin").await;
         let (user_id, _, _) = user.unwrap();
@@ -2102,7 +2120,11 @@ mod tests {
     db_test!(get_all_users_with_name_filter, |db| {
         let filtered = db.get_all_users(Some("admin"), None, 1, 100).await;
         assert!(filtered.is_some());
-        assert_eq!(filtered.unwrap().len(), 1);
+        let filtered = filtered.unwrap();
+        assert_eq!(filtered.len(), 1);
+        // Seeded admin in 0001_initial.sql: status=1 (active), role=1 (admin).
+        assert_eq!(filtered[0].status, 1);
+        assert!(filtered[0].is_admin);
     });
 
     db_test!(get_all_users_current_zero_defaults_to_one, |db| {
@@ -2339,6 +2361,27 @@ mod tests {
         let peers = db.get_all_peers().await;
         assert!(peers.is_some());
         assert!(peers.unwrap().is_empty());
+    });
+
+    db_test!(get_all_peers_returns_status, |db| {
+        let guid = Uuid::new_v4();
+        sqlx::query(
+            "INSERT INTO peer(guid, id, uuid, pk, status, info) \
+             VALUES ($1, 'peer-status-test', $1, ''::bytea, 2, '{}')",
+        )
+        .bind(guid.as_bytes().to_vec())
+        .execute(&db.pool)
+        .await
+        .unwrap();
+
+        let peers = db.get_all_peers().await;
+        assert!(peers.is_some());
+        let peers = peers.unwrap();
+        let peer = peers
+            .iter()
+            .find(|p| p.id == "peer-status-test")
+            .expect("inserted peer should be returned");
+        assert_eq!(peer.status, 2, "status must round-trip from the smallint column");
     });
 
     db_test!(get_shared_address_books_for_admin, |db| {

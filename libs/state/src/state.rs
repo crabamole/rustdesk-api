@@ -1393,9 +1393,13 @@ mod tests {
         assert!(rules.is_some());
 
         let rules = rules.unwrap();
-        if !rules.is_empty() {
-            state.delete_ab_rule(&rules[0].guid).await;
-        }
+        // add_shared_address_book already inserted an owner rule=3; our own add_ab_rule call
+        // above added a second row (rule=2) for the same user.
+        let added = rules
+            .iter()
+            .find(|r| r.rule == 2)
+            .expect("the rule just inserted must be present");
+        state.delete_ab_rule(&added.guid).await;
     }
 
     #[tokio::test]
