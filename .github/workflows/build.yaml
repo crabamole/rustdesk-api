@@ -77,7 +77,7 @@ jobs:
 
     - name: Build
       run: |
-         DATABASE_URL=sqlite://$(pwd)/db_v2.sqlite3 cargo build --release --target ${{ matrix.target }}
+         cargo build --release --target ${{ matrix.target }}
     
     - name: Extract openapi3.json
       run: |

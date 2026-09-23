@@ -3,8 +3,6 @@
 /.vscode.s3config.toml
 .s3config.toml
 .DS_Store
-db_v2.sqlite3-*
-_db_v2.sqlite3*
 test
 test.rs
 .vscode/tasks.json

@@ -25,7 +25,7 @@ jobs:
     - name: Set up environment
       run: |
         sudo apt-get update
-        sudo apt-get install -y curl build-essential debhelper devscripts pkg-config libssl-dev libsqlite3-dev zip musl-dev musl-tools
+        sudo apt-get install -y curl build-essential debhelper devscripts pkg-config libssl-dev zip musl-dev musl-tools
 
     - name: Install Rust toolchain
       uses: crusty-pie/toolchain@main
@@ -59,7 +59,7 @@ jobs:
 
     - name: Build project
       run: |
-        DATABASE_URL=sqlite://$(pwd)/db_v2.sqlite3 cargo build --target=${{env.TARGET}} --release
+        cargo build --target=${{env.TARGET}} --release
         cd target/${{env.TARGET}}/release
         zip -r /tmp/ubuntu_amd64_${{ github.event.release.tag_name }}.zip sctgdesk-api-server
 

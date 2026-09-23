@@ -1,4 +1,8 @@
 -- Initial schema. Owned by sctgdesk-api-server; hbbs only reads/writes table peer.
+--
+-- Never edit an applied migration: sqlx checksums this file (including comments), so any
+-- change is fatal ("migration was previously applied but has been modified") on a database
+-- that already ran it. Add a new numbered migration instead.
 CREATE TABLE IF NOT EXISTS team (
     guid bytea PRIMARY KEY NOT NULL,
     name varchar(100) NOT NULL,

@@ -112,7 +112,7 @@
                 "S3CONFIG_FILE": "${workspaceFolder}/.s3config.toml",
                 "MAIN_PKG_VERSION": "0.1.0",
                 "VITE_DEVELOPMENT": "http://localhost:5173",
-                "DATABASE_URL": "sqlite:///Users/rlemeill/Development/sctgdesk-api-server/db_v2.sqlite3"
+                "DATABASE_URL": "postgres://postgres:postgres@localhost:5432/sctgdesk"
             },
         },
     ]

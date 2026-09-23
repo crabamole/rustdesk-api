@@ -60,7 +60,9 @@ The first time you launch the server it will create a default user with the user
 
 ### Default admin user
 
-The default admin user is created with the username `admin` and the password `Hello,world!`. You can change the password after the first login on the webconsole.
+The default admin user is created with the username `admin` and the password `Hello,world!`.
+**You must change this password after the first login on the webconsole** — it is a well-known
+default and ships as-is in every deployment.
 
 ## S3 url generation
 
@@ -192,7 +194,7 @@ cargo build --release
 The server can be integrated with the Rustdesk-server you can easily integrate it by modifying the [main.rs](https://github.com/sctg-development/sctgdesk-server/blob/tcpserver-master-build/src/main.rs) file of the Rustdesk-server. :
 
 ```rust
-use sctgdesk_api_server::build_rocket;
+use sctgdesk_api_server::{build_rocket, database_url_from_env};
 
 #[rocket::main]
 async fn start_rocket() -> ResultType<()> {
@@ -203,10 +205,17 @@ async fn start_rocket() -> ResultType<()> {
         .merge(("log_level", LogLevel::Debug))
         .merge(("secret_key", "wJq+s/xvwZjmMX3ev0p4gQTs9Ej5wt0brsk3ZGhoBTg="))
         .merge(("limits", Limits::new().limit("json", 2.mebibytes())));
-    let _rocket = build_rocket(figment).await.ignite().await?.launch().await?;
+    let db_url = database_url_from_env().unwrap_or_else(|msg| {
+        eprintln!("{msg}");
+        std::process::exit(2);
+    });
+    let _rocket = build_rocket(figment, &db_url).await.ignite().await?.launch().await?;
     Ok(())
 }
 ```
+
+`database_url_from_env()` reads the required `DATABASE_URL` environment variable (a Postgres
+connection string) and returns a clear error message if it is missing or empty.
 
 and in the `main` function:
 
