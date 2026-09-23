@@ -1179,7 +1179,7 @@ impl Database {
         for row in res {
             let guid_bytes: Vec<u8> = row.try_get::<Vec<u8>, _>("guid").unwrap_or_default();
             let owner_bytes: Vec<u8> = row.try_get::<Vec<u8>, _>("owner").unwrap_or_default();
-            let access_level = row.try_get::<i64, _>("rule").unwrap_or(0) as u32;
+            let access_level = row.try_get::<i32, _>("rule").unwrap_or(0) as u32;
             address_books.push(AddressBook {
                 ab: guid_into_uuid(guid_bytes).unwrap_or("".to_string()),
                 name: Some(row.try_get::<String, _>("name").unwrap_or_default()),
@@ -2269,6 +2269,13 @@ mod tests {
         let (user_id, _, _) = user.unwrap();
         let abs = db.get_shared_address_books(user_id).await;
         assert!(abs.is_some());
+        let abs = abs.unwrap();
+        assert!(!abs.is_empty());
+        // Seeded in 0001_initial.sql: ab_rule grants the Default group rule=3
+        // on the Default shared address book. The rule column is computed
+        // via COALESCE(MAX(smallint), 0), which Postgres resolves to
+        // integer, not bigint or smallint.
+        assert_eq!(abs[0].rule, Some(3));
     });
 
     db_test!(legacy_address_book_not_found, |db| {
