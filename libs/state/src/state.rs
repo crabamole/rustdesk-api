@@ -799,11 +799,7 @@ mod tests {
     use crate::bearer::AuthenticatedUserInfo;
 
     async fn test_state() -> ApiState {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("test.db");
-        let state = ApiState::new_with_db(path.to_str().unwrap()).await;
-        std::mem::forget(dir);
-        state
+        ApiState::new_with_db(&crate::testing::fresh_database_url().await).await
     }
 
     #[tokio::test]

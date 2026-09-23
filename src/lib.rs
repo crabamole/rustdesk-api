@@ -2553,12 +2553,10 @@ mod tests {
     use rocket::local::asynchronous::Client;
 
     async fn test_client() -> Client {
-        let dir = tempfile::tempdir().unwrap();
-        let db_path = dir.path().join("test.db");
+        let db_url = state::testing::fresh_database_url().await;
         let figment = rocket::Config::figment()
             .merge(("secret_key", "wJq+s/xvwZjmMX3ev0p4gQTs9Ej5wt0brsk3ZGhoBTg="));
-        let rocket = build_rocket_with_db(figment, db_path.to_str().unwrap()).await;
-        std::mem::forget(dir);
+        let rocket = build_rocket_with_db(figment, &db_url).await;
         Client::tracked(rocket).await.unwrap()
     }
 

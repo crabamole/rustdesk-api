@@ -3,15 +3,13 @@ use rocket::local::asynchronous::Client;
 use sctgdesk_api_server::build_rocket_with_db;
 use serde_json::Value;
 
-async fn test_client() -> (Client, tempfile::TempDir) {
-    let dir = tempfile::tempdir().unwrap();
-    let db_path = dir.path().join("test.db");
+async fn test_client() -> (Client, ()) {
+    let db_url = state::testing::fresh_database_url().await;
     let figment = rocket::Config::figment()
         .merge(("port", 0))
         .merge(("secret_key", "hPRYyVRiMyxpw5sBB1XeCMN1kFsDCqKvBi2QJxBVHQk="));
-    let rocket = build_rocket_with_db(figment, db_path.to_str().unwrap()).await;
-    let client = Client::tracked(rocket).await.unwrap();
-    (client, dir)
+    let rocket = build_rocket_with_db(figment, &db_url).await;
+    (Client::tracked(rocket).await.unwrap(), ())
 }
 
 async fn login_admin(client: &Client) -> String {

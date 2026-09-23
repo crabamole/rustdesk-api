@@ -18,6 +18,9 @@ mod state;
 mod bearer;
 mod password;
 
+#[cfg(any(test, feature = "test-util"))]
+pub mod testing;
+
 pub use utils::{UserId, SessionId};
 
 pub use state::ApiState;

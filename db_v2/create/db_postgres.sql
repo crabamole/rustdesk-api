@@ -171,7 +171,7 @@ CREATE TABLE IF NOT EXISTS ab_peer (
 CREATE TABLE IF NOT EXISTS ab_tag (
     ab bytea NOT NULL,
     name varchar(100) NOT NULL,
-    color INTEGER NOT NULL,
+    color bigint NOT NULL,
     CONSTRAINT constraint_ab_name PRIMARY KEY (ab, name)
 );
 CREATE TABLE IF NOT EXISTS ab_rule (

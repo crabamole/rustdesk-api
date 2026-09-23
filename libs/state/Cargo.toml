@@ -28,10 +28,10 @@ sqlx = { version = "0.8", features = [
 bcrypt = "0.15"
 uuid = { version = "1.0", features = ["v4"] }
 num_cpus = "1.16"
+testcontainers = { version = "0.27", optional = true }
+testcontainers-modules = { version = "0.15", features = ["postgres"], optional = true }
 
 [dev-dependencies]
-tempfile = "3"
-paste = "1"
 testcontainers = "0.27"
 testcontainers-modules = { version = "0.15", features = ["postgres"] }
 tokio = { version = "1", features = ["sync"] }
@@ -39,4 +39,4 @@ tokio = { version = "1", features = ["sync"] }
 [build-dependencies]
 
 [features]
-postgres-tests = []
+test-util = ["dep:testcontainers", "dep:testcontainers-modules"]

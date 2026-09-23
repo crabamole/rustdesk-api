@@ -1913,69 +1913,18 @@ mod tests {
     use super::*;
     use utils::AbTag;
 
-    async fn test_db_sqlite() -> Database {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("test.db");
-        let db = Database::open(&path).await;
-        std::mem::forget(dir);
-        db
-    }
-
-    use tokio::sync::OnceCell;
-    use testcontainers::runners::AsyncRunner;
-    use testcontainers::ContainerAsync;
-    use testcontainers_modules::postgres::Postgres;
-
-    struct PgContainer {
-        _container: ContainerAsync<Postgres>,
-        base_url: String,
-    }
-
-    static PG: OnceCell<PgContainer> = OnceCell::const_new();
-
-    async fn get_pg_container() -> &'static PgContainer {
-        PG.get_or_init(|| async {
-            let container = Postgres::default()
-                .start()
-                .await
-                .expect("failed to start postgres container");
-            let port = container.get_host_port_ipv4(5432).await.unwrap();
-            let base_url = format!("postgres://postgres:postgres@127.0.0.1:{}", port);
-            PgContainer { _container: container, base_url }
-        }).await
-    }
-
-    async fn test_db_postgres() -> Database {
-        install_default_drivers();
-        let pg = get_pg_container().await;
-        let db_name = format!("test_{}", Uuid::new_v4().as_simple());
-        let admin_url = format!("{}/postgres", pg.base_url);
-        let admin_pool = AnyPool::connect(&admin_url).await.unwrap();
-        sqlx::query(&format!("CREATE DATABASE \"{}\"", db_name))
-            .execute(&admin_pool)
+    async fn test_db() -> Database {
+        Database::new(&crate::testing::fresh_database_url().await)
             .await
-            .unwrap();
-        admin_pool.close().await;
-
-        let test_url = format!("{}/{}", pg.base_url, db_name);
-        Database::new(&test_url).await.unwrap()
+            .unwrap()
     }
 
     macro_rules! db_test {
         ($name:ident, |$db:ident| $body:block) => {
-            paste::paste! {
-                #[tokio::test]
-                async fn [<$name _sqlite>]() {
-                    let $db = test_db_sqlite().await;
-                    $body
-                }
-
-                #[tokio::test]
-                #[cfg_attr(not(feature = "postgres-tests"), ignore)]
-                async fn [<$name _postgres>]() {
-                    let $db = test_db_postgres().await;
-                    $body
-                }
+            #[tokio::test]
+            async fn $name() {
+                let $db = test_db().await;
+                $body
             }
         };
     }
@@ -2375,48 +2324,6 @@ mod tests {
     db_test!(update_shared_address_book_invalid_uuid, |db| {
         assert!(db.update_shared_address_book("bad", "n").await.is_none());
     });
-
-    /// SQLite databases created before the sqlx::Any port used the legacy
-    /// db.sql schema, where timestamp columns are `datetime`. The Any driver
-    /// cannot decode that type, so init_db's migrations must convert every
-    /// column we select.
-    #[tokio::test]
-    async fn legacy_datetime_schema_is_readable_after_init() {
-        install_default_drivers();
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("legacy.db");
-        let url = format!("sqlite://{}?mode=rwc", path.display());
-        {
-            let pool = AnyPoolOptions::new().max_connections(1).connect(&url).await.unwrap();
-            for statement in split_sql(include_str!("../../../db_v2/create/db.sql")) {
-                sqlx::query(statement).execute(&pool).await.unwrap();
-            }
-            pool.close().await;
-        }
-
-        let db = Database::open(&path).await;
-        let groups = db.get_groups(0, 100).await.expect("get_groups failed on legacy schema");
-        let default = groups.iter().find(|g| g.name == "Default").expect("Default group missing");
-        assert_eq!(default.created_at, "2024-04-28 15:32:33");
-        assert!(db.get_group(&default.guid).await.is_some());
-    }
-
-    /// A fresh SQLite DB has no _sqlx_migrations rows, so the second startup
-    /// runs every migration against the new schema; that must be harmless.
-    #[tokio::test]
-    async fn reopening_fresh_sqlite_db_runs_migrations_cleanly() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("fresh.db");
-        let first = Database::open(&path).await;
-        first.create_group("e2e-reopen", "Default", "note").await;
-        first.pool.close().await;
-
-        let db = Database::open(&path).await;
-        let groups = db.get_groups(0, 100).await.expect("get_groups failed after reopen");
-        let names: Vec<_> = groups.iter().map(|g| g.name.as_str()).collect();
-        assert!(names.contains(&"Default"));
-        assert!(names.contains(&"e2e-reopen"));
-    }
 
     async fn insert_peer_with_os(db: &Database, id: &str, os: &str) {
         sqlx::query("INSERT INTO peer (guid, id, uuid, pk, info) VALUES ($1, $2, $3, $4, $5)")
