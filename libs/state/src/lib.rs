@@ -17,6 +17,7 @@ mod database;
 mod state;
 mod bearer;
 mod password;
+pub mod retry;
 
 #[cfg(any(test, feature = "test-util"))]
 pub mod testing;

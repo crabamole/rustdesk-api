@@ -85,6 +85,22 @@ impl Database {
         Ok(Database { pool })
     }
 
+    /// Connect and migrate, retrying until it succeeds. Kubernetes' startupProbe
+    /// decides when to give up and restart the container.
+    pub async fn connect_with_retry(url: &str) -> Self {
+        let mut backoff = crate::retry::Backoff::new();
+        loop {
+            match Self::new(url).await {
+                Ok(db) => return db,
+                Err(e) => {
+                    let delay = backoff.next_delay();
+                    log::warn!("database not ready ({e}), retrying in {}s", delay.as_secs());
+                    tokio::time::sleep(delay).await;
+                }
+            }
+        }
+    }
+
     pub async fn find_user_by_name(
         &self,
         username: &str,
@@ -1801,6 +1817,25 @@ mod tests {
                 $body
             }
         };
+    }
+
+    #[tokio::test]
+    async fn new_fails_fast_on_unreachable_database() {
+        // Port 1 refuses connections; a single attempt must return an error, not hang or panic.
+        let res = tokio::time::timeout(
+            std::time::Duration::from_secs(40),
+            Database::new("postgres://postgres:postgres@127.0.0.1:1/none"),
+        )
+        .await
+        .expect("Database::new did not return");
+        assert!(res.is_err());
+    }
+
+    #[tokio::test]
+    async fn connect_with_retry_returns_once_database_is_reachable() {
+        let url = crate::testing::fresh_database_url().await;
+        let db = Database::connect_with_retry(&url).await;
+        assert!(db.find_user_by_name("admin").await.1.is_some());
     }
 
     #[tokio::test]

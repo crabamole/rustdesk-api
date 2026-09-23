@@ -114,9 +114,16 @@ async fn options(_path: PathBuf) -> Result<(), std::io::Error> {
     Ok(())
 }
 
-pub async fn build_rocket(figment: Figment) -> Rocket<Build> {
-    let db_url = std::env::var("DATABASE_URL").unwrap_or_else(|_| "".to_string());
-    build_rocket_with_db(figment, &db_url).await
+/// Read the required database URL.
+pub fn database_url_from_env() -> Result<String, String> {
+    std::env::var("DATABASE_URL")
+        .ok()
+        .filter(|v| !v.is_empty())
+        .ok_or_else(|| "DATABASE_URL is required (postgres://user:pass@host:5432/db)".to_string())
+}
+
+pub async fn build_rocket(figment: Figment, db_url: &str) -> Rocket<Build> {
+    build_rocket_with_db(figment, db_url).await
 }
 
 pub async fn build_rocket_with_db(figment: Figment, db_path: &str) -> Rocket<Build> {
@@ -2551,6 +2558,17 @@ mod tests {
     use super::*;
     use rocket::http::{ContentType, Header, Status};
     use rocket::local::asynchronous::Client;
+
+    #[test]
+    fn database_url_is_required() {
+        std::env::remove_var("DATABASE_URL");
+        let err = database_url_from_env().unwrap_err();
+        assert!(err.contains("DATABASE_URL"), "{err}");
+
+        std::env::set_var("DATABASE_URL", "postgres://u:p@h/db");
+        assert_eq!(database_url_from_env().unwrap(), "postgres://u:p@h/db");
+        std::env::remove_var("DATABASE_URL");
+    }
 
     async fn test_client() -> Client {
         let db_url = state::testing::fresh_database_url().await;

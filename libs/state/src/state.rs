@@ -72,7 +72,7 @@ fn secs_from_epoch() -> u64 {
 
 impl ApiState {
     pub async fn new_with_db(db_url: &str) -> Self {
-        let db = Database::new(db_url).await.expect("Failed to open database");
+        let db = Database::connect_with_retry(db_url).await;
         Self {
             last_maintenance_time: AtomicU64::new(0),
             address_books: Default::default(),

@@ -17,7 +17,7 @@ use rocket::{
     config::LogLevel,
     data::{Limits, ToByteUnit},
 };
-use sctgdesk_api_server::build_rocket;
+use sctgdesk_api_server::{build_rocket, database_url_from_env};
 use clap::{Arg, Command};
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use getrandom::getrandom;
@@ -84,7 +84,14 @@ async fn main() -> Result<(), rocket::Error> {
     }
 
     // Launch Rocket
-    let _rocket = build_rocket(figment).await.ignite().await?.launch().await?;
+    let db_url = match database_url_from_env() {
+        Ok(url) => url,
+        Err(msg) => {
+            eprintln!("{msg}");
+            std::process::exit(2);
+        }
+    };
+    let _rocket = build_rocket(figment, &db_url).await.ignite().await?.launch().await?;
     
     // End of API Server start
     // Other stuff here
