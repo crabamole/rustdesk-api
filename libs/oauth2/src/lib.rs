@@ -156,10 +156,40 @@ pub fn get_providers_config_file() -> String {
     std::env::var("OAUTH2_CONFIG_FILE").unwrap_or_else(|_| "oauth2.toml".to_string())
 }
 
+/// An `ExchangeCodeError` with `context` and the underlying cause.
+pub(crate) fn exchange_err(context: &str, cause: impl std::fmt::Display) -> errors::Oauth2Error {
+    errors::Oauth2Error::ExchangeCodeError(format!("{}: {}", context, cause))
+}
+
+/// Body of a provider response; a non-2xx status becomes an
+/// `ExchangeCodeError` carrying the status and the (truncated) body, which
+/// is where providers explain what went wrong.
+pub(crate) async fn response_text(
+    context: &str,
+    response: reqwest::Response,
+) -> Result<String, errors::Oauth2Error> {
+    let status = response.status();
+    let text = response.text().await.map_err(|e| exchange_err(context, e))?;
+    if !status.is_success() {
+        let body: String = text.chars().take(500).collect();
+        return Err(exchange_err(context, format!("HTTP {}: {}", status, body)));
+    }
+    Ok(text)
+}
+
 /// One-shot HTTP server for provider tests: answers the first request with
 /// `{}` and hands back that request's body. Returns (base url, body receiver).
 #[cfg(test)]
 pub(crate) fn capture_one_request() -> (String, std::sync::mpsc::Receiver<String>) {
+    capture_one_request_with("200 OK", "{}")
+}
+
+/// Like [`capture_one_request`], answering with the given status and body.
+#[cfg(test)]
+pub(crate) fn capture_one_request_with(
+    status: &'static str,
+    response: &'static str,
+) -> (String, std::sync::mpsc::Receiver<String>) {
     use std::io::{BufRead, BufReader, Read, Write};
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let url = format!("http://{}", listener.local_addr().unwrap());
@@ -182,7 +212,11 @@ pub(crate) fn capture_one_request() -> (String, std::sync::mpsc::Receiver<String
         reader.read_exact(&mut body).unwrap();
         tx.send(String::from_utf8(body).unwrap()).unwrap();
         let _ = stream.write_all(
-            b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}",
+            format!(
+                "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response}",
+                response.len()
+            )
+            .as_bytes(),
         );
     });
     (url, rx)

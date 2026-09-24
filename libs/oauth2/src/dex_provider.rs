@@ -18,7 +18,7 @@ use std::{future::Future, pin::Pin};
 use crate::{
     errors::Oauth2Error,
     oauth_provider::{decode_oauth_id_token, OAuthProvider, OAuthProviderFactory, OAuthResponse},
-    Provider, ProviderConfig, TokenResponse,
+    exchange_err, response_text, Provider, ProviderConfig, TokenResponse,
 };
 use base64::prelude::{Engine as _, BASE64_STANDARD};
 
@@ -92,16 +92,10 @@ impl OAuthProvider for DexProvider {
                 ])
                 .send()
                 .await
-                .map_err(|_| Oauth2Error::ExchangeCodeError)?;
-
-            let response = response
-                .error_for_status()
-                .map_err(|_| Oauth2Error::ExchangeCodeError)?;
-
-            let body = response
-                .json::<TokenResponse>()
-                .await
-                .map_err(|_| Oauth2Error::ExchangeCodeError)?;
+                .map_err(|e| exchange_err("token request", e))?;
+            let text = response_text("token request", response).await?;
+            let body: TokenResponse = serde_json::from_str(&text)
+                .map_err(|e| exchange_err("token response", e))?;
 
             if let Some(id_token) = body.id_token {
                 let (username, email) = decode_oauth_id_token(&id_token)?;
@@ -111,7 +105,7 @@ impl OAuthProvider for DexProvider {
                     email,
                 })
             } else {
-                Err(Oauth2Error::ExchangeCodeError)
+                Err(exchange_err("token response", "no id_token"))
             }
         })
     }
@@ -191,6 +185,23 @@ mod tests {
         let provider = DexProvider { provider_config: config };
         let _ = provider.exchange_code("a+b/c=d", "https://example.com/cb").await;
         assert_eq!(crate::form_code(&body.recv().unwrap()), "a+b/c=d");
+    }
+
+
+    #[tokio::test]
+    async fn test_exchange_code_error_reports_provider_response() {
+        let (url, _body) =
+            crate::capture_one_request_with("400 Bad Request", r#"{"error":"invalid_grant"}"#);
+        let mut config = test_config();
+        config.token_exchange_url = format!("{url}/token");
+        let provider = DexProvider { provider_config: config };
+        let err = provider
+            .exchange_code("code", "https://example.com/cb")
+            .await
+            .err()
+            .expect("exchange must fail")
+            .to_string();
+        assert!(err.contains("400") && err.contains("invalid_grant"), "{err}");
     }
 
 }

@@ -420,6 +420,9 @@ impl ApiState {
             let exchange_result = provider
                 .exchange_code(authorization_code.as_str(), callback_url.as_str())
                 .await;
+            if let Err(e) = &exchange_result {
+                log::error!("OIDC code exchange failed: {}", e);
+            }
 
             if exchange_result.is_ok() {
                 let access_token = exchange_result.unwrap();

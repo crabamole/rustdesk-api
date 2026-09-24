@@ -22,7 +22,7 @@ use url::form_urlencoded;
 use crate::{
     errors::Oauth2Error,
     oauth_provider::{OAuthProvider, OAuthProviderFactory, OAuthResponse},
-    Provider, ProviderConfig,
+    exchange_err, response_text, Provider, ProviderConfig,
 };
 
 pub struct GithubProvider {
@@ -135,18 +135,10 @@ impl OAuthProvider for GithubProvider {
                 ])
                 .send()
                 .await
-                .map_err(|_| Oauth2Error::ExchangeCodeError)?;
-
-            let response = response
-                .error_for_status()
-                .map_err(|_| Oauth2Error::ExchangeCodeError)?;
-
-            let body_text = response
-                .text()
-                .await
-                .map_err(|_| Oauth2Error::ExchangeCodeError)?;
-            let body: GithubTokenResponse =
-                serde_json::from_str(&body_text).map_err(|_| Oauth2Error::ExchangeCodeError)?;
+                .map_err(|e| exchange_err("token request", e))?;
+            let body_text = response_text("token request", response).await?;
+            let body: GithubTokenResponse = serde_json::from_str(&body_text)
+                .map_err(|e| exchange_err("token response", e))?;
 
             // Get the user info with:
             // Authorization: Bearer OAUTH-TOKEN
@@ -161,29 +153,21 @@ impl OAuthProvider for GithubProvider {
                 .header("Authorization", format!("Bearer {}", body.access_token))
                 .send()
                 .await
-                .map_err(|_| Oauth2Error::ExchangeCodeError)?;
-
-            let user_info_text = response
-                .text()
-                .await
-                .map_err(|_| Oauth2Error::ExchangeCodeError)?;
+                .map_err(|e| exchange_err("user info request", e))?;
+            let user_info_text = response_text("user info request", response).await?;
             log::debug!("User info:\n {}", user_info_text);
             let user_info: GithubUser = serde_json::from_str(&user_info_text).map_err(|e| {
                 log::debug!("Failed to deserialize Github user info\nGithub probably changed its json response\nYou may need to correct the struct GithubUser: {}", e);
-                Oauth2Error::ExchangeCodeError
+                exchange_err("user info response", e)
             })?;
 
-            if true {
-                Ok(OAuthResponse {
-                    access_token: body.access_token,
-                    username: user_info.login,
-                    email: user_info
-                        .email
-                        .unwrap_or("tobefilled@world.com".to_string()),
-                })
-            } else {
-                Err(Oauth2Error::ExchangeCodeError)
-            }
+            Ok(OAuthResponse {
+                access_token: body.access_token,
+                username: user_info.login,
+                email: user_info
+                    .email
+                    .unwrap_or("tobefilled@world.com".to_string()),
+            })
         })
     }
 
@@ -257,6 +241,23 @@ mod tests {
         let provider = GithubProvider { provider_config: config };
         let _ = provider.exchange_code("a+b/c=d", "https://example.com/cb").await;
         assert_eq!(crate::form_code(&body.recv().unwrap()), "a+b/c=d");
+    }
+
+
+    #[tokio::test]
+    async fn test_exchange_code_error_reports_provider_response() {
+        let (url, _body) =
+            crate::capture_one_request_with("400 Bad Request", r#"{"error":"invalid_grant"}"#);
+        let mut config = test_config();
+        config.token_exchange_url = format!("{url}/token");
+        let provider = GithubProvider { provider_config: config };
+        let err = provider
+            .exchange_code("code", "https://example.com/cb")
+            .await
+            .err()
+            .expect("exchange must fail")
+            .to_string();
+        assert!(err.contains("400") && err.contains("invalid_grant"), "{err}");
     }
 
 }

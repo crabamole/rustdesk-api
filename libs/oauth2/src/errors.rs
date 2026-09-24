@@ -18,7 +18,8 @@ use std::error::Error;
 
 #[derive(Debug)]
 pub enum Oauth2Error {
-    ExchangeCodeError,
+    /// Code exchange with the provider failed; carries the cause.
+    ExchangeCodeError(String),
     VerifyTokenError,
     DecodeIdTokenError,
 }
@@ -26,7 +27,7 @@ pub enum Oauth2Error {
 impl fmt::Display for Oauth2Error {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
-            Oauth2Error::ExchangeCodeError => write!(f, "Exchange code error"),
+            Oauth2Error::ExchangeCodeError(cause) => write!(f, "Exchange code error: {}", cause),
             Oauth2Error::VerifyTokenError => write!(f, "Verify token error"),
             Oauth2Error::DecodeIdTokenError => write!(f, "Decode id token error"),
         }
@@ -41,7 +42,10 @@ mod tests {
 
     #[test]
     fn test_display_exchange_code_error() {
-        assert_eq!(Oauth2Error::ExchangeCodeError.to_string(), "Exchange code error");
+        assert_eq!(
+            Oauth2Error::ExchangeCodeError("boom".into()).to_string(),
+            "Exchange code error: boom"
+        );
     }
 
     #[test]
@@ -56,13 +60,13 @@ mod tests {
 
     #[test]
     fn test_error_is_error_trait() {
-        let err: Box<dyn Error> = Box::new(Oauth2Error::ExchangeCodeError);
-        assert_eq!(err.to_string(), "Exchange code error");
+        let err: Box<dyn Error> = Box::new(Oauth2Error::ExchangeCodeError("boom".into()));
+        assert_eq!(err.to_string(), "Exchange code error: boom");
     }
 
     #[test]
     fn test_debug_format() {
-        let err = Oauth2Error::ExchangeCodeError;
+        let err = Oauth2Error::ExchangeCodeError("boom".into());
         let debug = format!("{:?}", err);
         assert!(debug.contains("ExchangeCodeError"));
     }
