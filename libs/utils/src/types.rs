@@ -194,7 +194,7 @@ pub struct AuditConnRequest {
     #[serde(default)]
     pub conn_id: i64,
     #[serde(default)]
-    pub session_id: i64,
+    pub session_id: u64,
     #[serde(default)]
     pub nonce: String,
     #[serde(default)]

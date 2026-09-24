@@ -2737,6 +2737,19 @@ mod tests {
     }
 
     #[rocket::async_test]
+    async fn test_audit_conn_accepts_u64_session_id() {
+        // The client's session_id is a random u64; values above i64::MAX must not be rejected.
+        let client = test_client().await;
+        let resp = client
+            .post("/api/audit/conn")
+            .header(ContentType::JSON)
+            .body(r#"{"id":"peer_u64","uuid":"dXVpZA==","conn_id":1,"session_id":18446744073709551615,"nonce":"n_u64","ip":"10.0.0.9","action":"close"}"#)
+            .dispatch()
+            .await;
+        assert_eq!(resp.status(), Status::Ok);
+    }
+
+    #[rocket::async_test]
     async fn test_audit_file() {
         let client = test_client().await;
         let resp = client

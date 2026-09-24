@@ -1715,7 +1715,7 @@ impl Database {
                 .try_get("info")
                 .ok()?;
             if let Ok(info) = serde_json::from_str::<serde_json::Value>(&info_str) {
-                if info.get("session_id").and_then(|v| v.as_i64()).map(|s| s.to_string()).as_deref() == Some(session_id) {
+                if info.get("session_id").and_then(|v| v.as_u64()).map(|s| s.to_string()).as_deref() == Some(session_id) {
                     return Some(guid);
                 }
             }
@@ -2545,6 +2545,14 @@ mod tests {
         let found = db.find_active_audit_conn("peer3", "300", "0").await;
         assert!(found.is_some());
         assert_eq!(found.unwrap(), guid.as_bytes().to_vec());
+    });
+
+    db_test!(find_active_audit_conn_match_u64_session_id, |db| {
+        let guid = Uuid::new_v4();
+        let info = r#"{"nonce":"test_u64","session_id":18446744073709551615}"#;
+        db.insert_audit_conn(guid.as_bytes(), Some(0), b"peer_u64", None, None, info).await;
+        let found = db.find_active_audit_conn("peer_u64", "18446744073709551615", "0").await;
+        assert_eq!(found, Some(guid.as_bytes().to_vec()));
     });
 
     db_test!(find_active_audit_conn_closed, |db| {
