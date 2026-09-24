@@ -15,7 +15,6 @@
 // along with SCTGDesk. If not, see <https://www.gnu.org/licenses/agpl-3.0.html>.
 mod api;
 mod extended_json;
-mod extended_request;
 
 use std::collections::HashMap;
 use std::env;
@@ -25,7 +24,6 @@ use std::sync::Arc;
 
 use api::ActionResponse;
 use extended_json::ExtendedJson;
-use extended_request::ExtendedRequest;
 use oauth2::oauth_provider::OAuthProvider;
 use oauth2::oauth_provider::OAuthProviderFactory;
 use rocket::fairing::{Fairing, Info, Kind};
@@ -184,7 +182,6 @@ pub async fn build_rocket_with_db(figment: Figment, db_path: &str) -> Rocket<Bui
                 ab_rule_add,
                 ab_rule_delete,
                 software_version,
-                software_releases_latest,
                 software_download,
                 software_releases_tag,
                 webconsole_index,
@@ -2090,43 +2087,9 @@ async fn software_version() -> Json<SoftwareVersionResponse> {
     let version = env::var("MAIN_PKG_VERSION").unwrap_or(env!("CARGO_PKG_VERSION").to_string());
     let response = SoftwareVersionResponse {
         server: Some(version),
-        client: Some("0.0.0".to_string()),
+        client: None,
     };
     Json(response)
-}
-
-/// # Retrieve the client version
-///
-/// This function is an API endpoint that retrieves the version of the client.
-/// It copies the GitHub method of retrieving the latest release version.
-/// It is tagged with "software" for OpenAPI documentation.
-///
-/// It can be used by replacing the check_software_update() from the client.
-/// You can find the client code at rustdesk/src/common.rs
-/// ## Returns
-///
-/// Returns in the location header the URL of the latest release.
-/// something like https://api-server/api/releases/tag/1.2.6
-///
-/// ## Example
-///
-/// It is easy to modify the client code to use this API endpoint.
-/// this is how we can modify the client code to use this API endpoint.
-///
-/// <pre>
-///     // see <a href='https://github.com/sctg-development/sctgdesk/blob/481d3516fef1daa145d8044594187cb11959f8be/src/common.rs#L953L972'>Sample modification on github</a><br>
-///     let url=format!("{}/api/software/releases/latest",get_api_server("".to_owned(), "".to_owned())).to_owned();<br>
-///     log::info!("URL for checking software updates: {}", url);<br>
-/// </pre>
-#[openapi(tag = "software")]
-#[get("/api/software/releases/latest")]
-async fn software_releases_latest(request: ExtendedRequest) -> Redirect {
-    log::debug!("software_releases_latest");
-    let headers = request.headers;
-    let host = get_host(headers);
-    let version = "0.0.0";
-    let url = format!("{}/api/software/releases/tag/{}", host, version);
-    Redirect::to(url)
 }
 
 /// # Simulate GitHub API for releases
@@ -3750,6 +3713,16 @@ mod tests {
             .dispatch()
             .await;
         assert_eq!(resp.status(), Status::Ok);
+        let body: serde_json::Value = resp.into_json().await.unwrap();
+        // There is no client release to report; the field is omitted.
+        assert!(body.get("client").is_none(), "{body}");
+    }
+
+    #[rocket::async_test]
+    async fn test_software_releases_latest_removed() {
+        let client = test_client().await;
+        let resp = client.get("/api/software/releases/latest").dispatch().await;
+        assert_eq!(resp.status(), Status::NotFound);
     }
 
     #[rocket::async_test]

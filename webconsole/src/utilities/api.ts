@@ -87,26 +87,3 @@ export function getServerVersion(): Promise<string> {
         });
     });
 }
-
-/**
- * Retrieves the client version.
- * 
- * @return {Promise<string>} A promise that resolves with the client version.
- */
-export function getClientVersion(): Promise<string> {
-    const configuration = new Configuration({ basePath: basePath });
-    const softwareApi = new SoftwareApi(configuration);
-    return new Promise<string>((resolve, reject) => {
-        softwareApi.softwareVersion().then((response) => {
-            if (response.status == 200) {
-                resolve(response.data.client);
-            }
-            else {
-                resolve("");
-            }
-        }).catch((error) => {
-            console.error(error);
-            resolve("");
-        });
-    });
-}

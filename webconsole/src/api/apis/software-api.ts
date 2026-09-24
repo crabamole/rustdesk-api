@@ -59,40 +59,6 @@ export const SoftwareApiAxiosParamCreator = function (configuration?: Configurat
             };
         },
         /**
-         * This function is an API endpoint that retrieves the version of the client. It copies the GitHub method of retrieving the latest release version. It is tagged with \"software\" for OpenAPI documentation.  It can be used by replacing the check_software_update() from the client. You can find the client code at rustdesk/src/common.rs ## Returns  Returns in the location header the URL of the latest release. something like https://api-server/api/releases/tag/1.2.6  ## Example  It is easy to modify the client code to use this API endpoint. this is how we can modify the client code to use this API endpoint.  <pre> // see <a href='https://github.com/sctg-development/sctgdesk/blob/481d3516fef1daa145d8044594187cb11959f8be/src/common.rs#L953L972'>Sample modification on github</a><br> let url=format!(\"{}/api/software/releases/latest\",get_api_server(\"\".to_owned(), \"\".to_owned())).to_owned();<br> log::info!(\"URL for checking software updates: {}\", url);<br> </pre>
-         * @summary Retrieve the client version
-         * @param {*} [options] Override http request option.
-         * @throws {RequiredError}
-         */
-        softwareReleasesLatest: async (options: AxiosRequestConfig = {}): Promise<RequestArgs> => {
-            const localVarPath = `/api/software/releases/latest`;
-            // use dummy base URL string because the URL constructor only accepts absolute URLs.
-            const localVarUrlObj = new URL(localVarPath, 'https://example.com');
-            let baseOptions;
-            if (configuration) {
-                baseOptions = configuration.baseOptions;
-            }
-            const localVarRequestOptions :AxiosRequestConfig = { method: 'GET', ...baseOptions, ...options};
-            const localVarHeaderParameter = {} as any;
-            const localVarQueryParameter = {} as any;
-
-            const query = new URLSearchParams(localVarUrlObj.search);
-            for (const key in localVarQueryParameter) {
-                query.set(key, localVarQueryParameter[key]);
-            }
-            for (const key in options.params) {
-                query.set(key, options.params[key]);
-            }
-            localVarUrlObj.search = (new URLSearchParams(query)).toString();
-            let headersFromBaseOptions = baseOptions && baseOptions.headers ? baseOptions.headers : {};
-            localVarRequestOptions.headers = {...localVarHeaderParameter, ...headersFromBaseOptions, ...options.headers};
-
-            return {
-                url: localVarUrlObj.pathname + localVarUrlObj.search + localVarUrlObj.hash,
-                options: localVarRequestOptions,
-            };
-        },
-        /**
          * This function is an API endpoint that simulates the GitHub API for releases.  ## Parameters  - `version`: The version of the release.  ## Returns  Returns a `Json<SoftwareVersionResponse>` object containing the version of the release.
          * @summary Simulate GitHub API for releases
          * @param {string} version 
@@ -189,19 +155,6 @@ export const SoftwareApiFp = function(configuration?: Configuration) {
             };
         },
         /**
-         * This function is an API endpoint that retrieves the version of the client. It copies the GitHub method of retrieving the latest release version. It is tagged with \"software\" for OpenAPI documentation.  It can be used by replacing the check_software_update() from the client. You can find the client code at rustdesk/src/common.rs ## Returns  Returns in the location header the URL of the latest release. something like https://api-server/api/releases/tag/1.2.6  ## Example  It is easy to modify the client code to use this API endpoint. this is how we can modify the client code to use this API endpoint.  <pre> // see <a href='https://github.com/sctg-development/sctgdesk/blob/481d3516fef1daa145d8044594187cb11959f8be/src/common.rs#L953L972'>Sample modification on github</a><br> let url=format!(\"{}/api/software/releases/latest\",get_api_server(\"\".to_owned(), \"\".to_owned())).to_owned();<br> log::info!(\"URL for checking software updates: {}\", url);<br> </pre>
-         * @summary Retrieve the client version
-         * @param {*} [options] Override http request option.
-         * @throws {RequiredError}
-         */
-        async softwareReleasesLatest(options?: AxiosRequestConfig): Promise<(axios?: AxiosInstance, basePath?: string) => Promise<AxiosResponse<void>>> {
-            const localVarAxiosArgs = await SoftwareApiAxiosParamCreator(configuration).softwareReleasesLatest(options);
-            return (axios: AxiosInstance = globalAxios, basePath: string = BASE_PATH) => {
-                const axiosRequestArgs :AxiosRequestConfig = {...localVarAxiosArgs.options, url: basePath + localVarAxiosArgs.url};
-                return axios.request(axiosRequestArgs);
-            };
-        },
-        /**
          * This function is an API endpoint that simulates the GitHub API for releases.  ## Parameters  - `version`: The version of the release.  ## Returns  Returns a `Json<SoftwareVersionResponse>` object containing the version of the release.
          * @summary Simulate GitHub API for releases
          * @param {string} version 
@@ -247,15 +200,6 @@ export const SoftwareApiFactory = function (configuration?: Configuration, baseP
             return SoftwareApiFp(configuration).softwareDownload(options).then((request) => request(axios, basePath));
         },
         /**
-         * This function is an API endpoint that retrieves the version of the client. It copies the GitHub method of retrieving the latest release version. It is tagged with \"software\" for OpenAPI documentation.  It can be used by replacing the check_software_update() from the client. You can find the client code at rustdesk/src/common.rs ## Returns  Returns in the location header the URL of the latest release. something like https://api-server/api/releases/tag/1.2.6  ## Example  It is easy to modify the client code to use this API endpoint. this is how we can modify the client code to use this API endpoint.  <pre> // see <a href='https://github.com/sctg-development/sctgdesk/blob/481d3516fef1daa145d8044594187cb11959f8be/src/common.rs#L953L972'>Sample modification on github</a><br> let url=format!(\"{}/api/software/releases/latest\",get_api_server(\"\".to_owned(), \"\".to_owned())).to_owned();<br> log::info!(\"URL for checking software updates: {}\", url);<br> </pre>
-         * @summary Retrieve the client version
-         * @param {*} [options] Override http request option.
-         * @throws {RequiredError}
-         */
-        async softwareReleasesLatest(options?: AxiosRequestConfig): Promise<AxiosResponse<void>> {
-            return SoftwareApiFp(configuration).softwareReleasesLatest(options).then((request) => request(axios, basePath));
-        },
-        /**
          * This function is an API endpoint that simulates the GitHub API for releases.  ## Parameters  - `version`: The version of the release.  ## Returns  Returns a `Json<SoftwareVersionResponse>` object containing the version of the release.
          * @summary Simulate GitHub API for releases
          * @param {string} version 
@@ -293,16 +237,6 @@ export class SoftwareApi extends BaseAPI {
      */
     public async softwareDownload(options?: AxiosRequestConfig) : Promise<AxiosResponse<void>> {
         return SoftwareApiFp(this.configuration).softwareDownload(options).then((request) => request(this.axios, this.basePath));
-    }
-    /**
-     * This function is an API endpoint that retrieves the version of the client. It copies the GitHub method of retrieving the latest release version. It is tagged with \"software\" for OpenAPI documentation.  It can be used by replacing the check_software_update() from the client. You can find the client code at rustdesk/src/common.rs ## Returns  Returns in the location header the URL of the latest release. something like https://api-server/api/releases/tag/1.2.6  ## Example  It is easy to modify the client code to use this API endpoint. this is how we can modify the client code to use this API endpoint.  <pre> // see <a href='https://github.com/sctg-development/sctgdesk/blob/481d3516fef1daa145d8044594187cb11959f8be/src/common.rs#L953L972'>Sample modification on github</a><br> let url=format!(\"{}/api/software/releases/latest\",get_api_server(\"\".to_owned(), \"\".to_owned())).to_owned();<br> log::info!(\"URL for checking software updates: {}\", url);<br> </pre>
-     * @summary Retrieve the client version
-     * @param {*} [options] Override http request option.
-     * @throws {RequiredError}
-     * @memberof SoftwareApi
-     */
-    public async softwareReleasesLatest(options?: AxiosRequestConfig) : Promise<AxiosResponse<void>> {
-        return SoftwareApiFp(this.configuration).softwareReleasesLatest(options).then((request) => request(this.axios, this.basePath));
     }
     /**
      * This function is an API endpoint that simulates the GitHub API for releases.  ## Parameters  - `version`: The version of the release.  ## Returns  Returns a `Json<SoftwareVersionResponse>` object containing the version of the release.

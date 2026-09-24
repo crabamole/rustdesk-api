@@ -1450,56 +1450,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/software/releases/latest": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * Retrieve the client version
-         * @description This function is an API endpoint that retrieves the version of the client. It copies the GitHub method of retrieving the latest release version. It is tagged with "software" for OpenAPI documentation.
-         *
-         *     It can be used by replacing the check_software_update() from the client. You can find the client code at rustdesk/src/common.rs ## Returns
-         *
-         *     Returns in the location header the URL of the latest release. something like https://api-server/api/releases/tag/1.2.6
-         *
-         *     ## Example
-         *
-         *     It is easy to modify the client code to use this API endpoint. this is how we can modify the client code to use this API endpoint.
-         *
-         *     <pre> // see <a href='https://github.com/sctg-development/sctgdesk/blob/481d3516fef1daa145d8044594187cb11959f8be/src/common.rs#L953L972'>Sample modification on github</a><br> let url=format!("{}/api/software/releases/latest",get_api_server("".to_owned(), "".to_owned())).to_owned();<br> log::info!("URL for checking software updates: {}", url);<br> </pre>
-         */
-        get: operations["software_releases_latest"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/software/download": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * Redirect to the software download page
-         * @description This function is an API endpoint that redirects to the software download page.
-         */
-        get: operations["software_download"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/software/releases/tag/{version}": {
         parameters: {
             query?: never;
@@ -3385,40 +3335,6 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["SoftwareVersionResponse"];
                 };
-            };
-        };
-    };
-    software_releases_latest: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            500: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    software_download: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            500: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
             };
         };
     };
