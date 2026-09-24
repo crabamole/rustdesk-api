@@ -13,6 +13,9 @@ toml = "0.8"
 url = "2"
 tempfile = "3"
 
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+
 [features]
 default = []
 

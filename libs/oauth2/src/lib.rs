@@ -156,6 +156,47 @@ pub fn get_providers_config_file() -> String {
     std::env::var("OAUTH2_CONFIG_FILE").unwrap_or_else(|_| "oauth2.toml".to_string())
 }
 
+/// One-shot HTTP server for provider tests: answers the first request with
+/// `{}` and hands back that request's body. Returns (base url, body receiver).
+#[cfg(test)]
+pub(crate) fn capture_one_request() -> (String, std::sync::mpsc::Receiver<String>) {
+    use std::io::{BufRead, BufReader, Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut reader = BufReader::new(stream.try_clone().unwrap());
+        let mut content_length = 0;
+        loop {
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+            if line == "\r\n" {
+                break;
+            }
+            if let Some(v) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                content_length = v.trim().parse().unwrap();
+            }
+        }
+        let mut body = vec![0; content_length];
+        reader.read_exact(&mut body).unwrap();
+        tx.send(String::from_utf8(body).unwrap()).unwrap();
+        let _ = stream.write_all(
+            b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}",
+        );
+    });
+    (url, rx)
+}
+
+/// The `code` form field of a captured token-exchange request body.
+#[cfg(test)]
+pub(crate) fn form_code(body: &str) -> String {
+    url::form_urlencoded::parse(body.as_bytes())
+        .find(|(k, _)| k == "code")
+        .map(|(_, v)| v.into_owned())
+        .unwrap()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -123,7 +123,6 @@ impl OAuthProvider for GithubProvider {
         let provider_config = self.provider_config.clone();
 
         Box::pin(async move {
-            let code = form_urlencoded::byte_serialize(code.as_bytes()).collect::<String>();
             let response = reqwest::Client::new()
                 .post(provider_config.token_exchange_url.as_str())
                 .header("Content-Type", "application/x-www-form-urlencoded")
@@ -247,4 +246,17 @@ mod tests {
         assert_eq!(tr.token_type, "bearer");
         assert_eq!(tr.scope, "read:user");
     }
+
+    #[tokio::test]
+    async fn test_exchange_code_sends_code_once_encoded() {
+        // Rocket has already decoded the callback query; the token request
+        // must carry the code verbatim, not percent-encoded a second time.
+        let (url, body) = crate::capture_one_request();
+        let mut config = test_config();
+        config.token_exchange_url = format!("{url}/token");
+        let provider = GithubProvider { provider_config: config };
+        let _ = provider.exchange_code("a+b/c=d", "https://example.com/cb").await;
+        assert_eq!(crate::form_code(&body.recv().unwrap()), "a+b/c=d");
+    }
+
 }

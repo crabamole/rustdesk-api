@@ -79,7 +79,6 @@ impl OAuthProvider for DexProvider {
         let provider_config = self.provider_config.clone();
 
         Box::pin(async move {
-            let code = form_urlencoded::byte_serialize(code.as_bytes()).collect::<String>();
             let authorization_header = get_authorization_header(&provider_config);
             let response = reqwest::Client::new()
                 .post(provider_config.token_exchange_url.as_str())
@@ -181,4 +180,17 @@ mod tests {
         };
         assert_eq!(provider.get_provider_type(), Provider::Dex);
     }
+
+    #[tokio::test]
+    async fn test_exchange_code_sends_code_once_encoded() {
+        // Rocket has already decoded the callback query; the token request
+        // must carry the code verbatim, not percent-encoded a second time.
+        let (url, body) = crate::capture_one_request();
+        let mut config = test_config();
+        config.token_exchange_url = format!("{url}/token");
+        let provider = DexProvider { provider_config: config };
+        let _ = provider.exchange_code("a+b/c=d", "https://example.com/cb").await;
+        assert_eq!(crate::form_code(&body.recv().unwrap()), "a+b/c=d");
+    }
+
 }
