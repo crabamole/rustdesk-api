@@ -1913,40 +1913,6 @@
         ]
       }
     },
-    "/api/software/client-download-link/{key}": {
-      "get": {
-        "tags": [
-          "software"
-        ],
-        "description": "Get the software download url\n\n# Arguments\n\n* `key` - The key to the software download link, it can be `osx`, `w64` or `ios`\n\n# Usage\n\n* it needs a valid S3 configuration file defined with the `S3_CONFIG_FILE` environment variable\n\n<pre> [s3config]<br> Page = \"https://github.com/rustdesk/rustdesk/releases/latest\"<br> Endpoint = \"https://compat.objectstorage.eu-london-1.oraclecloud.com\"<br> Region = \"eu-london-1\"<br> AccessKey = \"c324ead11faa0d87337c07ddc4a1129fab76188d\"<br> SecretKey = \"GJurV55f/LD36kjZFpchZMj/uvgTqxHyFkBchUUa8KA=\"<br> Bucket = \"aezoz24elapn\"<br> Windows64Key = \"master/sctgdesk-releases/sctgdesk-1.2.4-x86_64.exe\"<br> Windows32Key = \"master/sctgdesk-releases/sctgdesk-1.2.4-i686.exe\"<br> OSXKey = \"master/sctgdesk-releases/sctgdesk-1.2.4.dmg\"<br> OSXArm64Key = \"master/sctgdesk-releases/sctgdesk-1.2.4.dmg\"<br> IOSKey = \"master/sctgdesk-releases/sctgdesk-1.2.4.ipa\"<br> </pre>",
-        "operationId": "software",
-        "parameters": [
-          {
-            "name": "key",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/SoftwareResponse"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": ""
-          }
-        }
-      }
-    },
     "/api/software/version/server": {
       "get": {
         "tags": [
@@ -1990,7 +1956,7 @@
           "software"
         ],
         "summary": "Redirect to the software download page",
-        "description": "This function is an API endpoint that redirects to the software download page. You must set the `Page` key in the `s3config` of the S3 configuration file.",
+        "description": "This function is an API endpoint that redirects to the software download page.",
         "operationId": "software_download",
         "responses": {
           "500": {
@@ -3291,17 +3257,6 @@
         ],
         "properties": {
           "guid": {
-            "type": "string"
-          }
-        }
-      },
-      "SoftwareResponse": {
-        "type": "object",
-        "required": [
-          "url"
-        ],
-        "properties": {
-          "url": {
             "type": "string"
           }
         }

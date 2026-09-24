@@ -17,7 +17,6 @@ import { Configuration } from '../configuration';
 // Some imports not used depending on template conditions
 // @ts-ignore
 import { BASE_PATH, COLLECTION_FORMATS, RequestArgs, BaseAPI, RequiredError } from '../base';
-import { SoftwareResponse } from '../models';
 import { SoftwareVersionResponse } from '../models';
 /**
  * SoftwareApi - axios parameter creator
@@ -26,46 +25,7 @@ import { SoftwareVersionResponse } from '../models';
 export const SoftwareApiAxiosParamCreator = function (configuration?: Configuration) {
     return {
         /**
-         * Get the software download url  # Arguments  * `key` - The key to the software download link, it can be `osx`, `w64` or `ios`  # Usage  * it needs a valid S3 configuration file defined with the `S3_CONFIG_FILE` environment variable  <pre> [s3config]<br> Page = \"https://github.com/rustdesk/rustdesk/releases/latest\"<br> Endpoint = \"https://compat.objectstorage.eu-london-1.oraclecloud.com\"<br> Region = \"eu-london-1\"<br> AccessKey = \"c324ead11faa0d87337c07ddc4a1129fab76188d\"<br> SecretKey = \"GJurV55f/LD36kjZFpchZMj/uvgTqxHyFkBchUUa8KA=\"<br> Bucket = \"aezoz24elapn\"<br> Windows64Key = \"master/sctgdesk-releases/sctgdesk-1.2.4-x86_64.exe\"<br> Windows32Key = \"master/sctgdesk-releases/sctgdesk-1.2.4-i686.exe\"<br> OSXKey = \"master/sctgdesk-releases/sctgdesk-1.2.4.dmg\"<br> OSXArm64Key = \"master/sctgdesk-releases/sctgdesk-1.2.4.dmg\"<br> IOSKey = \"master/sctgdesk-releases/sctgdesk-1.2.4.ipa\"<br> </pre>
-         * @param {string} key 
-         * @param {*} [options] Override http request option.
-         * @throws {RequiredError}
-         */
-        software: async (key: string, options: AxiosRequestConfig = {}): Promise<RequestArgs> => {
-            // verify required parameter 'key' is not null or undefined
-            if (key === null || key === undefined) {
-                throw new RequiredError('key','Required parameter key was null or undefined when calling software.');
-            }
-            const localVarPath = `/api/software/client-download-link/{key}`
-                .replace(`{${"key"}}`, encodeURIComponent(String(key)));
-            // use dummy base URL string because the URL constructor only accepts absolute URLs.
-            const localVarUrlObj = new URL(localVarPath, 'https://example.com');
-            let baseOptions;
-            if (configuration) {
-                baseOptions = configuration.baseOptions;
-            }
-            const localVarRequestOptions :AxiosRequestConfig = { method: 'GET', ...baseOptions, ...options};
-            const localVarHeaderParameter = {} as any;
-            const localVarQueryParameter = {} as any;
-
-            const query = new URLSearchParams(localVarUrlObj.search);
-            for (const key in localVarQueryParameter) {
-                query.set(key, localVarQueryParameter[key]);
-            }
-            for (const key in options.params) {
-                query.set(key, options.params[key]);
-            }
-            localVarUrlObj.search = (new URLSearchParams(query)).toString();
-            let headersFromBaseOptions = baseOptions && baseOptions.headers ? baseOptions.headers : {};
-            localVarRequestOptions.headers = {...localVarHeaderParameter, ...headersFromBaseOptions, ...options.headers};
-
-            return {
-                url: localVarUrlObj.pathname + localVarUrlObj.search + localVarUrlObj.hash,
-                options: localVarRequestOptions,
-            };
-        },
-        /**
-         * This function is an API endpoint that redirects to the software download page. You must set the `Page` key in the `s3config` of the S3 configuration file.
+         * This function is an API endpoint that redirects to the software download page.
          * @summary Redirect to the software download page
          * @param {*} [options] Override http request option.
          * @throws {RequiredError}
@@ -216,20 +176,7 @@ export const SoftwareApiAxiosParamCreator = function (configuration?: Configurat
 export const SoftwareApiFp = function(configuration?: Configuration) {
     return {
         /**
-         * Get the software download url  # Arguments  * `key` - The key to the software download link, it can be `osx`, `w64` or `ios`  # Usage  * it needs a valid S3 configuration file defined with the `S3_CONFIG_FILE` environment variable  <pre> [s3config]<br> Page = \"https://github.com/rustdesk/rustdesk/releases/latest\"<br> Endpoint = \"https://compat.objectstorage.eu-london-1.oraclecloud.com\"<br> Region = \"eu-london-1\"<br> AccessKey = \"c324ead11faa0d87337c07ddc4a1129fab76188d\"<br> SecretKey = \"GJurV55f/LD36kjZFpchZMj/uvgTqxHyFkBchUUa8KA=\"<br> Bucket = \"aezoz24elapn\"<br> Windows64Key = \"master/sctgdesk-releases/sctgdesk-1.2.4-x86_64.exe\"<br> Windows32Key = \"master/sctgdesk-releases/sctgdesk-1.2.4-i686.exe\"<br> OSXKey = \"master/sctgdesk-releases/sctgdesk-1.2.4.dmg\"<br> OSXArm64Key = \"master/sctgdesk-releases/sctgdesk-1.2.4.dmg\"<br> IOSKey = \"master/sctgdesk-releases/sctgdesk-1.2.4.ipa\"<br> </pre>
-         * @param {string} key 
-         * @param {*} [options] Override http request option.
-         * @throws {RequiredError}
-         */
-        async software(key: string, options?: AxiosRequestConfig): Promise<(axios?: AxiosInstance, basePath?: string) => Promise<AxiosResponse<SoftwareResponse>>> {
-            const localVarAxiosArgs = await SoftwareApiAxiosParamCreator(configuration).software(key, options);
-            return (axios: AxiosInstance = globalAxios, basePath: string = BASE_PATH) => {
-                const axiosRequestArgs :AxiosRequestConfig = {...localVarAxiosArgs.options, url: basePath + localVarAxiosArgs.url};
-                return axios.request(axiosRequestArgs);
-            };
-        },
-        /**
-         * This function is an API endpoint that redirects to the software download page. You must set the `Page` key in the `s3config` of the S3 configuration file.
+         * This function is an API endpoint that redirects to the software download page.
          * @summary Redirect to the software download page
          * @param {*} [options] Override http request option.
          * @throws {RequiredError}
@@ -291,16 +238,7 @@ export const SoftwareApiFp = function(configuration?: Configuration) {
 export const SoftwareApiFactory = function (configuration?: Configuration, basePath?: string, axios?: AxiosInstance) {
     return {
         /**
-         * Get the software download url  # Arguments  * `key` - The key to the software download link, it can be `osx`, `w64` or `ios`  # Usage  * it needs a valid S3 configuration file defined with the `S3_CONFIG_FILE` environment variable  <pre> [s3config]<br> Page = \"https://github.com/rustdesk/rustdesk/releases/latest\"<br> Endpoint = \"https://compat.objectstorage.eu-london-1.oraclecloud.com\"<br> Region = \"eu-london-1\"<br> AccessKey = \"c324ead11faa0d87337c07ddc4a1129fab76188d\"<br> SecretKey = \"GJurV55f/LD36kjZFpchZMj/uvgTqxHyFkBchUUa8KA=\"<br> Bucket = \"aezoz24elapn\"<br> Windows64Key = \"master/sctgdesk-releases/sctgdesk-1.2.4-x86_64.exe\"<br> Windows32Key = \"master/sctgdesk-releases/sctgdesk-1.2.4-i686.exe\"<br> OSXKey = \"master/sctgdesk-releases/sctgdesk-1.2.4.dmg\"<br> OSXArm64Key = \"master/sctgdesk-releases/sctgdesk-1.2.4.dmg\"<br> IOSKey = \"master/sctgdesk-releases/sctgdesk-1.2.4.ipa\"<br> </pre>
-         * @param {string} key 
-         * @param {*} [options] Override http request option.
-         * @throws {RequiredError}
-         */
-        async software(key: string, options?: AxiosRequestConfig): Promise<AxiosResponse<SoftwareResponse>> {
-            return SoftwareApiFp(configuration).software(key, options).then((request) => request(axios, basePath));
-        },
-        /**
-         * This function is an API endpoint that redirects to the software download page. You must set the `Page` key in the `s3config` of the S3 configuration file.
+         * This function is an API endpoint that redirects to the software download page.
          * @summary Redirect to the software download page
          * @param {*} [options] Override http request option.
          * @throws {RequiredError}
@@ -347,17 +285,7 @@ export const SoftwareApiFactory = function (configuration?: Configuration, baseP
  */
 export class SoftwareApi extends BaseAPI {
     /**
-     * Get the software download url  # Arguments  * `key` - The key to the software download link, it can be `osx`, `w64` or `ios`  # Usage  * it needs a valid S3 configuration file defined with the `S3_CONFIG_FILE` environment variable  <pre> [s3config]<br> Page = \"https://github.com/rustdesk/rustdesk/releases/latest\"<br> Endpoint = \"https://compat.objectstorage.eu-london-1.oraclecloud.com\"<br> Region = \"eu-london-1\"<br> AccessKey = \"c324ead11faa0d87337c07ddc4a1129fab76188d\"<br> SecretKey = \"GJurV55f/LD36kjZFpchZMj/uvgTqxHyFkBchUUa8KA=\"<br> Bucket = \"aezoz24elapn\"<br> Windows64Key = \"master/sctgdesk-releases/sctgdesk-1.2.4-x86_64.exe\"<br> Windows32Key = \"master/sctgdesk-releases/sctgdesk-1.2.4-i686.exe\"<br> OSXKey = \"master/sctgdesk-releases/sctgdesk-1.2.4.dmg\"<br> OSXArm64Key = \"master/sctgdesk-releases/sctgdesk-1.2.4.dmg\"<br> IOSKey = \"master/sctgdesk-releases/sctgdesk-1.2.4.ipa\"<br> </pre>
-     * @param {string} key 
-     * @param {*} [options] Override http request option.
-     * @throws {RequiredError}
-     * @memberof SoftwareApi
-     */
-    public async software(key: string, options?: AxiosRequestConfig) : Promise<AxiosResponse<SoftwareResponse>> {
-        return SoftwareApiFp(this.configuration).software(key, options).then((request) => request(this.axios, this.basePath));
-    }
-    /**
-     * This function is an API endpoint that redirects to the software download page. You must set the `Page` key in the `s3config` of the S3 configuration file.
+     * This function is an API endpoint that redirects to the software download page.
      * @summary Redirect to the software download page
      * @param {*} [options] Override http request option.
      * @throws {RequiredError}

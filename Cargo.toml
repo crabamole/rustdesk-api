@@ -1,5 +1,5 @@
 [workspace]
-members = [".", "libs/state", "libs/utils", "libs/oauth2", "libs/s3software"]
+members = [".", "libs/state", "libs/utils", "libs/oauth2"]
 
 [package]
 name = "sctgdesk-api-server"
@@ -32,7 +32,6 @@ serde_json = "1.0"
 state = { path = "libs/state" }
 utils = { path = "libs/utils" }
 oauth2 = { path = "libs/oauth2" }
-s3software = { path = "libs/s3software" }
 uuid = { version = "1.10", features = ["v4"] }
 base64 = "0.22"
 url = { version = "2", features = ["serde"] }

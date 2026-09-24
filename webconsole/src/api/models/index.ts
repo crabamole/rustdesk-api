@@ -40,7 +40,6 @@ export * from './peer-info';
 export * from './peers-count-response';
 export * from './peers-response';
 export * from './provider';
-export * from './software-response';
 export * from './software-version-response';
 export * from './system-info';
 export * from './token';

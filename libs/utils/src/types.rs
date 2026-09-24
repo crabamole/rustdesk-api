@@ -722,11 +722,6 @@ pub struct UserList {
 }
 
 #[derive(Serialize, Deserialize, Clone, JsonSchema)]
-pub struct SoftwareResponse {
-    pub url: String,
-}
-
-#[derive(Serialize, Deserialize, Clone, JsonSchema)]
 pub struct SoftwareVersionResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub server: Option<String>,

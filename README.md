@@ -64,18 +64,10 @@ The default admin user is created with the username `admin` and the password `He
 **You must change this password after the first login on the webconsole** — it is a well-known
 default and ships as-is in every deployment.
 
-## S3 url generation
-
-Our custom clients are stored in a S3 bucket. The S3 configuration is stored in the `s3config.toml` file. The server generates a signed URL for the client download. The URL is valid for 5 minutes. The server generates download links at:
-
-* `/api/software/client-download-link/<key>` for the client download
-  * key can be one of osx w64 or ios
-
 ## Configuration
 
 The server requires an `oauth2.toml` configuration file to function. By default, it is expected at `./oauth2.toml`, although this location can be modified using the `OAUTH2_CONFIG_FILE` environment variable. Setting the `OAUTH2_CREATE_USER` variable to `1` enables the automatic creation of a user upon the first OAuth2 login. The user is created with the Rustdesk ID and a random password, which is displayed in the server logs.  
-The server also requires a `s3config.toml` configuration file to function. By default, it is expected at `./s3config.toml`, although this location can be modified using the `S3_CONFIG_FILE` environment variable. The S3 configuration file is used to configure the S3 storage for the server.  
-If you don't provide this two files, the server will create them for you in the working directory.
+If you don't provide this file, the server will create it for you in the working directory.
 
 ## OpenAPI
 

@@ -1426,33 +1426,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/software/client-download-link/{key}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** @description Get the software download url
-         *
-         *     # Arguments
-         *
-         *     * `key` - The key to the software download link, it can be `osx`, `w64` or `ios`
-         *
-         *     # Usage
-         *
-         *     * it needs a valid S3 configuration file defined with the `S3_CONFIG_FILE` environment variable
-         *
-         *     <pre> [s3config]<br> Page = "https://github.com/rustdesk/rustdesk/releases/latest"<br> Endpoint = "https://compat.objectstorage.eu-london-1.oraclecloud.com"<br> Region = "eu-london-1"<br> AccessKey = "c324ead11faa0d87337c07ddc4a1129fab76188d"<br> SecretKey = "GJurV55f/LD36kjZFpchZMj/uvgTqxHyFkBchUUa8KA="<br> Bucket = "aezoz24elapn"<br> Windows64Key = "master/sctgdesk-releases/sctgdesk-1.2.4-x86_64.exe"<br> Windows32Key = "master/sctgdesk-releases/sctgdesk-1.2.4-i686.exe"<br> OSXKey = "master/sctgdesk-releases/sctgdesk-1.2.4.dmg"<br> OSXArm64Key = "master/sctgdesk-releases/sctgdesk-1.2.4.dmg"<br> IOSKey = "master/sctgdesk-releases/sctgdesk-1.2.4.ipa"<br> </pre> */
-        get: operations["software"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/software/version/server": {
         parameters: {
             query?: never;
@@ -1516,7 +1489,7 @@ export interface paths {
         };
         /**
          * Redirect to the software download page
-         * @description This function is an API endpoint that redirects to the software download page. You must set the `Page` key in the `s3config` of the S3 configuration file.
+         * @description This function is an API endpoint that redirects to the software download page.
          */
         get: operations["software_download"];
         put?: never;
@@ -1917,9 +1890,6 @@ export interface components {
         };
         AbRuleDeleteRequest: {
             guid: string;
-        };
-        SoftwareResponse: {
-            url: string;
         };
         SoftwareVersionResponse: {
             server?: string | null;
@@ -3392,33 +3362,6 @@ export interface operations {
             /** @description # [422 Unprocessable Entity](https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/422)
              *     This response is given when you request body is not correctly formatted.  */
             422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    software: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                key: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["SoftwareResponse"];
-                };
-            };
-            404: {
                 headers: {
                     [name: string]: unknown;
                 };

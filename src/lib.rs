@@ -35,9 +35,6 @@ use rocket::response::{Redirect, Responder};
 use rocket::{async_trait, delete, options, put, routes, uri};
 use rocket::{Request, Response};
 
-use s3software::extract_version;
-use s3software::get_software_download_page;
-use s3software::{get_s3_config_file, get_signed_release_url_with_config};
 
 use state::{self};
 
@@ -70,7 +67,7 @@ pub use state::{ApiState, UserPasswordInfo};
 use utils::{
     include_png_as_base64, unwrap_or_return, uuid_into_guid, AbTagRenameRequest, AddUserRequest,
     AddressBook, EnableUserRequest, DeleteUserRequest, GroupsResponse, OidcSettingsResponse, PeersResponse,
-    SoftwareResponse, SoftwareVersionResponse, UpdateUserRequest, UserList,
+    SoftwareVersionResponse, UpdateUserRequest, UserList,
 };
 use utils::{
     AbGetResponse, AbRequest, AuditRequest, CurrentUserRequest, CurrentUserResponse,
@@ -186,7 +183,6 @@ pub async fn build_rocket_with_db(figment: Figment, db_path: &str) -> Rocket<Bui
                 ab_rules,
                 ab_rule_add,
                 ab_rule_delete,
-                software,
                 software_version,
                 software_releases_latest,
                 software_download,
@@ -2077,75 +2073,6 @@ async fn users_client(
     Ok(Json(response))
 }
 
-/// Get the software download url
-///
-/// # Arguments
-///
-/// * `key` - The key to the software download link, it can be `osx`, `w64` or `ios`
-///
-/// # Usage
-///
-/// * it needs a valid S3 configuration file defined with the `S3_CONFIG_FILE` environment variable
-///
-/// <pre>
-/// [s3config]<br>
-/// Page = "https://github.com/rustdesk/rustdesk/releases/latest"<br>
-/// Endpoint = "https://compat.objectstorage.eu-london-1.oraclecloud.com"<br>
-/// Region = "eu-london-1"<br>
-/// AccessKey = "c324ead11faa0d87337c07ddc4a1129fab76188d"<br>
-/// SecretKey = "GJurV55f/LD36kjZFpchZMj/uvgTqxHyFkBchUUa8KA="<br>
-/// Bucket = "aezoz24elapn"<br>
-/// Windows64Key = "master/sctgdesk-releases/sctgdesk-1.2.4-x86_64.exe"<br>
-/// Windows32Key = "master/sctgdesk-releases/sctgdesk-1.2.4-i686.exe"<br>
-/// OSXKey = "master/sctgdesk-releases/sctgdesk-1.2.4.dmg"<br>
-/// OSXArm64Key = "master/sctgdesk-releases/sctgdesk-1.2.4.dmg"<br>
-/// IOSKey = "master/sctgdesk-releases/sctgdesk-1.2.4.ipa"<br>
-/// </pre>
-///
-#[openapi(tag = "software")]
-#[get(
-    "/api/software/client-download-link/<key>",
-    format = "application/json"
-)]
-async fn software(key: &str) -> Result<Json<SoftwareResponse>, status::NotFound<()>> {
-    log::debug!("software");
-    let config = get_s3_config_file()
-        .await
-        .map_err(|e| status::NotFound(Box::new(e)));
-
-    let config = config.unwrap();
-    match key {
-        "osx" => {
-            let key = config.clone().s3config.osxkey;
-            let url = get_signed_release_url_with_config(config, key.as_str())
-                .await
-                .map_err(|e| status::NotFound(Box::new(e)));
-            let url = url.unwrap();
-            let response = SoftwareResponse { url };
-            Ok(Json(response))
-        }
-        "w64" => {
-            let key = config.clone().s3config.windows64_key;
-            let url = get_signed_release_url_with_config(config, key.as_str())
-                .await
-                .map_err(|e| status::NotFound(Box::new(e)));
-            let url = url.unwrap();
-            let response = SoftwareResponse { url };
-            Ok(Json(response))
-        }
-        "ios" => {
-            let key = config.clone().s3config.ioskey;
-            let url = get_signed_release_url_with_config(config, key.as_str())
-                .await
-                .map_err(|e| status::NotFound(Box::new(e)));
-            let url = url.unwrap();
-            let response = SoftwareResponse { url };
-            Ok(Json(response))
-        }
-        _ => Err(status::NotFound(())),
-    }
-}
-
 /// # Retrieve the server version
 ///
 /// This function is an API endpoint that retrieves the version of the server.
@@ -2163,7 +2090,7 @@ async fn software_version() -> Json<SoftwareVersionResponse> {
     let version = env::var("MAIN_PKG_VERSION").unwrap_or(env!("CARGO_PKG_VERSION").to_string());
     let response = SoftwareVersionResponse {
         server: Some(version),
-        client: Some(extract_version().await.unwrap_or("0.0.0".to_string())),
+        client: Some("0.0.0".to_string()),
     };
     Json(response)
 }
@@ -2197,13 +2124,7 @@ async fn software_releases_latest(request: ExtendedRequest) -> Redirect {
     log::debug!("software_releases_latest");
     let headers = request.headers;
     let host = get_host(headers);
-    let version = extract_version()
-        .await
-        .map_err(|e| status::NotFound(Box::new(e)));
-    if version.is_err() {
-        return Redirect::to(format!("{}/api/software/releases/tag/0.0.0", host));
-    }
-    let version = version.unwrap();
+    let version = "0.0.0";
     let url = format!("{}/api/software/releases/tag/{}", host, version);
     Redirect::to(url)
 }
@@ -2235,15 +2156,11 @@ async fn software_releases_tag(
 /// # Redirect to the software download page
 ///
 /// This function is an API endpoint that redirects to the software download page.
-/// You must set the `Page` key in the `s3config` of the S3 configuration file.
 ///
 #[openapi(tag = "software")]
 #[get("/api/software/download")]
 async fn software_download() -> Redirect {
-    let url = get_software_download_page()
-        .await
-        .unwrap_or("https://github.com/sctg-development/sctgdesk".to_string());
-    Redirect::to(url)
+    Redirect::to("https://github.com/rustdesk/rustdesk/releases/latest")
 }
 /// # List the rules
 ///
@@ -3799,15 +3716,29 @@ mod tests {
     }
 
     #[rocket::async_test]
-    async fn test_software_no_s3_config() {
+    async fn test_software_client_download_link_removed() {
+        // The endpoint handed out presigned links into a third party's S3 bucket
+        // using credentials baked into the binary; it no longer exists.
         let client = test_client().await;
-        let resp = client
-            .get("/api/software/client-download-link/windows/x86_64")
-            .header(ContentType::JSON)
-            .dispatch()
-            .await;
-        // Without S3 config, this will error
-        assert!(resp.status() == Status::NotFound || resp.status() == Status::InternalServerError);
+        for key in ["osx", "w64", "ios"] {
+            let resp = client
+                .get(format!("/api/software/client-download-link/{key}"))
+                .header(ContentType::JSON)
+                .dispatch()
+                .await;
+            assert_eq!(resp.status(), Status::NotFound, "{key}");
+        }
+    }
+
+    #[rocket::async_test]
+    async fn test_software_download_redirects_to_rustdesk_releases() {
+        let client = test_client().await;
+        let resp = client.get("/api/software/download").dispatch().await;
+        assert_eq!(resp.status(), Status::SeeOther);
+        assert_eq!(
+            resp.headers().get_one("Location"),
+            Some("https://github.com/rustdesk/rustdesk/releases/latest")
+        );
     }
 
     #[rocket::async_test]
