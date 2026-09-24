@@ -508,6 +508,12 @@ impl ApiState {
     }
 
     /// Get all peers from an address book
+    /// Share rule `user_id` holds on address book `ab` (0 = no access).
+    pub async fn get_ab_rule_for_user(&self, ab: &str, user_id: &UserId) -> u32 {
+        let is_admin = self.with_user_info(user_id, |u| u.admin).await.unwrap_or(false);
+        self.db.get_ab_rule_for_user(ab, user_id, is_admin).await.unwrap_or(0)
+    }
+
     pub async fn get_ab_peers(&self, ab: &str) -> Option<Vec<AbPeer>> {
         self.db.get_peers_from_ab(ab).await
     }

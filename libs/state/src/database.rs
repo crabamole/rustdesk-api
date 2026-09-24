@@ -627,6 +627,37 @@ impl Database {
         Some(guid)
     }
 
+    /// Share rule `user_id` holds on address book `ab`: 3 (full control) for
+    /// the owner, for admins on shared books, else the highest `ab_rule` granted
+    /// to the user or their group. Other users' personal books are always 0.
+    /// None if the book does not exist.
+    pub async fn get_ab_rule_for_user(&self, ab: &str, user_id: &UserId, is_admin: bool) -> Option<u32> {
+        let ab_guid = Uuid::parse_str(ab).ok()?.as_bytes().to_vec();
+        let row = sqlx::query(
+            r#"SELECT a.owner = $2 AS is_owner, a.personal,
+                  (SELECT MAX(r.rule) FROM ab_rule r
+                   WHERE r.ab = a.guid
+                     AND (r."user" = $2 OR r.grp IN (SELECT grp FROM "user" WHERE guid = $2))) AS rule
+               FROM ab a WHERE a.guid = $1"#,
+        )
+        .bind(&ab_guid)
+        .bind(user_id)
+        .fetch_optional(&self.pool)
+        .await
+        .ok()??;
+        if row.try_get::<bool, _>("is_owner").unwrap_or(false) {
+            return Some(3);
+        }
+        if row.try_get::<i16, _>("personal").unwrap_or(1) != 0 {
+            return Some(0);
+        }
+        if is_admin {
+            return Some(3);
+        }
+        let rule = row.try_get::<Option<i16>, _>("rule").ok().flatten().unwrap_or(0);
+        Some(rule.max(0) as u32)
+    }
+
     pub async fn add_peer_to_ab(&self, ab: &str, ab_peer: AbPeer) -> Option<()> {
         let ab_guid = Uuid::parse_str(ab);
         if ab_guid.is_err() {

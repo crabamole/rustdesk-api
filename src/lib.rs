@@ -30,7 +30,7 @@ use oauth2::oauth_provider::OAuthProvider;
 use oauth2::oauth_provider::OAuthProviderFactory;
 use rocket::fairing::{Fairing, Info, Kind};
 use rocket::form::validate::Len;
-use rocket::http::{ContentType, Header};
+use rocket::http::{ContentType, Header, Status};
 use rocket::response::{Redirect, Responder};
 use rocket::{async_trait, delete, options, put, routes, uri};
 use rocket::{Request, Response};
@@ -1332,6 +1332,21 @@ async fn ab_personal(
     Ok(Json(ab_personal))
 }
 
+/// Require share rule `min` or higher (1 read, 2 read/write, 3 full control)
+/// on address book `ab`. Denials are 403, not 401: clients log out on 401.
+async fn require_ab_rule(
+    state: &ApiState,
+    user: &AuthenticatedUser,
+    ab: &str,
+    min: u32,
+) -> Result<(), Status> {
+    if state.get_ab_rule_for_user(ab, &user.info.user_id).await >= min {
+        Ok(())
+    } else {
+        Err(Status::Forbidden)
+    }
+}
+
 /// # Get the Tags
 ///
 /// This function is an API endpoint that retrieves all tags from an address book.
@@ -1357,13 +1372,14 @@ async fn ab_personal(
 #[post("/api/ab/tags/<ab>")]
 async fn ab_tags(
     state: &State<ApiState>,
-    _user: AuthenticatedUser,
+    user: AuthenticatedUser,
     ab: &str,
-) -> Result<Json<Vec<AbTag>>, status::NotFound<()>> {
+) -> Result<Json<Vec<AbTag>>, Status> {
+    require_ab_rule(state, &user, ab, 1).await?;
     state.check_maintenance().await;
     let ab_tags = state.get_ab_tags(ab).await;
     if ab_tags.is_none() {
-        return Err(status::NotFound::<()>(()));
+        return Err(Status::NotFound);
     }
     let ab_tags = ab_tags.unwrap();
     Ok(Json(ab_tags))
@@ -1403,10 +1419,11 @@ async fn ab_tags(
 )]
 async fn ab_tag_add(
     state: &State<ApiState>,
-    _user: AuthenticatedUser,
+    user: AuthenticatedUser,
     ab: &str,
     request: Json<AbTag>,
-) -> Result<ActionResponse, status::Unauthorized<()>> {
+) -> Result<ActionResponse, Status> {
+    require_ab_rule(state, &user, ab, 2).await?;
     state.check_maintenance().await;
     let ab_tag = request.0;
     log::debug!("ab_tag_add: {:?}", ab_tag);
@@ -1448,10 +1465,11 @@ async fn ab_tag_add(
 )]
 async fn ab_tag_update(
     state: &State<ApiState>,
-    _user: AuthenticatedUser,
+    user: AuthenticatedUser,
     ab: &str,
     request: Json<AbTag>,
-) -> Result<ActionResponse, status::Unauthorized<()>> {
+) -> Result<ActionResponse, Status> {
+    require_ab_rule(state, &user, ab, 2).await?;
     state.check_maintenance().await;
     let ab_tag = request.0;
     log::debug!("ab_tag_update: {:?}", ab_tag);
@@ -1493,17 +1511,18 @@ async fn ab_tag_update(
 )]
 async fn ab_tag_rename(
     state: &State<ApiState>,
-    _user: AuthenticatedUser,
+    user: AuthenticatedUser,
     ab: &str,
     request: Json<AbTagRenameRequest>,
-) -> Result<ActionResponse, status::Unauthorized<()>> {
+) -> Result<ActionResponse, Status> {
+    require_ab_rule(state, &user, ab, 2).await?;
     state.check_maintenance().await;
     let ab_tag_old_name = request.0.old;
     let ab_tag_new_name = request.0.new;
 
     let ab_tag_old = state.get_ab_tag(ab, ab_tag_old_name.as_str()).await;
     if ab_tag_old.is_none() {
-        return Err(status::Unauthorized::<()>(()));
+        return Err(Status::Unauthorized);
     }
     let mut ab_tag_new = ab_tag_old.unwrap();
     ab_tag_new.name = ab_tag_new_name;
@@ -1543,12 +1562,13 @@ async fn ab_tag_rename(
 #[delete("/api/ab/tag/<ab>", format = "application/json", data = "<request>")]
 async fn ab_tag_delete(
     state: &State<ApiState>,
-    _user: AuthenticatedUser,
+    user: AuthenticatedUser,
     ab: &str,
     request: Json<Vec<String>>,
-) -> Result<ActionResponse, status::Unauthorized<()>> {
+) -> Result<ActionResponse, Status> {
+    require_ab_rule(state, &user, ab, 2).await?;
     if request.0.is_empty() {
-        return Err(status::Unauthorized::<()>(()));
+        return Err(Status::Unauthorized);
     }
     let tags_to_delete = request.0;
     state.check_maintenance().await;
@@ -1592,7 +1612,7 @@ async fn ab_shared(
             guid: ab.ab,
             name: ab.name.unwrap_or("".to_string()),
             owner: guid_into_uuid(ab.owner.expect("Invalid owner")).expect("Invalid GUID"),
-            rule: 3,
+            rule: ab.rule.unwrap_or(0),
             ..Default::default()
         };
         ab_shared_profiles.data.push(address_book);
@@ -1645,15 +1665,16 @@ async fn ab_settings(
 #[post("/api/ab/peers?<current>&<pageSize>&<ab>")]
 async fn ab_peers(
     state: &State<ApiState>,
-    _user: AuthenticatedUser,
+    user: AuthenticatedUser,
     #[allow(unused_variables)] current: u32,
     #[allow(non_snake_case, unused_variables)] pageSize: u32,
     ab: &str,
-) -> Result<Json<AbPeersResponse>, status::Unauthorized<()>> {
+) -> Result<Json<AbPeersResponse>, Status> {
+    require_ab_rule(state, &user, ab, 1).await?;
     state.check_maintenance().await;
     let ab_peers = state.get_ab_peers(ab).await;
     if ab_peers.is_none() {
-        return Err(status::Unauthorized::<()>(()));
+        return Err(Status::Unauthorized);
     }
     let ab_peers = ab_peers.unwrap();
     let ab_peer_response = AbPeersResponse {
@@ -1685,10 +1706,11 @@ async fn ab_peers(
 )]
 async fn ab_peer_add(
     state: &State<ApiState>,
-    _user: AuthenticatedUser,
+    user: AuthenticatedUser,
     request: Json<AbPeer>,
     ab: &str,
-) -> Result<ActionResponse, status::Unauthorized<()>> {
+) -> Result<ActionResponse, Status> {
+    require_ab_rule(state, &user, ab, 2).await?;
     let ab_peer = request.0;
     state.check_maintenance().await;
     state.add_ab_peer(ab, ab_peer).await;
@@ -1716,14 +1738,15 @@ async fn ab_peer_add(
 )]
 async fn ab_peer_update(
     state: &State<ApiState>,
-    _user: AuthenticatedUser,
+    user: AuthenticatedUser,
     request: Json<AbPeer>,
     ab: &str,
-) -> Result<ActionResponse, status::Unauthorized<()>> {
+) -> Result<ActionResponse, Status> {
+    require_ab_rule(state, &user, ab, 2).await?;
     let mut ab_peer = request.0;
     let old_ab_peer = state.get_ab_peer(ab, ab_peer.id.as_str()).await;
     if old_ab_peer.is_none() {
-        return Err(status::Unauthorized::<()>(()));
+        return Err(Status::Unauthorized);
     }
     let old_ab_peer = old_ab_peer.unwrap();
     ab_peer.hash = ab_peer.hash.or(old_ab_peer.hash);
@@ -1762,12 +1785,13 @@ async fn ab_peer_update(
 #[delete("/api/ab/peer/<ab>", format = "application/json", data = "<request>")]
 async fn ab_peer_delete(
     state: &State<ApiState>,
-    _user: AuthenticatedUser,
+    user: AuthenticatedUser,
     ab: &str,
     request: Json<Vec<String>>,
-) -> Result<ActionResponse, status::Unauthorized<()>> {
+) -> Result<ActionResponse, Status> {
+    require_ab_rule(state, &user, ab, 2).await?;
     if request.0.is_empty() {
-        return Err(status::Unauthorized::<()>(()));
+        return Err(Status::Unauthorized);
     }
     let peers_to_delete = request.0;
     state.check_maintenance().await;
@@ -2247,16 +2271,17 @@ async fn software_download() -> Redirect {
 #[get("/api/ab/rules?<current>&<pageSize>&<ab>", format = "application/json")]
 async fn ab_rules(
     state: &State<ApiState>,
-    _user: AuthenticatedUser,
+    user: AuthenticatedUser,
     current: u32,
     #[allow(unused_variables)] pageSize: u32,
     ab: &str,
-) -> Result<Json<AbRulesResponse>, status::Unauthorized<()>> {
+) -> Result<Json<AbRulesResponse>, Status> {
+    require_ab_rule(state, &user, ab, 3).await?;
     state.check_maintenance().await;
     let current = if current < 1 { 0 } else { current - 1 };
     let rules = state.get_ab_rules(current, pageSize, ab).await;
     if rules.is_none() {
-        return Err(status::Unauthorized::<()>(()));
+        return Err(Status::Unauthorized);
     }
     let rules = rules.unwrap();
     let response = AbRulesResponse {
@@ -3409,6 +3434,155 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// Create a non-admin user and log in; returns (token, user guid).
+    async fn create_user_and_login(client: &Client, admin_token: &str, name: &str) -> (String, String) {
+        let resp = client
+            .post("/api/user")
+            .header(ContentType::JSON)
+            .header(auth_header(admin_token))
+            .body(format!(r#"{{"name":"{name}","password":"pass","confirm-password":"pass","email":"{name}@example.com","is_admin":false,"group_name":"Default"}}"#))
+            .dispatch()
+            .await;
+        assert_eq!(resp.status(), Status::Ok);
+        let resp = client
+            .post("/api/login")
+            .header(ContentType::JSON)
+            .body(format!(r#"{{"username":"{name}","password":"pass","id":"{name}","uuid":"{name}-uuid"}}"#))
+            .dispatch()
+            .await;
+        assert_eq!(resp.status(), Status::Ok);
+        let body: serde_json::Value = resp.into_json().await.unwrap();
+        let token = body["access_token"].as_str().unwrap().to_string();
+        let resp = client
+            .get("/api/user-list?current=1&pageSize=100")
+            .header(ContentType::JSON)
+            .header(auth_header(admin_token))
+            .dispatch()
+            .await;
+        let body: serde_json::Value = resp.into_json().await.unwrap();
+        let guid = body["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|u| u["name"] == name)
+            .unwrap()["guid"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        (token, guid)
+    }
+
+    async fn personal_ab(client: &Client, token: &str) -> String {
+        let resp = client
+            .post("/api/ab/personal")
+            .header(auth_header(token))
+            .dispatch()
+            .await;
+        let body: serde_json::Value = resp.into_json().await.unwrap();
+        body["guid"].as_str().unwrap().to_string()
+    }
+
+    async fn ab_call(
+        client: &Client,
+        token: &str,
+        method: rocket::http::Method,
+        uri: String,
+        body: &str,
+    ) -> Status {
+        client
+            .req(method, uri)
+            .header(ContentType::JSON)
+            .header(auth_header(token))
+            .body(body.to_string())
+            .dispatch()
+            .await
+            .status()
+    }
+
+    #[rocket::async_test]
+    async fn test_ab_other_users_personal_ab_is_forbidden() {
+        use rocket::http::Method::*;
+        let client = test_client().await;
+        let admin = login_admin(&client).await;
+        let (owner, _) = create_user_and_login(&client, &admin, "abowner").await;
+        let (other, _) = create_user_and_login(&client, &admin, "abother").await;
+        let ab = personal_ab(&client, &owner).await;
+        assert_eq!(ab_call(&client, &owner, Post, format!("/api/ab/peer/add/{ab}"), r#"{"id":"p1"}"#).await, Status::Ok);
+        assert_eq!(ab_call(&client, &owner, Post, format!("/api/ab/tag/add/{ab}"), r#"{"name":"t1","color":1}"#).await, Status::Ok);
+
+        let calls = [
+            (Post, format!("/api/ab/peers?current=1&pageSize=10&ab={ab}"), ""),
+            (Post, format!("/api/ab/tags/{ab}"), ""),
+            (Get, format!("/api/ab/rules?current=1&pageSize=10&ab={ab}"), ""),
+            (Post, format!("/api/ab/peer/add/{ab}"), r#"{"id":"intruder"}"#),
+            (Put, format!("/api/ab/peer/update/{ab}"), r#"{"id":"p1","alias":"x"}"#),
+            (Delete, format!("/api/ab/peer/{ab}"), r#"["p1"]"#),
+            (Post, format!("/api/ab/tag/add/{ab}"), r#"{"name":"t2","color":1}"#),
+            (Put, format!("/api/ab/tag/update/{ab}"), r#"{"name":"t1","color":2}"#),
+            (Put, format!("/api/ab/tag/rename/{ab}"), r#"{"old":"t1","new":"t2"}"#),
+            (Delete, format!("/api/ab/tag/{ab}"), r#"["t1"]"#),
+        ];
+        for (method, uri, body) in calls {
+            assert_eq!(ab_call(&client, &other, method, uri.clone(), body).await, Status::Forbidden, "{method} {uri}");
+        }
+    }
+
+    #[rocket::async_test]
+    async fn test_ab_shared_access_follows_rules() {
+        use rocket::http::Method::*;
+        let client = test_client().await;
+        let admin = login_admin(&client).await;
+        let (user, user_guid) = create_user_and_login(&client, &admin, "abshareuser").await;
+        let resp = client
+            .post("/api/ab/shared/add")
+            .header(ContentType::JSON)
+            .header(auth_header(&admin))
+            .body(r#"{"name":"acl-shared"}"#)
+            .dispatch()
+            .await;
+        let body: serde_json::Value = resp.into_json().await.unwrap();
+        let ab = body["data"][0]["guid"].as_str().unwrap().to_string();
+        let peers = format!("/api/ab/peers?current=1&pageSize=10&ab={ab}");
+        let add = format!("/api/ab/peer/add/{ab}");
+
+        assert_eq!(ab_call(&client, &user, Post, peers.clone(), "").await, Status::Forbidden);
+
+        let rule = |r: u32| format!(r#"{{"guid":"{ab}","user":"{user_guid}","rule":{r}}}"#);
+        assert_eq!(ab_call(&client, &admin, Post, "/api/ab/rule".into(), &rule(1)).await, Status::Ok);
+        assert_eq!(ab_call(&client, &user, Post, peers.clone(), "").await, Status::Ok);
+        assert_eq!(ab_call(&client, &user, Post, add.clone(), r#"{"id":"ro"}"#).await, Status::Forbidden);
+
+        assert_eq!(ab_call(&client, &admin, Post, "/api/ab/rule".into(), &rule(2)).await, Status::Ok);
+        assert_eq!(ab_call(&client, &user, Post, add, r#"{"id":"rw"}"#).await, Status::Ok);
+    }
+
+    #[rocket::async_test]
+    async fn test_ab_shared_profiles_report_granted_rule() {
+        let client = test_client().await;
+        let admin = login_admin(&client).await;
+        let (user, user_guid) = create_user_and_login(&client, &admin, "abprofileuser").await;
+        let resp = client
+            .post("/api/ab/shared/add")
+            .header(ContentType::JSON)
+            .header(auth_header(&admin))
+            .body(r#"{"name":"ro-shared"}"#)
+            .dispatch()
+            .await;
+        let body: serde_json::Value = resp.into_json().await.unwrap();
+        let ab = body["data"][0]["guid"].as_str().unwrap().to_string();
+        let rule = format!(r#"{{"guid":"{ab}","user":"{user_guid}","rule":1}}"#);
+        assert_eq!(ab_call(&client, &admin, rocket::http::Method::Post, "/api/ab/rule".into(), &rule).await, Status::Ok);
+
+        let resp = client
+            .post("/api/ab/shared/profiles")
+            .header(auth_header(&user))
+            .dispatch()
+            .await;
+        let body: serde_json::Value = resp.into_json().await.unwrap();
+        let profile = body["data"].as_array().unwrap().iter().find(|p| p["guid"] == ab.as_str()).unwrap();
+        assert_eq!(profile["rule"], 1);
     }
 
     #[rocket::async_test]
