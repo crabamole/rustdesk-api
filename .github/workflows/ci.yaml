@@ -37,7 +37,9 @@ jobs:
       - name: Check if version exists on ghcr.io
         id: check
         run: |
-          VERSION=$(cat VERSION | tr -d '[:space:]')
+          VERSION=$(cargo metadata --no-deps --format-version 1 \
+            | jq -r '.packages[] | select(.name == "sctgdesk-api-server") | .version')
+          test -n "$VERSION"
           if docker manifest inspect ghcr.io/${{ github.repository }}:$VERSION > /dev/null 2>&1; then
             echo "publish=false" >> "$GITHUB_OUTPUT"
           else

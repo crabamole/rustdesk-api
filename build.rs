@@ -13,65 +13,15 @@
 //
 // You should have received a copy of the Affero General Public License
 // along with SCTGDesk. If not, see <https://www.gnu.org/licenses/agpl-3.0.html>.
-use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
-use std::env;
 use std::fs;
-use std::path::PathBuf;
 use std::process::Command;
 use std::str;
 
-#[derive(Debug, Serialize, Deserialize)]
-pub struct PackageJson {
-    name: String,
-    private: Option<bool>,
-    version: String,
-    #[serde(rename = "type")]
-    type_: Option<String>,
-    scripts: HashMap<String, String>,
-    dependencies: HashMap<String, String>,
-    devDependencies: HashMap<String, String>,
-}
-
-impl PackageJson {
-    pub fn new() -> Self {
-        Self {
-            name: String::new(),
-            private: None,
-            version: String::new(),
-            type_: None,
-            scripts: HashMap::new(),
-            dependencies: HashMap::new(),
-            devDependencies: HashMap::new(),
-        }
-    }
-
-    pub fn set_version(&mut self, version: &str) {
-        self.version = version.to_string();
-    }
-}
 fn main() {
 
     println!("cargo:rerun-if-changed=webconsole");
 
-    let data = fs::read_to_string("./webconsole/package.json").unwrap();
-    let mut package: PackageJson = serde_json::from_str(&data).unwrap();
-
-    // Construit le chemin du fichier dans le répertoire temporaire
-    let tmp_dir = env::var("TMP")
-        .or_else(|_| env::var("TEMP"))
-        .or_else(|_| env::var("TMPDIR"))
-        .unwrap_or_else(|_| "/tmp".to_string());
-    let mut path = PathBuf::from(tmp_dir);
-    path.push("version-8659B48F-5726-433D-BEC2-C7042FE9D93B.txt");
-    // Lit la version à partir du fichier
-    let version =
-        fs::read_to_string(&path).unwrap_or_else(|_| env::var("CARGO_PKG_VERSION").unwrap());
-
-    package.set_version(&version);
-
-    let serialized = serde_json::to_string_pretty(&package).unwrap();
-    fs::write("./webconsole/package.json", serialized).unwrap();
+    stamp_webconsole_version(env!("CARGO_PKG_VERSION"));
 
     let is_windows = cfg!(target_os = "windows");
 
@@ -133,4 +83,21 @@ fn main() {
         str::from_utf8(&output.stderr).unwrap_or("")
     );
 
+}
+
+/// Keep the webconsole version in sync with Cargo.toml, the single source of
+/// the version. Only the version line is touched, and only when it differs,
+/// so builds leave package.json unchanged.
+fn stamp_webconsole_version(version: &str) {
+    let path = "./webconsole/package.json";
+    let data = fs::read_to_string(path).unwrap();
+    let package: serde_json::Value = serde_json::from_str(&data).unwrap();
+    let current = package["version"].as_str().unwrap_or_default();
+    if current == version {
+        return;
+    }
+    let old = format!("\"version\": \"{}\"", current);
+    let new = format!("\"version\": \"{}\"", version);
+    assert!(data.contains(&old), "webconsole/package.json: version line not found");
+    fs::write(path, data.replacen(&old, &new, 1)).unwrap();
 }
