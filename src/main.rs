@@ -17,7 +17,7 @@ use rocket::{
     config::LogLevel,
     data::{Limits, ToByteUnit},
 };
-use sctgdesk_api_server::{build_rocket, database_url_from_env};
+use rustdesk_api::{build_rocket, database_url_from_env};
 use clap::{Arg, Command};
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use getrandom::getrandom;
@@ -25,9 +25,9 @@ use getrandom::getrandom;
 #[rocket::main]
 async fn main() -> Result<(), rocket::Error> {
     // Command line argument parsing
-    let matches = Command::new("SCTGDeskApiServer")
+    let matches = Command::new("rustdesk-api")
         .version(env!("CARGO_PKG_VERSION"))
-        .about("Runs the SCTGDesk API Server")
+        .about("Runs the RustDesk API server")
         .arg(Arg::new("address")
             .long("address")
             .value_name("ADDRESS")
@@ -68,7 +68,7 @@ async fn main() -> Result<(), rocket::Error> {
         .merge(("port", port))
         .merge(("log_level", log_level))
         .merge(("secret_key", secret_key))
-        .merge(("ident", format!("SCTGDeskApiServer/{}", env!("CARGO_PKG_VERSION"))))
+        .merge(("ident", format!("rustdesk-api/{}", env!("CARGO_PKG_VERSION"))))
         .merge(("limits", Limits::new().limit("json", 2.mebibytes())));
 
     #[cfg(all(unix, feature = "coverage"))]

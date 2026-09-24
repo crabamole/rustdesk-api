@@ -1,6 +1,6 @@
 use rocket::http::{ContentType, Header, Status};
 use rocket::local::asynchronous::Client;
-use sctgdesk_api_server::build_rocket_with_db;
+use rustdesk_api::build_rocket_with_db;
 use serde_json::Value;
 
 async fn test_client() -> (Client, ()) {

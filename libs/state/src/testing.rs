@@ -14,7 +14,7 @@ use uuid::Uuid;
 /// instead of each test binary invocation starting (and leaking) its own.
 /// Includes the image tag so that bumping the tag starts (and reuses) a new
 /// container instead of silently reattaching to one running the old image.
-const CONTAINER_NAME: &str = "sctgdesk-api-server-test-pg-17";
+const CONTAINER_NAME: &str = "rustdesk-api-test-pg-17";
 
 /// Databases older than this are considered stale and dropped on startup.
 const STALE_DATABASE_MAX_AGE_SECS: u64 = 60 * 60;

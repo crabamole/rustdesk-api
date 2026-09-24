@@ -148,7 +148,7 @@ impl OAuthProvider for GithubProvider {
                 .header("Accept", "application/json")
                 .header(
                     "User-Agent",
-                    format!("SCTGDesk/{}", env!("CARGO_PKG_VERSION")),
+                    format!("rustdesk-api/{}", env!("CARGO_PKG_VERSION")),
                 )
                 .header("Authorization", format!("Bearer {}", body.access_token))
                 .send()

@@ -42,7 +42,7 @@
 provider = "Dex"
 authorization_url = "https://dex-mock-server.example.org/dex/auth"
 token_exchange_url = "https://dex-mock-server.example.org/dex/token"
-app_id = "sctgdesk-api-server"
+app_id = "rustdesk-api"
 app_secret = "appsecret"
 op_auth_string = "oidc/dex"
 op = "dex"

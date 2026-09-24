@@ -12,6 +12,6 @@ if [ "$response" -eq 200 ]; then
         sed -ibak -e 's/device_info/\"deviceInfo\"/' webconsole/src/api/models/oidc-auth-request.ts &&
         rm webconsole/src/api/models/*tsbak
 else
-    echo "Error: Server is not responding. you must start sctgdesk-api-server first."
+    echo "Error: Server is not responding. you must start rustdesk-api first."
     exit 1
 fi

@@ -4,13 +4,13 @@
         {
             "type": "lldb",
             "request": "launch",
-            "name": "Debug executable 'sctgdesk-api-server'",
+            "name": "Debug executable 'rustdesk-api'",
             "cargo": {
                 "args": [
                     "build"
                 ],
                 "filter": {
-                    "name": "sctgdesk-api-server",
+                    "name": "rustdesk-api",
                     "kind": "bin"
                 }
             },
@@ -28,13 +28,13 @@
         {
             "type": "lldb",
             "request": "launch",
-            "name": "Debug executable 'sctgdesk-api-server with ui development'",
+            "name": "Debug executable 'rustdesk-api with ui development'",
             "cargo": {
                 "args": [
                     "build"
                 ],
                 "filter": {
-                    "name": "sctgdesk-api-server",
+                    "name": "rustdesk-api",
                     "kind": "bin"
                 }
             },
@@ -53,13 +53,13 @@
         {
             "type": "lldb",
             "request": "launch",
-            "name": "Debug tests 'sctgdesk-api-server'",
+            "name": "Debug tests 'rustdesk-api'",
             "cargo": {
                 "args": [
                     "test"
                 ],
                 "filter": {
-                    "name": "sctgdesk-api-server",
+                    "name": "rustdesk-api",
                     "kind": "bin"
                 }
             },

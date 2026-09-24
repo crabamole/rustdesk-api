@@ -199,7 +199,7 @@ pub async fn build_rocket_with_db(figment: Figment, db_path: &str) -> Rocket<Bui
         .mount(
             "/api/doc/",
             make_rapidoc(&RapiDocConfig {
-                title: Some("SCTGDesk API Doc".to_owned()),
+                title: Some("RustDesk API Doc".to_owned()),
                 custom_html: Some(include_str!("../rapidoc/index.html").to_owned()),
                 slots: SlotsConfig{
                     logo: Some(include_png_as_base64!("../assets/logo.png")),

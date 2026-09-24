@@ -20,7 +20,7 @@ jobs:
         with:
           context: .
           push: false
-          tags: sctgdesk-api-server:test
+          tags: rustdesk-api:test
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -38,7 +38,7 @@ jobs:
         id: check
         run: |
           VERSION=$(cargo metadata --no-deps --format-version 1 \
-            | jq -r '.packages[] | select(.name == "sctgdesk-api-server") | .version')
+            | jq -r '.packages[] | select(.name == "rustdesk-api") | .version')
           test -n "$VERSION"
           if docker manifest inspect ghcr.io/${{ github.repository }}:$VERSION > /dev/null 2>&1; then
             echo "publish=false" >> "$GITHUB_OUTPUT"

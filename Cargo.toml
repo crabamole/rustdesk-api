@@ -2,8 +2,8 @@
 members = [".", "libs/state", "libs/utils", "libs/oauth2"]
 
 [package]
-name = "sctgdesk-api-server"
-version = "0.1.0"
+name = "rustdesk-api"
+version = "0.2.0"
 edition = "2021"
 build = "build.rs"
 
