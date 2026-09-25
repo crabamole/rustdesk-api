@@ -67,7 +67,6 @@ jobs:
           push: true
           tags: |
             ghcr.io/${{ github.repository }}:${{ steps.check.outputs.version }}
-            ghcr.io/${{ github.repository }}:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
