@@ -32,17 +32,7 @@ export interface UpdateUserRequest {
      */
     name?: string | null;
 
-    /**
-     * @type {string}
-     * @memberof UpdateUserRequest
-     */
-    password?: string | null;
 
-    /**
-     * @type {string}
-     * @memberof UpdateUserRequest
-     */
-    "confirm-password"?: string | null;
 
     /**
      * @type {string}

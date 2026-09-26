@@ -16,20 +16,6 @@ This website use:
             </div>
         </div>
         <div>
-            <label for="password" class="block text-sm font-medium leading-6 text-gray-900">Password</label>
-            <div class="mt-2">
-                <input v-model="password" id="passwors" name="password" type="password" required
-                    class="block w-full rounded-md border-0 py-1.5 text-gray-900 shadow-sm ring-1 ring-inset ring-gray-300 placeholder:text-gray-400 focus:ring-2 focus:ring-inset focus:ring-indigo-600 sm:text-sm sm:leading-6" />
-            </div>
-        </div>
-        <div>
-            <label for="confirm-password" class="block text-sm font-medium leading-6 text-gray-900">Confirm</label>
-            <div class="mt-2">
-                <input v-model="confirm_password" id="confirm_password" name="confirm_password" type="password" required
-                    class="block w-full rounded-md border-0 py-1.5 text-gray-900 shadow-sm ring-1 ring-inset ring-gray-300 placeholder:text-gray-400 focus:ring-2 focus:ring-inset focus:ring-indigo-600 sm:text-sm sm:leading-6" />
-            </div>
-        </div>
-        <div>
             <label for="email" class="block text-sm font-medium leading-6 text-gray-900">Email</label>
             <div class="mt-2">
                 <input v-model="email" id="email" name="email" type="text" required
@@ -72,8 +58,6 @@ import { useUserStore } from '@/stores/sctgDeskStore';
 
 const userStore = useUserStore();
 const name = ref("");
-const password = ref("");
-const confirm_password = ref("");
 const email = ref("");
 const note = ref("");
 const is_admin = ref(false);
@@ -123,16 +107,10 @@ onMounted(() => {
  * @return {void} This function does not return anything.
  */
 function updateUser(): void {
-    if (password.value != confirm_password.value) {
-        alert("Password and confirm password do not match");
-        return;
-    }
     // Add user
     const user_request: UpdateUserRequest = {
         "uuid": props.uuid,
         "name": name.value,
-        "password": password.value,
-        "confirm-password": confirm_password.value,
         "email": email.value,
         "is_admin": is_admin.value,
         "note": note.value,

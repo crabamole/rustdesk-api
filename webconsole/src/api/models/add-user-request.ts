@@ -26,17 +26,7 @@ export interface AddUserRequest {
      */
     name: string;
 
-    /**
-     * @type {string}
-     * @memberof AddUserRequest
-     */
-    password: string;
 
-    /**
-     * @type {string}
-     * @memberof AddUserRequest
-     */
-    "confirm-password": string;
 
     /**
      * @type {string}
