@@ -625,6 +625,18 @@ pub struct OidcState {
     pub name: Option<String>,
     pub email: Option<String>,
     pub client_redirect_uri: Option<String>,
+    /// When the login started (Unix seconds); pending logins expire.
+    pub created_at: u64,
+    /// Secret cookie value given to the browser that started the login.
+    pub browser_key: Option<String>,
+    /// Set once the login is tied to its starting browser or confirmed by the user.
+    pub approved: bool,
+    /// One-time value on the confirmation page shown after the IdP login.
+    pub confirm_token: Option<String>,
+    /// What the starting client said it is, and where it asked from; shown for confirmation.
+    pub device_name: String,
+    pub device_os: String,
+    pub requester_ip: Option<String>,
 }
 impl Default for OidcState {
     fn default() -> Self {
@@ -640,6 +652,13 @@ impl Default for OidcState {
             name: None,
             email: None,
             client_redirect_uri: None,
+            created_at: 0,
+            browser_key: None,
+            approved: false,
+            confirm_token: None,
+            device_name: String::new(),
+            device_os: String::new(),
+            requester_ip: None,
         }
     }
 }

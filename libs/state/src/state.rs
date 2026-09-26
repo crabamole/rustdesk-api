@@ -141,6 +141,20 @@ impl ApiState {
         ))
     }
 
+    /// Replaces the IdP of a pending login. Test-only.
+    #[cfg(any(test, feature = "test-util"))]
+    pub async fn test_set_oidc_provider(&self, uuid_code: &str, provider: std::sync::Arc<dyn oauth2::oauth_provider::OAuthProvider>) -> bool {
+        let mut sessions = self.oidc_sessions.write().await;
+        sessions.get_mut(uuid_code).map(|s| s.provider = Some(provider)).is_some()
+    }
+
+    /// Makes a pending login `secs` older. Test-only.
+    #[cfg(any(test, feature = "test-util"))]
+    pub async fn test_age_oidc_session(&self, uuid_code: &str, secs: u64) -> bool {
+        let mut sessions = self.oidc_sessions.write().await;
+        sessions.get_mut(uuid_code).map(|s| s.created_at = s.created_at.saturating_sub(secs)).is_some()
+    }
+
     async fn get_access_token(&self, user_id: Vec<u8>, _username: &String, _is_admin: bool) -> Token {
         let access_token = Token::new_random();
         let token_id = access_token.to_base64();
@@ -321,9 +335,12 @@ impl ApiState {
     pub async fn insert_oidc_session(
         &self,
         uuid_code: String,
-        oidc_state: OidcState,
+        mut oidc_state: OidcState,
     ) -> Option<OidcState> {
+        let now = unix_now();
+        oidc_state.created_at = now;
         let mut oidc_sessions = self.oidc_sessions.write().await;
+        oidc_sessions.retain(|_, s| !oidc_login_expired(s, now));
         let old_value = oidc_sessions.insert(uuid_code, oidc_state.clone());
         if old_value.is_none() {
             return Some(oidc_state);
@@ -333,7 +350,45 @@ impl ApiState {
 
     pub async fn get_oidc_session(&self, uuid_code: String) -> Option<OidcState> {
         let oidc_sessions = self.oidc_sessions.read().await;
-        oidc_sessions.get(&uuid_code).map(|s| s.clone())
+        oidc_sessions.get(&uuid_code).filter(|s| !oidc_login_expired(s, unix_now())).cloned()
+    }
+
+    /// Approves a signed-in login when `browser_key` is the cookie of the browser that started it.
+    pub async fn oidc_approve_by_browser(&self, uuid_code: &str, browser_key: &str) -> bool {
+        let mut sessions = self.oidc_sessions.write().await;
+        match sessions.get_mut(uuid_code) {
+            Some(s) if s.sub.is_some() && s.browser_key.as_deref() == Some(browser_key) && !oidc_login_expired(s, unix_now()) => {
+                s.approved = true;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Issues the one-time value for the confirmation page of a signed-in login.
+    pub async fn oidc_request_confirmation(&self, uuid_code: &str) -> Option<(String, OidcState)> {
+        let mut sessions = self.oidc_sessions.write().await;
+        let s = sessions.get_mut(uuid_code).filter(|s| s.sub.is_some() && !oidc_login_expired(s, unix_now()))?;
+        let token = uuid::Uuid::new_v4().simple().to_string();
+        s.confirm_token = Some(token.clone());
+        Some((token, s.clone()))
+    }
+
+    /// Applies the user's answer on the confirmation page: approve, or drop the login.
+    /// Returns the login when `token` matches, `None` otherwise.
+    pub async fn oidc_confirm(&self, uuid_code: &str, token: &str, approve: bool) -> Option<OidcState> {
+        let mut sessions = self.oidc_sessions.write().await;
+        let s = sessions.get_mut(uuid_code).filter(|s| !oidc_login_expired(s, unix_now()))?;
+        if s.confirm_token.as_deref() != Some(token) {
+            return None;
+        }
+        s.confirm_token = None;
+        if approve {
+            s.approved = true;
+            Some(s.clone())
+        } else {
+            sessions.remove(uuid_code)
+        }
     }
 
     /// Exchange code for tokens
@@ -357,7 +412,7 @@ impl ApiState {
         uuid_code: String,
     ) -> Option<String> {
         let mut oidc_sessions = self.oidc_sessions.write().await;
-        let oidc_session = oidc_sessions.get_mut(&uuid_code);
+        let oidc_session = oidc_sessions.get_mut(&uuid_code).filter(|s| !oidc_login_expired(s, unix_now()));
         if oidc_session.is_none() {
             return None;
         }
@@ -409,7 +464,7 @@ impl ApiState {
         uuid_code: String,
     ) -> Option<(Token, String, DatabaseUserInfo)> {
         let mut oidc_sessions = self.oidc_sessions.write().await;
-        let oidc_session = oidc_sessions.get_mut(&uuid_code);
+        let oidc_session = oidc_sessions.get_mut(&uuid_code).filter(|s| s.approved && !oidc_login_expired(s, unix_now()));
         if oidc_session.is_none() {
             return None;
         }
@@ -739,6 +794,17 @@ impl ApiState {
     }
 }
 
+/// How long a started OIDC login stays usable; the RustDesk client stops polling after 3 minutes.
+pub const OIDC_LOGIN_TTL_SECS: u64 = 180;
+
+fn unix_now() -> u64 {
+    SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
+}
+
+fn oidc_login_expired(s: &OidcState, now: u64) -> bool {
+    s.created_at.saturating_add(OIDC_LOGIN_TTL_SECS) < now
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -956,6 +1022,7 @@ mod tests {
             name: None,
             email: None,
             client_redirect_uri: None,
+            ..Default::default()
         };
         let result = state
             .insert_oidc_session("code1".to_string(), oidc)
@@ -985,6 +1052,7 @@ mod tests {
             name: None,
             email: None,
             client_redirect_uri: None,
+            ..Default::default()
         };
         state
             .insert_oidc_session("dup".to_string(), oidc.clone())
@@ -1010,6 +1078,7 @@ mod tests {
             name: None,
             email: None,
             client_redirect_uri: None,
+            ..Default::default()
         };
         state
             .insert_oidc_session("check".to_string(), oidc)

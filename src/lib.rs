@@ -29,7 +29,8 @@ use oauth2::oauth_provider::OAuthProvider;
 use oauth2::oauth_provider::OAuthProviderFactory;
 use rocket::fairing::{Fairing, Info, Kind};
 use rocket::form::validate::Len;
-use rocket::http::{ContentType, Header, Status};
+use rocket::http::{ContentType, Cookie, CookieJar, Header, SameSite, Status};
+use rocket::form::{Form, FromForm};
 use rocket::response::{Redirect, Responder};
 use rocket::{async_trait, delete, options, put, routes, uri};
 use rocket::{Request, Response};
@@ -197,6 +198,7 @@ pub async fn build_rocket_with_db(figment: Figment, db_path: &str) -> Rocket<Bui
             favicon,
             webconsole_vue,
             oidc_callback,
+            oidc_confirm,
         ])
         .manage(state);
 
@@ -1010,6 +1012,7 @@ async fn login_options(
 #[post("/api/oidc/auth", format = "application/json", data = "<request>")]
 async fn oidc_auth(
     state: &State<ApiState>,
+    cookies: &CookieJar<'_>,
     request: ExtendedJson<OidcAuthRequest>,
 ) -> Json<OidcAuthUrl> {
     log::debug!("oidc_auth: {:?}", request);
@@ -1027,7 +1030,17 @@ async fn oidc_auth(
     }
     let uuid_decoded = uuid_decoded.unwrap();
     let uuid_client = String::from_utf8(uuid_decoded).unwrap();
-    let callback_url = format!("{}/api/oidc/callback", get_host(headers.clone()));
+    let host = get_host(headers.clone());
+    if let Some(uri) = &request.redirect_uri {
+        if !is_own_url(uri, &host) {
+            log::warn!("oidc_auth: rejected redirectUri {uri:?} (not on {host:?})");
+            return Json(OidcAuthUrl {
+                url: "".to_string(),
+                code: "REDIRECT_URI_ERROR".to_string(),
+            });
+        }
+    }
+    let callback_url = format!("{}/api/oidc/callback", host);
     let providers_config = state
         .get_oauth2_config(oauth2::get_providers_config_file().as_str())
         .await;
@@ -1081,6 +1094,11 @@ async fn oidc_auth(
                 name: None,
                 email: None,
                 client_redirect_uri: request.redirect_uri.clone(),
+                browser_key: Some(set_oidc_browser_cookie(cookies, host.starts_with("https://"))),
+                device_name: request.device_info.name.clone(),
+                device_os: request.device_info.os.clone(),
+                requester_ip: client_ip(&headers),
+                ..Default::default()
             },
         )
         .await;
@@ -1119,37 +1137,103 @@ async fn oidc_auth(
 #[get("/api/oidc/callback?<code>&<state>")]
 async fn oidc_callback(
     apistate: &State<ApiState>,
+    cookies: &CookieJar<'_>,
     code: &str,
     state: &str,
 ) -> OidcCallbackResponse {
     let oidc_code = state;
-    let oidc_authorization_code = code;
-    let client_redirect_uri = apistate
-        .get_oidc_session(oidc_code.to_string())
-        .await
-        .and_then(|s| s.client_redirect_uri);
-    let updated_oidc_session = apistate
-        .oidc_session_exchange_code(oidc_authorization_code.to_string(), oidc_code.to_string())
-        .await;
+    let session = apistate.get_oidc_session(oidc_code.to_string()).await;
+    let signed_in = session.is_some()
+        && apistate
+            .oidc_session_exchange_code(code.to_string(), oidc_code.to_string())
+            .await
+            .is_some();
+    let client_redirect_uri = session.and_then(|s| s.client_redirect_uri);
+    if !signed_in {
+        return oidc_finish(client_redirect_uri, oidc_code, false);
+    }
+    // The browser that started the login needs no confirmation; any other one must confirm.
+    let same_browser = match cookies.get(OIDC_BROWSER_COOKIE) {
+        Some(c) => apistate.oidc_approve_by_browser(oidc_code, c.value()).await,
+        None => false,
+    };
+    if same_browser {
+        return oidc_finish(client_redirect_uri, oidc_code, true);
+    }
+    match apistate.oidc_request_confirmation(oidc_code).await {
+        Some((token, login)) => oidc_confirmation_page(oidc_code, &token, &login),
+        None => oidc_finish(client_redirect_uri, oidc_code, false),
+    }
+}
 
+#[derive(FromForm)]
+struct OidcConfirmForm {
+    state: String,
+    token: String,
+    approve: bool,
+}
+
+/// Answer from the confirmation page shown when a login finishes in another browser than it started in.
+#[post("/api/oidc/confirm", data = "<form>")]
+async fn oidc_confirm(apistate: &State<ApiState>, form: Form<OidcConfirmForm>) -> OidcCallbackResponse {
+    match apistate.oidc_confirm(&form.state, &form.token, form.approve).await {
+        Some(login) if form.approve => oidc_finish(login.client_redirect_uri, &form.state, true),
+        Some(_) => oidc_page("Login denied. You can close this window."),
+        None => oidc_page("Login failed. Please close this window and try again."),
+    }
+}
+
+const OIDC_BROWSER_COOKIE: &str = "rustdesk_oidc_login";
+
+/// Gives the starting browser a secret that ties the login to it; returns the secret.
+fn set_oidc_browser_cookie(cookies: &CookieJar<'_>, secure: bool) -> String {
+    let key = Uuid::new_v4().simple().to_string();
+    cookies.add(
+        Cookie::build((OIDC_BROWSER_COOKIE, key.clone()))
+            .path("/api/oidc")
+            .http_only(true)
+            .secure(secure)
+            .same_site(SameSite::Lax)
+            .max_age(rocket::time::Duration::seconds(state::OIDC_LOGIN_TTL_SECS as i64)),
+    );
+    key
+}
+
+/// True for a path on this server or an absolute URL on `host` (scheme://authority).
+fn is_own_url(uri: &str, host: &str) -> bool {
+    if uri.starts_with('/') && !uri.starts_with("//") && !uri.starts_with("/\\") {
+        return true;
+    }
+    match (url::Url::parse(uri), url::Url::parse(host)) {
+        (Ok(u), Ok(h)) => !host.is_empty() && u.origin() == h.origin(),
+        _ => false,
+    }
+}
+
+fn client_ip(headers: &std::collections::HashMap<String, String>) -> Option<String> {
+    headers
+        .get("x-forwarded-for")
+        .and_then(|v| v.split(',').next())
+        .or_else(|| headers.get("x-real-ip").map(String::as_str))
+        .map(|ip| ip.trim().to_string())
+        .filter(|ip| !ip.is_empty())
+}
+
+fn html_escape(s: &str) -> String {
+    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;").replace('\'', "&#39;")
+}
+
+/// Ends the login in the browser: back to the web console when it asked for that, else a message.
+fn oidc_finish(client_redirect_uri: Option<String>, oidc_code: &str, ok: bool) -> OidcCallbackResponse {
     if let Some(redirect_uri) = client_redirect_uri {
         let separator = if redirect_uri.contains('?') { "&" } else { "?" };
-        if updated_oidc_session.is_some() {
-            return OidcCallbackResponse::Redirect(Redirect::found(format!(
-                "{redirect_uri}{separator}oidc_code={oidc_code}"
-            )));
-        } else {
-            return OidcCallbackResponse::Redirect(Redirect::found(format!(
-                "{redirect_uri}{separator}oidc_error=login_failed"
-            )));
-        }
+        let result = if ok { format!("oidc_code={oidc_code}") } else { "oidc_error=login_failed".to_string() };
+        return OidcCallbackResponse::Redirect(Redirect::found(format!("{redirect_uri}{separator}{result}")));
     }
+    oidc_page(if ok { "Login successful!" } else { "Login failed. Please close this window and try again." })
+}
 
-    let message = if updated_oidc_session.is_none() {
-        "Login failed. Please close this window and try again."
-    } else {
-        "Login successful!"
-    };
+fn oidc_page(message: &str) -> OidcCallbackResponse {
     OidcCallbackResponse::Html(rocket::response::content::RawHtml(format!(
         r#"<!DOCTYPE html>
 <html><head><title>RustDesk Login</title></head>
@@ -1158,6 +1242,28 @@ async fn oidc_callback(
 <script>
 try {{ window.close(); }} catch(e) {{}}
 </script>
+</body></html>"#
+    )))
+}
+
+fn oidc_confirmation_page(oidc_code: &str, token: &str, login: &OidcState) -> OidcCallbackResponse {
+    let device = html_escape(&login.device_name);
+    let os = html_escape(&login.device_os);
+    let ip = html_escape(login.requester_ip.as_deref().unwrap_or("an unknown address"));
+    let (code, token) = (html_escape(oidc_code), html_escape(token));
+    OidcCallbackResponse::Html(rocket::response::content::RawHtml(format!(
+        r#"<!DOCTYPE html>
+<html><head><title>RustDesk Login</title><meta name="viewport" content="width=device-width, initial-scale=1"></head>
+<body style="font-family: sans-serif; max-width: 32em; margin: 3em auto; padding: 0 1em">
+<h2>Sign in to RustDesk?</h2>
+<p>A RustDesk login was started on <b>{device}</b> ({os}) from <b>{ip}</b>.</p>
+<p>Approve only if you started this login yourself, just now. If someone sent you this link, deny.</p>
+<form method="post" action="/api/oidc/confirm">
+<input type="hidden" name="state" value="{code}">
+<input type="hidden" name="token" value="{token}">
+<button type="submit" name="approve" value="true">Approve</button>
+<button type="submit" name="approve" value="false">Deny</button>
+</form>
 </body></html>"#
     )))
 }

@@ -23,7 +23,7 @@ pub mod testing;
 
 pub use utils::{UserId, SessionId};
 
-pub use state::ApiState;
+pub use state::{ApiState, OIDC_LOGIN_TTL_SECS};
 pub use bearer::{AuthenticatedUser, AuthenticatedAdmin};
 
 pub mod types;

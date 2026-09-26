@@ -20,7 +20,7 @@ pub mod oauth2_provider;
 pub mod validate;
 use serde::{Deserialize, Serialize};
 use std::str::FromStr;
-mod errors;
+pub mod errors;
 
 #[derive(Deserialize, Serialize, Clone, Debug)]
 pub struct ProviderConfig {

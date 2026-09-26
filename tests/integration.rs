@@ -936,6 +936,193 @@ async fn test_oidc_get_returns_unauthorized() {
     assert_eq!(resp.status(), Status::Unauthorized);
 }
 
+/// An IdP that accepts any code and says the user is `sub`.
+struct StubIdp {
+    sub: String,
+}
+
+impl oauth2::oauth_provider::OAuthProvider for StubIdp {
+    fn get_redirect_url(&self, _callback_url: &str, state: &str) -> String {
+        format!("https://idp.example.com/authorize?state={state}")
+    }
+    fn exchange_code(
+        &self,
+        _code: &str,
+        _callback_url: &str,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<oauth2::oauth_provider::OAuthResponse, oauth2::errors::Oauth2Error>> + Send + Sync>> {
+        let sub = self.sub.clone();
+        Box::pin(async move {
+            Ok(oauth2::oauth_provider::OAuthResponse { access_token: "at".into(), subject: sub.clone(), name: Some(sub.clone()), email: Some(format!("{sub}@example.com")) })
+        })
+    }
+    fn get_provider_type(&self) -> oauth2::Provider {
+        oauth2::Provider::Dex
+    }
+}
+
+/// A client that sends only the cookies a test passes, so two "browsers" can share one server.
+async fn untracked_client() -> Client {
+    let db_url = state::testing::fresh_database_url().await;
+    let figment = rocket::Config::figment()
+        .merge(("port", 0))
+        .merge(("secret_key", "hPRYyVRiMyxpw5sBB1XeCMN1kFsDCqKvBi2QJxBVHQk="));
+    Client::untracked(build_rocket_with_db(figment, &db_url).await).await.unwrap()
+}
+
+/// Starts an OIDC login as a client would; returns (code, Set-Cookie header if any).
+async fn start_login(client: &Client, device_name: &str, redirect_uri: Option<&str>) -> (String, Option<String>) {
+    let uuid = base64::Engine::encode(&base64::prelude::BASE64_STANDARD, "device-uuid");
+    let redirect = redirect_uri.map(|r| format!(r#","redirectUri":"{r}""#)).unwrap_or_default();
+    let resp = client
+        .post("/api/oidc/auth")
+        .header(ContentType::JSON)
+        .header(Header::new("Host", "rustdesk.example.com"))
+        .header(Header::new("X-Forwarded-Proto", "https"))
+        .body(format!(r#"{{"op":"dex","id":"123456789","uuid":"{uuid}","deviceInfo":{{"name":"{device_name}","os":"windows","type":"client"}}{redirect}}}"#))
+        .dispatch()
+        .await;
+    let cookie = resp.headers().get_one("Set-Cookie").map(str::to_string);
+    let body: Value = resp.into_json().await.unwrap();
+    let code = body["code"].as_str().unwrap().to_string();
+    (code, cookie)
+}
+
+async fn use_stub_idp(client: &Client, code: &str, sub: &str) {
+    let state = client.rocket().state::<state::ApiState>().unwrap();
+    assert!(state.test_set_oidc_provider(code, std::sync::Arc::new(StubIdp { sub: sub.into() })).await);
+    // New OIDC users start inactive; promoting activates them.
+    state.test_oidc_login(&sub.to_string()).await;
+    state.set_admin(sub, true).await.unwrap();
+}
+
+/// The IdP redirecting the browser back; `cookie` is what that browser holds.
+async fn callback(client: &Client, code: &str, cookie: Option<&str>) -> String {
+    let mut req = client.get(format!("/api/oidc/callback?code=idp-code&state={code}"));
+    if let Some(c) = cookie {
+        req = req.cookie(rocket::http::Cookie::parse(c.to_string()).unwrap().into_owned());
+    }
+    let resp = req.dispatch().await;
+    match resp.headers().get_one("Location") {
+        Some(loc) => format!("REDIRECT {loc}"),
+        None => resp.into_string().await.unwrap_or_default(),
+    }
+}
+
+async fn poll(client: &Client, code: &str) -> Value {
+    let resp = client.get(format!("/api/oidc/auth-query?code={code}&id=123456789&uuid=x")).dispatch().await;
+    resp.into_json().await.unwrap()
+}
+
+fn confirm_token(page: &str) -> String {
+    let at = page.find(r#"name="token" value=""#).expect("confirmation page has a token") + r#"name="token" value=""#.len();
+    page[at..at + page[at..].find('"').unwrap()].to_string()
+}
+
+async fn confirm(client: &Client, code: &str, token: &str, approve: bool) -> String {
+    let resp = client
+        .post("/api/oidc/confirm")
+        .header(ContentType::Form)
+        .body(format!("state={code}&token={token}&approve={approve}"))
+        .dispatch()
+        .await;
+    resp.into_string().await.unwrap_or_default()
+}
+
+#[rocket::async_test]
+async fn test_oidc_login_sets_a_browser_cookie() {
+    let client = untracked_client().await;
+    let (_, cookie) = start_login(&client, "PC", None).await;
+    let cookie = cookie.expect("login start sets a cookie");
+    for attr in ["HttpOnly", "SameSite=Lax", "Path=/api/oidc", "Secure"] {
+        assert!(cookie.contains(attr), "{attr} missing in {cookie}");
+    }
+}
+
+#[rocket::async_test]
+async fn test_oidc_login_in_the_starting_browser_needs_no_confirmation() {
+    let client = untracked_client().await;
+    let (code, cookie) = start_login(&client, "PC", None).await;
+    use_stub_idp(&client, &code, "alice").await;
+    let page = callback(&client, &code, cookie.as_deref()).await;
+    assert!(page.contains("Login successful"), "{page}");
+    let r = poll(&client, &code).await;
+    assert!(r["access_token"].is_string(), "{r}");
+}
+
+#[rocket::async_test]
+async fn test_oidc_forwarded_login_link_does_not_log_the_attacker_in() {
+    let client = untracked_client().await;
+    let (code, _attacker_cookie) = start_login(&client, "ATTACKER-PC", None).await;
+    use_stub_idp(&client, &code, "victim").await;
+    // The victim's browser never saw the attacker's cookie.
+    let page = callback(&client, &code, None).await;
+    assert!(page.contains("ATTACKER-PC") && page.contains("Approve"), "{page}");
+    assert!(poll(&client, &code).await.is_null(), "token handed out without confirmation");
+    // Knowing the code is not enough to approve.
+    confirm(&client, &code, "guessed", true).await;
+    assert!(poll(&client, &code).await.is_null(), "approved with a wrong token");
+}
+
+#[rocket::async_test]
+async fn test_oidc_native_login_is_approved_on_the_confirmation_page() {
+    let client = untracked_client().await;
+    let (code, _) = start_login(&client, "MY-LAPTOP", None).await;
+    use_stub_idp(&client, &code, "alice").await;
+    let page = callback(&client, &code, None).await;
+    let result = confirm(&client, &code, &confirm_token(&page), true).await;
+    assert!(result.contains("Login successful"), "{result}");
+    assert!(poll(&client, &code).await["access_token"].is_string());
+}
+
+#[rocket::async_test]
+async fn test_oidc_denied_login_is_dropped() {
+    let client = untracked_client().await;
+    let (code, _) = start_login(&client, "UNKNOWN-PC", None).await;
+    use_stub_idp(&client, &code, "alice").await;
+    let page = callback(&client, &code, None).await;
+    confirm(&client, &code, &confirm_token(&page), false).await;
+    assert!(poll(&client, &code).await.is_null());
+    let token = confirm_token(&page);
+    let again = confirm(&client, &code, &token, true).await;
+    assert!(!again.contains("Login successful"), "{again}");
+    assert!(poll(&client, &code).await.is_null());
+}
+
+#[rocket::async_test]
+async fn test_oidc_confirmation_page_escapes_the_device_name() {
+    let client = untracked_client().await;
+    let (code, _) = start_login(&client, "<script>x</script>", None).await;
+    use_stub_idp(&client, &code, "alice").await;
+    let page = callback(&client, &code, None).await;
+    assert!(!page.contains("<script>x"), "{page}");
+    assert!(page.contains("&lt;script&gt;x"), "{page}");
+}
+
+#[rocket::async_test]
+async fn test_oidc_pending_logins_expire() {
+    let client = untracked_client().await;
+    let (code, cookie) = start_login(&client, "PC", None).await;
+    use_stub_idp(&client, &code, "alice").await;
+    let state = client.rocket().state::<state::ApiState>().unwrap();
+    assert!(state.test_age_oidc_session(&code, 3600).await);
+    let page = callback(&client, &code, cookie.as_deref()).await;
+    assert!(page.contains("Login failed"), "{page}");
+    assert!(poll(&client, &code).await.is_null());
+}
+
+#[rocket::async_test]
+async fn test_oidc_redirect_uri_must_be_on_this_server() {
+    let client = untracked_client().await;
+    let (code, _) = start_login(&client, "PC", Some("https://evil.example.com/steal")).await;
+    assert!(code.is_empty() || code.contains("ERROR"), "foreign redirect accepted: {code}");
+
+    let (code, cookie) = start_login(&client, "PC", Some("https://rustdesk.example.com/ui/login")).await;
+    assert!(!code.is_empty() && !code.contains("ERROR"), "{code}");
+    use_stub_idp(&client, &code, "alice").await;
+    let page = callback(&client, &code, cookie.as_deref()).await;
+    assert!(page.starts_with("REDIRECT https://rustdesk.example.com/ui/login?oidc_code="), "{page}");
+}
+
 #[rocket::async_test]
 async fn test_oidc_auth_invalid_uuid() {
     let (client, _dir) = test_client().await;
