@@ -656,12 +656,12 @@ async fn groups(
 ) -> Result<Json<GroupsResponse>, status::NotFound<()>> {
     log::debug!("groups");
     state.check_maintenance().await;
-    let offset = if current < 1 { 0 } else { current - 1 };
     let page_size = if pageSize < 1 {
         u32::max_value()
     } else {
         pageSize
     };
+    let offset = current.saturating_sub(1).saturating_mul(page_size);
     let groups = state.get_groups(offset, page_size).await;
     if groups.is_none() {
         return Err(status::NotFound::<()>(()));

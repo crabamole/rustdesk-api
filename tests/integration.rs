@@ -313,6 +313,47 @@ async fn test_enable_disable_user() {
 }
 
 #[rocket::async_test]
+async fn test_groups_pages_do_not_overlap() {
+    let (client, _dir) = test_client().await;
+    let token = login_admin(&client).await;
+    for i in 0..5 {
+        let resp = client
+            .post("/api/group")
+            .header(ContentType::JSON)
+            .header(auth_header(&token))
+            .body(format!(r#"{{"name":"G{i}","note":"","allowed_outgoings":[],"allowed_incomings":[]}}"#))
+            .dispatch()
+            .await;
+        assert_eq!(resp.status(), Status::Ok);
+    }
+    let resp = client
+        .get("/api/groups?current=1&pageSize=100")
+        .header(auth_header(&token))
+        .dispatch()
+        .await;
+    let body: Value = resp.into_json().await.unwrap();
+    let mut all: Vec<String> = body["data"].as_array().unwrap().iter()
+        .map(|g| g["guid"].as_str().unwrap().to_string()).collect();
+    assert!(all.len() >= 6);
+
+    let mut paged = Vec::new();
+    for page in 1..=all.len().div_ceil(2) {
+        let resp = client
+            .get(format!("/api/groups?current={page}&pageSize=2"))
+            .header(auth_header(&token))
+            .dispatch()
+            .await;
+        let body: Value = resp.into_json().await.unwrap();
+        let data = body["data"].as_array().unwrap();
+        assert!(data.len() <= 2, "page {page} has {} groups", data.len());
+        paged.extend(data.iter().map(|g| g["guid"].as_str().unwrap().to_string()));
+    }
+    all.sort();
+    paged.sort();
+    assert_eq!(paged, all, "pages must list every group exactly once");
+}
+
+#[rocket::async_test]
 async fn test_groups_crud() {
     let (client, _dir) = test_client().await;
     let token = login_admin(&client).await;

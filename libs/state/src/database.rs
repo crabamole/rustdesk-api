@@ -1112,7 +1112,7 @@ impl Database {
 
     pub async fn get_groups(&self, offset: u32, page_size: u32) -> Option<Vec<Group>> {
         let res = sqlx::query(
-            "SELECT guid, team, name, note, created_at, info FROM grp LIMIT $1 OFFSET $2",
+            "SELECT guid, team, name, note, created_at, info FROM grp ORDER BY created_at, guid LIMIT $1 OFFSET $2",
         )
         .bind(page_size as i32)
         .bind(offset as i32)
