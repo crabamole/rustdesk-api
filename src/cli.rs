@@ -32,6 +32,42 @@ pub enum Command {
     /// Manage admins directly in the database (needs DATABASE_URL)
     #[command(subcommand)]
     Admin(AdminCommand),
+    /// Check the OIDC provider file
+    #[command(subcommand)]
+    Oidc(OidcCommand),
+}
+
+#[derive(Subcommand, Debug)]
+pub enum OidcCommand {
+    /// Validate the provider file and check each token endpoint is reachable from here
+    Check {
+        /// Provider file (default: $OAUTH2_CONFIG_FILE, else oauth2.toml)
+        #[arg(long)]
+        file: Option<String>,
+    },
+}
+
+/// The OIDC provider file to use: `file`, else `$OAUTH2_CONFIG_FILE`, else `oauth2.toml`.
+pub fn providers_file(file: Option<&str>) -> String {
+    file.map(str::to_string).unwrap_or_else(oauth2::get_providers_config_file)
+}
+
+/// Runs `oidc check`: validates `file` and probes each provider's token endpoint.
+pub async fn run_oidc_check(file: &str) -> Result<String, String> {
+    let providers = oauth2::validate::load_providers(file)?;
+    let mut lines = vec![format!("{file}: {} provider(s), configuration OK", providers.len())];
+    let mut ok = true;
+    for (op, res) in oauth2::validate::check_reachable(&providers).await {
+        match res {
+            Ok(status) => lines.push(format!("  {op}: token endpoint reachable (HTTP {status})")),
+            Err(e) => {
+                ok = false;
+                lines.push(format!("  {op}: token endpoint unreachable: {e}"));
+            }
+        }
+    }
+    let out = lines.join("\n");
+    if ok { Ok(out) } else { Err(out) }
 }
 
 #[derive(Subcommand, Debug)]
@@ -78,6 +114,43 @@ mod tests {
             }
             other => panic!("expected serve, got {other:?}"),
         }
+    }
+
+    fn temp_file(content: &str) -> String {
+        let path = std::env::temp_dir().join(format!("oauth2-{}.toml", uuid::Uuid::new_v4()));
+        std::fs::write(&path, content).unwrap();
+        path.to_string_lossy().into_owned()
+    }
+
+    const PROVIDER: &str = r#"
+[[provider]]
+provider = "Oauth2"
+authorization_url = "https://idp.example.com/authorize"
+token_exchange_url = "http://127.0.0.1:1/token"
+app_id = "rustdesk"
+app_secret = "s3cret"
+scope = "openid email profile"
+op_auth_string = "oidc/corp"
+op = "corp"
+"#;
+
+    #[test]
+    fn oidc_check_takes_an_optional_file() {
+        let cli = Cli::try_parse_from(["rustdesk-api", "oidc", "check", "--file", "/x.toml"]).unwrap();
+        assert!(matches!(cli.command, Command::Oidc(OidcCommand::Check { file: Some(f) }) if f == "/x.toml"));
+        assert_eq!(providers_file(Some("/x.toml")), "/x.toml");
+    }
+
+    #[rocket::async_test]
+    async fn oidc_check_reports_invalid_files() {
+        let err = run_oidc_check(&temp_file("[[provider]]\nprovider = \"Azure\"\n")).await.unwrap_err();
+        assert!(err.contains("not a valid provider file"), "{err}");
+    }
+
+    #[rocket::async_test]
+    async fn oidc_check_reports_unreachable_token_endpoints() {
+        let err = run_oidc_check(&temp_file(PROVIDER)).await.unwrap_err();
+        assert!(err.contains("configuration OK") && err.contains("corp: token endpoint unreachable"), "{err}");
     }
 
     #[test]

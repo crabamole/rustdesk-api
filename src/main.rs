@@ -17,11 +17,25 @@ use rocket::{
     config::LogLevel,
     data::{Limits, ToByteUnit},
 };
-use rustdesk_api::cli::{run_admin, Cli, Command};
+use rustdesk_api::cli::{providers_file, run_admin, run_oidc_check, Cli, Command, OidcCommand};
 use rustdesk_api::{build_rocket, database_url_from_env};
 use clap::Parser;
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use getrandom::getrandom;
+
+/// Prints a subcommand's result and exits (1 on failure).
+fn finish(result: Result<String, String>) -> ! {
+    match result {
+        Ok(msg) => {
+            println!("{msg}");
+            std::process::exit(0);
+        }
+        Err(msg) => {
+            eprintln!("{msg}");
+            std::process::exit(1);
+        }
+    }
+}
 
 fn db_url_or_exit() -> String {
     database_url_from_env().unwrap_or_else(|msg| {
@@ -34,17 +48,14 @@ fn db_url_or_exit() -> String {
 async fn main() -> Result<(), rocket::Error> {
     let (address, port, log_level) = match Cli::parse().command {
         Command::Serve { address, port, log_level } => (address, port, log_level),
-        Command::Admin(cmd) => match run_admin(&cmd, &db_url_or_exit()).await {
-            Ok(msg) => {
-                println!("{msg}");
-                return Ok(());
-            }
-            Err(msg) => {
-                eprintln!("{msg}");
-                std::process::exit(1);
-            }
-        },
+        Command::Admin(cmd) => finish(run_admin(&cmd, &db_url_or_exit()).await),
+        Command::Oidc(OidcCommand::Check { file }) => finish(run_oidc_check(&providers_file(file.as_deref())).await),
     };
+    // Login is OIDC-only: refuse to start without a usable provider file.
+    if let Err(msg) = oauth2::validate::load_providers(&providers_file(None)) {
+        eprintln!("{msg}");
+        std::process::exit(2);
+    }
     let log_level = match log_level.to_lowercase().as_str() {
         "off" => LogLevel::Off,
         "critical" => LogLevel::Critical,

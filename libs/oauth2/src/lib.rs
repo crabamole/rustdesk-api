@@ -17,8 +17,9 @@ pub mod dex_provider;
 pub mod github_provider;
 pub mod oauth_provider;
 pub mod oauth2_provider;
+pub mod validate;
 use serde::{Deserialize, Serialize};
-use std::{fs, str::FromStr};
+use std::str::FromStr;
 mod errors;
 
 #[derive(Deserialize, Serialize, Clone, Debug)]
@@ -33,7 +34,7 @@ pub struct ProviderConfig {
     pub op: String,
 }
 
-#[derive(Deserialize, Serialize, Copy, Clone, PartialEq, Eq, Debug)]
+#[derive(Deserialize, Serialize, Copy, Clone, PartialEq, Eq, Hash, Debug)]
 pub enum Provider {
     Github,
     Gitlab,
@@ -136,20 +137,14 @@ pub struct TokenResponse {
     pub refresh_token: Option<String>,
 }
 
-/// Get the providers config from a config file
-///
-/// # Returns  
-/// The providers config
+/// Get the providers config from a config file; empty (with the reason logged)
+/// if it cannot be used. `serve` validates the file with `validate::load_providers`
+/// at startup, so this only fails if the file changes afterwards.
 pub fn get_providers_config_from_file(config_file: &str) -> Vec<ProviderConfig> {
-    // If file does not exist create it
-    if !std::path::Path::new(&config_file).exists() {
-        log::error!("oauth2 config file does not exist, creating it, we recommend you to fill it with your own values, you can change the file path by setting the OAUTH2_CONFIG_FILE environment variable.");
-        let oauth2_config = include_str!("../../../oauth2.toml");
-        fs::write(&config_file, oauth2_config).expect("Failed to write oauth2 config file");
-    }
-    let config_file_content = fs::read_to_string(config_file).expect("Failed to read config file");
-    let config: Config = toml::from_str(&config_file_content).expect("Failed to parse config file");
-    config.provider
+    validate::load_providers(config_file).unwrap_or_else(|e| {
+        log::error!("{e}");
+        Vec::new()
+    })
 }
 
 /// Get the name of the provider config file
@@ -288,14 +283,14 @@ mod tests {
             op = "facebook"
 
             [[provider]]
-            provider = "Gitlab"
-            authorization_url = "https://gitlab.com/oauth/authorize"
-            token_exchange_url = "https://gitlab.com/oauth/token"
-            app_id = "your_gitlab_app_id"
-            app_secret = "your_gitlab_app_secret"
-            scope = "public_profile"
-            op_auth_string = "oidc/facebook"
-            op = "facebook"
+            provider = "Oauth2"
+            authorization_url = "https://idp.example.com/authorize"
+            token_exchange_url = "https://idp.example.com/token"
+            app_id = "rustdesk"
+            app_secret = "secret"
+            scope = "openid email profile"
+            op_auth_string = "oidc/corp"
+            op = "corp"
         "#;
 
         let config_file = tempfile::NamedTempFile::new().unwrap();
@@ -303,6 +298,14 @@ mod tests {
 
         let providers = get_providers_config_from_file(config_file.path().to_str().unwrap());
         assert_eq!(providers.len(), 2);
+    }
+
+    #[test]
+    fn an_invalid_provider_file_loads_as_no_providers() {
+        let config_file = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(config_file.path(), "[[provider]]\nprovider = \"Azure\"\n").unwrap();
+        assert!(get_providers_config_from_file(config_file.path().to_str().unwrap()).is_empty());
+        assert!(get_providers_config_from_file("/nonexistent/oauth2.toml").is_empty());
     }
 
     #[test]
