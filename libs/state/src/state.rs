@@ -119,33 +119,21 @@ impl ApiState {
         }
     }
 
-    /// Simulates a successful OIDC login for `username` (creating it if needed)
-    /// and issues a session. Test-only.
+    /// Simulates a successful OIDC login whose `sub` and `name` are `username`
+    /// (creating the user if needed) and issues a session. Test-only.
     #[cfg(any(test, feature = "test-util"))]
     pub async fn test_oidc_login(&self, username: &String) -> Option<(utils::UserInfo, Token)> {
         let email = format!("{username}@example.org");
-        self.db
-            .get_user_for_oauth2(username.clone(), email, String::new())
-            .await?;
-        let (_, user_id, email, db_user_info) =
-            match self.db.find_user_by_name(username.as_str()).await {
-                (conn, Some((user_id, email, db_user_info))) => {
-                    (conn, user_id, email, db_user_info)
-                }
-                _ => return None,
-            };
+        let (user_id, name, db_user_info) =
+            self.db.get_user_for_oauth2(username, username, Some(&email)).await?;
         if !db_user_info.active {
             return None;
         }
-
-        let access_token = self
-            .get_access_token(user_id, username, db_user_info.admin)
-            .await;
-
+        let access_token = self.get_access_token(user_id, &name, db_user_info.admin).await;
         Some((
             utils::UserInfo {
-                name: username.to_string(),
-                email,
+                name,
+                email: Some(email),
                 admin: db_user_info.admin,
                 ..Default::default()
             },
@@ -285,10 +273,11 @@ impl ApiState {
         self.db.ui_get_all_users().await
     }
 
-    /// Promotes (`admin = true`) or demotes a user; `None` if no such user.
+    /// Promotes (`admin = true`) or demotes the user matching `identifier` (OIDC subject,
+    /// email or name; must be unambiguous) and returns its display name.
     /// Backs the `rustdesk-api admin` CLI, the only way to make an admin.
-    pub async fn set_admin(&self, name: &str, admin: bool) -> Option<()> {
-        self.db.set_admin(name, admin).await
+    pub async fn set_admin(&self, identifier: &str, admin: bool) -> Result<String, String> {
+        self.db.set_admin(identifier, admin).await
     }
 
     pub async fn ui_create_user(&self, username: String, admin: bool) -> Option<UserId> {
@@ -389,15 +378,11 @@ impl ApiState {
 
             if exchange_result.is_ok() {
                 let access_token = exchange_result.unwrap();
-                let username = access_token.username.clone();
 
                 oidc_session.auth_token = Some(access_token.access_token.clone());
-                oidc_session.name = Some(if username.len() > 0 {
-                    username.clone()
-                } else {
-                    oidc_session.id.clone()
-                });
-                oidc_session.email = Some(access_token.email.clone());
+                oidc_session.sub = Some(access_token.subject.clone());
+                oidc_session.name = access_token.name.clone();
+                oidc_session.email = access_token.email.clone();
                 log::debug!("oidc_session_exchange_code {:?}", oidc_session.auth_token);
                 return Some(access_token.access_token);
             }
@@ -429,21 +414,11 @@ impl ApiState {
             return None;
         }
         let oidc_session = oidc_session.unwrap();
-        let name = if let Some(name) = oidc_session.name.clone() {
-            name
-        } else {
-            oidc_session.id.clone()
-        };
-        let email = if let Some(email) = oidc_session.email.clone() {
-            email
-        } else {
-            "tobefilled@example;org".to_string()
-        };
-        if oidc_session.auth_token.is_some() {
-            let res = self
-                .db
-                .get_user_for_oauth2(name, email, oidc_session.uuid.clone())
-                .await;
+        if let (Some(_), Some(sub)) = (&oidc_session.auth_token, oidc_session.sub.clone()) {
+            // Display name: name claim, else email, else the subject itself.
+            let email = oidc_session.email.clone();
+            let name = oidc_session.name.clone().or_else(|| email.clone()).unwrap_or_else(|| sub.clone());
+            let res = self.db.get_user_for_oauth2(&sub, &name, email.as_deref()).await;
             if res.is_none() {
                 log::debug!("oidc_check_session user not found");
                 return None;
@@ -774,7 +749,7 @@ mod tests {
         let state = ApiState::new_with_db(&crate::testing::fresh_database_url().await).await;
         state
             .db
-            .get_user_for_oauth2("admin".to_string(), "admin@example.org".to_string(), "admin-uuid".to_string())
+            .get_user_for_oauth2("admin", "admin", Some("admin@example.org"))
             .await
             .unwrap();
         state.set_admin("admin", true).await.unwrap();
@@ -977,6 +952,7 @@ mod tests {
             redirect_url: None,
             callback_url: None,
             provider: None,
+            sub: None,
             name: None,
             email: None,
             client_redirect_uri: None,
@@ -1005,6 +981,7 @@ mod tests {
             redirect_url: None,
             callback_url: None,
             provider: None,
+            sub: None,
             name: None,
             email: None,
             client_redirect_uri: None,
@@ -1029,6 +1006,7 @@ mod tests {
             redirect_url: None,
             callback_url: None,
             provider: None,
+            sub: None,
             name: None,
             email: None,
             client_redirect_uri: None,

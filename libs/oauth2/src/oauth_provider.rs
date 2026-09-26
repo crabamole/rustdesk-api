@@ -21,8 +21,10 @@ use base64::prelude::{Engine as _, BASE64_URL_SAFE_NO_PAD};
 
 pub struct OAuthResponse {
     pub access_token: String,
-    pub username: String,
-    pub email: String,
+    /// Stable, unique user id at the provider (the OIDC `sub`).
+    pub subject: String,
+    pub name: Option<String>,
+    pub email: Option<String>,
 }
 pub trait OAuthProviderFactory {
     fn new() -> Self;
@@ -63,31 +65,30 @@ pub trait OAuthProvider: Send + Sync{
     fn get_provider_type(&self) -> Provider;
 }
 
-/// Decode the Oauth id token
-/// # Arguments
-/// * `id_token` - The jwt id token
-///
-/// # Returns
-/// the username and email
-pub fn decode_oauth_id_token(id_token: &str) -> Result<(String, String), Oauth2Error> {
-    let parts: Vec<&str> = id_token.split('.').collect();
+/// Who an ID token says the user is. `sub` is the identity; the rest is display data.
+#[derive(Debug, Clone, PartialEq)]
+pub struct IdTokenIdentity {
+    pub sub: String,
+    pub name: Option<String>,
+    pub email: Option<String>,
+}
+
+/// Reads the claims of an ID token received directly from the provider's token endpoint.
+/// Only `sub` is required; `name` falls back to `preferred_username`.
+pub fn decode_id_token(id_token: &str) -> Result<IdTokenIdentity, Oauth2Error> {
+    let payload = id_token.split('.').nth(1).ok_or(Oauth2Error::DecodeIdTokenError)?;
     let claims = BASE64_URL_SAFE_NO_PAD
-        .decode(parts[1])
+        .decode(payload)
         .map_err(|_| Oauth2Error::DecodeIdTokenError)?;
     let claims: Claims =
         serde_json::from_slice(&claims).map_err(|_| Oauth2Error::DecodeIdTokenError)?;
-    Ok((claims.name, claims.email))
-}
-
-/// Decode the standard Oauth2 id token
-pub fn decode_oauth2_id_token(id_token: &str) -> Result<(String, String), Oauth2Error> {
-    let parts: Vec<&str> = id_token.split('.').collect();
-    let claims = BASE64_URL_SAFE_NO_PAD
-        .decode(parts[1])
-        .map_err(|_| Oauth2Error::DecodeIdTokenError)?;
-    let claims: serde_json::Value =
-        serde_json::from_slice(&claims).map_err(|_| Oauth2Error::DecodeIdTokenError)?;
-    Ok((claims["name"].as_str().unwrap().to_string(), claims["email"].as_str().unwrap().to_string()))
+    let non_empty = |v: Option<String>| v.filter(|v| !v.trim().is_empty());
+    let sub = non_empty(Some(claims.sub)).ok_or(Oauth2Error::DecodeIdTokenError)?;
+    Ok(IdTokenIdentity {
+        sub,
+        name: non_empty(claims.name).or_else(|| non_empty(claims.preferred_username)),
+        email: non_empty(claims.email),
+    })
 }
 
 #[cfg(test)]
@@ -102,59 +103,41 @@ mod tests {
     }
 
     #[test]
-    fn test_decode_oauth_id_token_valid() {
-        let claims = r#"{"aud":"app","sub":"u1","name":"Alice","email":"alice@test.com","exp":9999999999}"#;
-        let token = make_jwt(claims);
-        let (name, email) = decode_oauth_id_token(&token).unwrap();
-        assert_eq!(name, "Alice");
-        assert_eq!(email, "alice@test.com");
+    fn decodes_sub_name_and_email() {
+        let token = make_jwt(r#"{"aud":"app","sub":"u1","name":"Alice","email":"alice@test.com","exp":9999999999}"#);
+        let id = decode_id_token(&token).unwrap();
+        assert_eq!(id, IdTokenIdentity { sub: "u1".into(), name: Some("Alice".into()), email: Some("alice@test.com".into()) });
     }
 
     #[test]
-    fn test_decode_oauth2_id_token_valid() {
-        let claims = r#"{"name":"Bob","email":"bob@test.com"}"#;
-        let token = make_jwt(claims);
-        let (name, email) = decode_oauth2_id_token(&token).unwrap();
-        assert_eq!(name, "Bob");
-        assert_eq!(email, "bob@test.com");
+    fn name_and_email_are_optional() {
+        let id = decode_id_token(&make_jwt(r#"{"aud":"app","sub":"u1"}"#)).unwrap();
+        assert_eq!(id, IdTokenIdentity { sub: "u1".into(), name: None, email: None });
     }
 
     #[test]
-    fn test_decode_oauth_id_token_invalid_base64() {
-        let token = "header.!!!invalid!!!.sig";
-        let result = decode_oauth_id_token(token);
-        assert!(result.is_err());
+    fn name_falls_back_to_preferred_username() {
+        let id = decode_id_token(&make_jwt(r#"{"aud":"app","sub":"u1","preferred_username":"jsmith"}"#)).unwrap();
+        assert_eq!(id.name.as_deref(), Some("jsmith"));
     }
 
     #[test]
-    fn test_decode_oauth_id_token_invalid_json() {
+    fn missing_or_empty_sub_is_an_error() {
+        assert!(decode_id_token(&make_jwt(r#"{"aud":"app","name":"No Sub"}"#)).is_err());
+        assert!(decode_id_token(&make_jwt(r#"{"aud":"app","sub":""}"#)).is_err());
+    }
+
+    #[test]
+    fn aud_may_be_an_array() {
+        let id = decode_id_token(&make_jwt(r#"{"aud":["app1","app2"],"sub":"u1"}"#)).unwrap();
+        assert_eq!(id.sub, "u1");
+    }
+
+    #[test]
+    fn malformed_tokens_are_errors() {
+        assert!(decode_id_token("no-dots").is_err());
+        assert!(decode_id_token("header.!!!invalid!!!.sig").is_err());
         let payload = BASE64_URL_SAFE_NO_PAD.encode("not json");
-        let token = format!("header.{}.sig", payload);
-        let result = decode_oauth_id_token(&token);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_decode_oauth_id_token_aud_as_array() {
-        let claims = r#"{"aud":["app1","app2"],"sub":"u1","name":"Test","email":"t@t.com","exp":9999999999}"#;
-        let token = make_jwt(claims);
-        let (name, email) = decode_oauth_id_token(&token).unwrap();
-        assert_eq!(name, "Test");
-        assert_eq!(email, "t@t.com");
-    }
-
-    #[test]
-    fn test_decode_oauth2_id_token_invalid_base64() {
-        let token = "h.@@@.s";
-        let result = decode_oauth2_id_token(token);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_decode_oauth2_id_token_invalid_json() {
-        let payload = BASE64_URL_SAFE_NO_PAD.encode("{bad}");
-        let token = format!("h.{}.s", payload);
-        let result = decode_oauth2_id_token(&token);
-        assert!(result.is_err());
+        assert!(decode_id_token(&format!("header.{}.sig", payload)).is_err());
     }
 }

@@ -51,9 +51,15 @@ pub enum Provider {
 pub struct Claims {
     #[serde(deserialize_with = "deserialize_aud")]
     aud: String,
+    #[serde(default)]
     sub: String,
-    name: String,
-    email: String,
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    preferred_username: Option<String>,
+    #[serde(default)]
+    email: Option<String>,
+    #[serde(default)]
     exp: u64,
 }
 
@@ -234,7 +240,7 @@ pub(crate) fn form_code(body: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::oauth_provider::decode_oauth_id_token;
+    use crate::oauth_provider::decode_id_token;
 
     #[test]
     fn test_get_provider_config_one_provider() {
@@ -302,9 +308,10 @@ mod tests {
     #[test]
     fn test_decode_id_token() {
         let id_token = "eyJhbGciOiJSUzI1NiIsImtpZCI6IjhiMjFkMTM0NjExZDQxNWJkMWU2MjUzOGE0ZGRjOTA4NmYxYTZiMjUifQ.eyJpc3MiOiJodHRwczovL2RleC1tb2NrLXNlcnZlci5OT05FL2RleCIsInN1YiI6IkNpUXdPR0U0TmpnMFlpMWtZamc0TFRSaU56TXRPVEJoT1MwelkyUXhOall4WmpVME5qWVNCV3h2WTJGcyIsImF1ZCI6InNjdGdkZXNrLWFwaS1zZXJ2ZXIiLCJleHAiOjE3MTU2NzEwODQsImlhdCI6MTcxNTU4NDY4NCwiYXRfaGFzaCI6IjVvZEdyU3VrMW9lejJkc1NaRXZFM0EiLCJjX2hhc2giOiJfdFZfZFNiU09qTVVmRVdMeVVNSTNnIiwiZW1haWwiOiJhZG1pbkBkZXNrLk5PTkUiLCJlbWFpbF92ZXJpZmllZCI6dHJ1ZSwibmFtZSI6ImFkbWluIn0.AqOiwBKq2i_AoJcbfxuaVY54PN3GJjnHIn3E2FWoZY2IOu8qxvZevcUb4mjnoUZGf2QaabIcTAIxIg-mpFTRxheOPiQ1c9VSZ0vd-wNGrAG12vdraRq0-evqmFduR2G9k20QMIV8iHiGM7l93k8Fw5_bnTQId044BjepayS98bpUclS4RIIGoOLBM5IenfBCqLhHHv6oYUM6HDU4rCD02U9_Bu597wedeLdYYa7lzBDyb88ab83-eALsDpbFZ90rUnvAhpTQcl9_t51Etx-sP1yWSQ3UZ-QL61cKreqWlMbimM43R4boUWnpQTMF7ZO0EftVixEfaIQvWDRm-TLl8A";
-        let (name, email) = decode_oauth_id_token(id_token).unwrap();
-        assert_eq!(name, "admin");
-        assert_eq!(email, "admin@desk.NONE");
+        let id = decode_id_token(id_token).unwrap();
+        assert_eq!(id.name.as_deref(), Some("admin"));
+        assert_eq!(id.email.as_deref(), Some("admin@desk.NONE"));
+        assert!(!id.sub.is_empty());
     }
 
     #[test]
@@ -405,8 +412,8 @@ mod tests {
         let json = r#"{"aud":"app","sub":"sub123","name":"Alice","email":"alice@example.com","exp":1234567890}"#;
         let claims: Claims = serde_json::from_str(json).unwrap();
         assert_eq!(claims.sub, "sub123");
-        assert_eq!(claims.name, "Alice");
-        assert_eq!(claims.email, "alice@example.com");
+        assert_eq!(claims.name.as_deref(), Some("Alice"));
+        assert_eq!(claims.email.as_deref(), Some("alice@example.com"));
         assert_eq!(claims.exp, 1234567890);
     }
 

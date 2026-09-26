@@ -163,10 +163,9 @@ impl OAuthProvider for GithubProvider {
 
             Ok(OAuthResponse {
                 access_token: body.access_token,
-                username: user_info.login,
-                email: user_info
-                    .email
-                    .unwrap_or("tobefilled@world.com".to_string()),
+                subject: user_info.id.to_string(),
+                name: Some(user_info.login),
+                email: user_info.email,
             })
         })
     }

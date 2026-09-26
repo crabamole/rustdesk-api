@@ -396,109 +396,167 @@ impl Database {
         None
     }
 
+    /// The account for an OIDC identity, created on first login. `sub` is the identity;
+    /// `name` and `email` are display data refreshed on every login. An account without a
+    /// subject (created before 0004, or by an admin) is adopted when exactly one has `email`.
     pub async fn get_user_for_oauth2(
         &self,
-        id: String,
-        email: String,
-        _uuid: String,
+        sub: &str,
+        name: &str,
+        email: Option<&str>,
     ) -> Option<(UserId, String, DatabaseUserInfo)> {
-        let status = { env::var("OAUTH2_CREATE_USER").unwrap_or("0".to_string()) == "1" };
-        let ab_guid = Uuid::new_v4().as_bytes().to_vec();
-        let user_guid = Uuid::new_v4().as_bytes().to_vec();
-        let name = format!("{}'s Personal Address Book", id);
-        let status_val: i16 = if status { 1 } else { 0 };
-
-        let res = sqlx::query(
-            "INSERT INTO \"user\"(guid, grp, team, status, role, name, email) \
-             VALUES ($1, \
-             (SELECT guid FROM grp WHERE name = 'Default'), \
-             (SELECT guid FROM team WHERE name = 'Default'), $2, 0, $3, $4) \
-             ON CONFLICT DO NOTHING",
-        )
-        .bind(&user_guid)
-        .bind(status_val)
-        .bind(&id)
-        .bind(&email)
-        .execute(&self.pool)
-        .await;
-        if res.is_err() {
-            log::error!(
-                "get_user_for_oauth2 error while creating user: {:?}",
-                res
-            );
+        if self.user_by_oidc_sub(sub).await.is_some() {
+            self.refresh_oidc_user(sub, name, email).await;
+        } else if !self.adopt_user_by_email(sub, name, email).await {
+            self.create_oidc_user(sub, name, email).await;
         }
-
-        let res2 = sqlx::query(
-            "INSERT INTO ab(guid, name, owner, personal, info) \
-             VALUES ($1, $2, $3, 1, '{}') \
-             ON CONFLICT DO NOTHING",
-        )
-        .bind(&ab_guid)
-        .bind(&name)
-        .bind(&user_guid)
-        .execute(&self.pool)
-        .await;
-        if res2.is_err() {
-            log::error!(
-                "get_user_for_oauth2 error while creating ab: {:?}",
-                res2
-            );
-        }
-
-        let res = sqlx::query(
-            "SELECT guid, status, role, name FROM \"user\" WHERE name = $1",
-        )
-        .bind(&id)
-        .fetch_one(&self.pool)
-        .await;
-
-        if res.is_err() {
-            log::error!(
-                "get_user_for_oauth2 error while creating/getting user: {:?}",
-                res.as_ref().err()
-            );
-            return None;
-        }
-        let res = res.unwrap();
-        let user_id: UserId = res.try_get::<Vec<u8>, _>("guid").unwrap();
-        let dbi = DatabaseUserInfo {
-            active: res.try_get::<i16, _>("status").unwrap_or(0) == 1,
-            admin: res.try_get::<i16, _>("role").unwrap_or(0) == 1,
-        };
-        Some((user_id, res.try_get::<String, _>("name").unwrap(), dbi))
+        self.user_by_oidc_sub(sub).await
     }
 
-    /// Promotes (active admin) or demotes `name`; `None` if no such user.
-    /// Promoting also hands over shared address books whose owner was deleted.
-    pub async fn set_admin(&self, name: &str, admin: bool) -> Option<()> {
-        let sql = if admin {
-            "UPDATE \"user\" SET role = 1, status = 1 WHERE name = $1"
-        } else {
-            "UPDATE \"user\" SET role = 0 WHERE name = $1"
+    async fn user_by_oidc_sub(&self, sub: &str) -> Option<(UserId, String, DatabaseUserInfo)> {
+        let row = sqlx::query("SELECT guid, status, role, name FROM \"user\" WHERE oidc_sub = $1")
+            .bind(sub)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|e| log::error!("get_user_for_oauth2 lookup error: {e:?}"))
+            .ok()??;
+        let dbi = DatabaseUserInfo {
+            active: row.try_get::<i16, _>("status").unwrap_or(0) == 1,
+            admin: row.try_get::<i16, _>("role").unwrap_or(0) == 1,
         };
-        let updated = sqlx::query(sql)
+        Some((row.try_get("guid").ok()?, row.try_get("name").ok()?, dbi))
+    }
+
+    async fn refresh_oidc_user(&self, sub: &str, name: &str, email: Option<&str>) {
+        let res = sqlx::query("UPDATE \"user\" SET name = $2, email = $3 WHERE oidc_sub = $1")
+            .bind(sub)
+            .bind(name)
+            .bind(email)
+            .execute(&self.pool)
+            .await;
+        if let Err(e) = res {
+            log::error!("get_user_for_oauth2 refresh error: {e:?}");
+        }
+    }
+
+    async fn adopt_user_by_email(&self, sub: &str, name: &str, email: Option<&str>) -> bool {
+        let Some(email) = email else { return false };
+        let candidates: Vec<Vec<u8>> =
+            match sqlx::query_scalar("SELECT guid FROM \"user\" WHERE oidc_sub IS NULL AND email = $1")
+                .bind(email)
+                .fetch_all(&self.pool)
+                .await
+            {
+                Ok(c) => c,
+                Err(e) => {
+                    log::error!("get_user_for_oauth2 adopt lookup error: {e:?}");
+                    return false;
+                }
+            };
+        let [guid] = candidates.as_slice() else { return false };
+        let res = sqlx::query("UPDATE \"user\" SET oidc_sub = $2, name = $3 WHERE guid = $1 AND oidc_sub IS NULL")
+            .bind(guid)
+            .bind(sub)
             .bind(name)
             .execute(&self.pool)
-            .await
-            .map_err(|e| log::error!("set_admin error: {e:?}"))
-            .ok()?
-            .rows_affected();
-        if updated == 0 {
-            return None;
+            .await;
+        matches!(res, Ok(r) if r.rows_affected() == 1)
+    }
+
+    async fn create_oidc_user(&self, sub: &str, name: &str, email: Option<&str>) {
+        let active: i16 = if env::var("OAUTH2_CREATE_USER").unwrap_or_default() == "1" { 1 } else { 0 };
+        let user_guid = Uuid::new_v4().as_bytes().to_vec();
+        let inserted = sqlx::query(
+            "INSERT INTO \"user\"(guid, grp, team, status, role, name, email, oidc_sub) \
+             VALUES ($1, \
+             (SELECT guid FROM grp WHERE name = 'Default'), \
+             (SELECT guid FROM team WHERE name = 'Default'), $2, 0, $3, $4, $5) \
+             ON CONFLICT (oidc_sub) DO NOTHING",
+        )
+        .bind(&user_guid)
+        .bind(active)
+        .bind(name)
+        .bind(email)
+        .bind(sub)
+        .execute(&self.pool)
+        .await;
+        match inserted {
+            Ok(r) if r.rows_affected() == 1 => {}
+            Ok(_) => return, // a concurrent first login created it
+            Err(e) => {
+                log::error!("get_user_for_oauth2 error while creating user: {e:?}");
+                return;
+            }
         }
+        // Clients label the personal book themselves; the name only has to be unique.
+        let ab_name = format!("personal:{}", Uuid::from_slice(&user_guid).map(|u| u.to_string()).unwrap_or_default());
+        let res = sqlx::query("INSERT INTO ab(guid, name, owner, personal, info) VALUES ($1, $2, $3, 1, '{}')")
+            .bind(Uuid::new_v4().as_bytes().to_vec())
+            .bind(ab_name)
+            .bind(&user_guid)
+            .execute(&self.pool)
+            .await;
+        if let Err(e) = res {
+            log::error!("get_user_for_oauth2 error while creating ab: {e:?}");
+        }
+    }
+
+    /// Finds the one user whose OIDC subject, email or name is `identifier`
+    /// (an exact subject match wins). Errors list the candidates when ambiguous.
+    pub async fn resolve_user(&self, identifier: &str) -> Result<(UserId, String), String> {
+        let rows = sqlx::query(
+            "SELECT guid, name, email, oidc_sub FROM \"user\" \
+             WHERE oidc_sub = $1 OR email = $1 OR name = $1",
+        )
+        .bind(identifier)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| format!("database error: {e}"))?;
+        let field = |r: &sqlx::postgres::PgRow, c: &str| r.try_get::<Option<String>, _>(c).ok().flatten().unwrap_or_default();
+        let pick = |r: &sqlx::postgres::PgRow| (r.try_get::<Vec<u8>, _>("guid").unwrap_or_default(), field(r, "name"));
+        if let Some(r) = rows.iter().find(|r| field(r, "oidc_sub") == identifier) {
+            return Ok(pick(r));
+        }
+        match rows.as_slice() {
+            [] => Err(format!("no user matches {identifier:?}; users are created on their first OIDC login")),
+            [r] => Ok(pick(r)),
+            many => Err(format!(
+                "{identifier:?} matches {} users; use the OIDC subject instead:\n{}",
+                many.len(),
+                many.iter()
+                    .map(|r| format!("  sub={} name={} email={}", field(r, "oidc_sub"), field(r, "name"), field(r, "email")))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            )),
+        }
+    }
+
+    /// Promotes (active admin) or demotes the user `identifier` resolves to (see
+    /// `resolve_user`) and returns its display name. Promoting also hands over shared
+    /// address books whose owner was deleted.
+    pub async fn set_admin(&self, identifier: &str, admin: bool) -> Result<String, String> {
+        let (guid, name) = self.resolve_user(identifier).await?;
+        let sql = if admin {
+            "UPDATE \"user\" SET role = 1, status = 1 WHERE guid = $1"
+        } else {
+            "UPDATE \"user\" SET role = 0 WHERE guid = $1"
+        };
+        sqlx::query(sql)
+            .bind(&guid)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| format!("database error: {e}"))?;
         if admin {
             // Shared address books left ownerless by migration 0002.
             sqlx::query(
-                "UPDATE ab SET owner = (SELECT guid FROM \"user\" WHERE name = $1) \
-                 WHERE personal = 0 AND owner NOT IN (SELECT guid FROM \"user\")",
+                "UPDATE ab SET owner = $1 WHERE personal = 0 AND owner NOT IN (SELECT guid FROM \"user\")",
             )
-            .bind(name)
+            .bind(&guid)
             .execute(&self.pool)
             .await
-            .map_err(|e| log::error!("set_admin error while adopting shared address books: {e:?}"))
-            .ok()?;
+            .map_err(|e| format!("database error while adopting shared address books: {e}"))?;
         }
-        Some(())
+        Ok(name)
     }
 
     pub async fn get_personal_address_book(&self, user_id: UserId) {
@@ -1760,7 +1818,7 @@ mod tests {
     /// A database with an OIDC user `admin` promoted to admin, as most tests expect.
     async fn test_db() -> Database {
         let db = bare_db().await;
-        db.get_user_for_oauth2("admin".to_string(), "admin@example.org".to_string(), "admin-uuid".to_string())
+        db.get_user_for_oauth2("admin", "admin", Some("admin@example.org"))
             .await
             .unwrap();
         db.set_admin("admin", true).await.unwrap();
@@ -1826,7 +1884,7 @@ mod tests {
                 .fetch_all(&first.pool)
                 .await
                 .unwrap();
-        assert_eq!(applied, vec![(1, true), (2, true), (3, true)]);
+        assert_eq!(applied, vec![(1, true), (2, true), (3, true), (4, true)]);
         first.pool.close().await;
 
         // Second start on the same database must not fail or duplicate rows.
@@ -1885,7 +1943,7 @@ mod tests {
     async fn oauth2_login_never_promotes() {
         let db = bare_db().await;
         let (_, _, info) = db
-            .get_user_for_oauth2("first".to_string(), "first@example.org".to_string(), "u1".to_string())
+            .get_user_for_oauth2("first", "first", Some("first@example.org"))
             .await
             .unwrap();
         assert!(!info.admin, "admins are promoted manually, never by logging in");
@@ -1895,10 +1953,10 @@ mod tests {
     async fn promote_makes_an_active_admin_and_adopts_ownerless_shared_books() {
         let db = bare_db().await;
         let (user_id, _, _) = db
-            .get_user_for_oauth2("first".to_string(), "first@example.org".to_string(), "u1".to_string())
+            .get_user_for_oauth2("first", "first", Some("first@example.org"))
             .await
             .unwrap();
-        assert!(db.set_admin("first", true).await.is_some());
+        assert_eq!(db.set_admin("first", true).await.unwrap(), "first");
         let (_, found) = db.find_user_by_name("first").await;
         let (_, _, info) = found.unwrap();
         assert!(info.admin && info.active);
@@ -1912,24 +1970,64 @@ mod tests {
     }
 
     db_test!(demote_removes_admin, |db| {
-        assert!(db.set_admin("admin", false).await.is_some());
+        assert!(db.set_admin("admin", false).await.is_ok());
         let (_, found) = db.find_user_by_name("admin").await;
         assert!(!found.unwrap().2.admin);
     });
 
     db_test!(set_admin_on_unknown_user_fails, |db| {
-        assert!(db.set_admin("nobody", true).await.is_none());
+        assert!(db.set_admin("nobody", true).await.is_err());
+    });
+
+    db_test!(same_display_name_different_people_get_different_accounts, |db| {
+        let (a, _, _) = db.get_user_for_oauth2("sub-a", "John Smith", Some("john.a@example.org")).await.unwrap();
+        let (b, _, _) = db.get_user_for_oauth2("sub-b", "John Smith", Some("john.b@example.org")).await.unwrap();
+        assert_ne!(a, b, "a second John Smith must not get the first one's account");
+        let books: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM ab WHERE personal = 1 AND owner IN ($1, $2)")
+            .bind(&a)
+            .bind(&b)
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+        assert_eq!(books, 2, "each gets a personal address book");
+    });
+
+    db_test!(same_subject_is_the_same_account_even_after_a_rename, |db| {
+        let (a, _, _) = db.get_user_for_oauth2("sub-x", "Old Name", Some("x@example.org")).await.unwrap();
+        let (b, name, _) = db.get_user_for_oauth2("sub-x", "New Name", Some("x@example.org")).await.unwrap();
+        assert_eq!(a, b);
+        assert_eq!(name, "New Name", "display name follows the IdP");
+    });
+
+    db_test!(users_without_email_do_not_collide, |db| {
+        let (a, _, _) = db.get_user_for_oauth2("sub-1", "One", None).await.unwrap();
+        let (b, _, _) = db.get_user_for_oauth2("sub-2", "Two", None).await.unwrap();
+        assert_ne!(a, b);
+    });
+
+    db_test!(an_account_without_subject_is_adopted_by_email, |db| {
+        db.add_user("pre".to_string(), "pre@example.org".to_string(), false, "Default".to_string()).await.unwrap();
+        let (_, found) = db.find_user_by_name("pre").await;
+        let (pre_id, _, _) = found.unwrap();
+        let (id, name, _) = db.get_user_for_oauth2("sub-pre", "Pre Provisioned", Some("pre@example.org")).await.unwrap();
+        assert_eq!(id, pre_id, "the pre-created account is linked, not duplicated");
+        assert_eq!(name, "Pre Provisioned");
+    });
+
+    db_test!(resolve_user_refuses_ambiguous_names, |db| {
+        db.get_user_for_oauth2("sub-a", "John Smith", Some("john.a@example.org")).await.unwrap();
+        db.get_user_for_oauth2("sub-b", "John Smith", Some("john.b@example.org")).await.unwrap();
+        let err = db.resolve_user("John Smith").await.unwrap_err();
+        assert!(err.contains("sub=sub-a") && err.contains("sub=sub-b"), "{err}");
+        assert_eq!(db.resolve_user("john.b@example.org").await.unwrap().1, "John Smith");
+        assert!(db.resolve_user("sub-a").await.is_ok());
     });
 
     db_test!(get_user_for_oauth2_creates_inactive_non_admin_user, |db| {
         // OAUTH2_CREATE_USER is unset, so the new user is inactive non-admin.
         assert!(std::env::var("OAUTH2_CREATE_USER").is_err());
         let result = db
-            .get_user_for_oauth2(
-                "oauth2-test-user".to_string(),
-                "oauth2-test@example.org".to_string(),
-                "oauth2-test-uuid".to_string(),
-            )
+            .get_user_for_oauth2("oauth2-test-user", "oauth2-test-user", Some("oauth2-test@example.org"))
             .await;
         assert!(result.is_some());
         let (_, name, info) = result.unwrap();

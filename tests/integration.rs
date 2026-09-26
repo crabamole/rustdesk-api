@@ -948,7 +948,7 @@ async fn create_and_login_user(client: &Client, admin_token: &str, name: &str) -
         .post("/api/user")
         .header(ContentType::JSON)
         .header(auth_header(admin_token))
-        .body(format!(r#"{{"name":"{name}","password":"Pass1234!","confirm-password":"Pass1234!","email":"{name}@test.com","is_admin":false,"group_name":"Default"}}"#))
+        .body(format!(r#"{{"name":"{name}","password":"Pass1234!","confirm-password":"Pass1234!","email":"{name}@example.org","is_admin":false,"group_name":"Default"}}"#))
         .dispatch()
         .await;
     assert_eq!(resp.status(), Status::Ok);
@@ -1019,7 +1019,7 @@ async fn test_non_admin_cannot_update_other_user() {
         .dispatch()
         .await;
     assert_eq!(resp.status(), Status::Unauthorized);
-    assert_eq!(find_user(&client, &admin, "victim").await.unwrap()["email"], "victim@test.com");
+    assert_eq!(find_user(&client, &admin, "victim").await.unwrap()["email"], "victim@example.org");
 }
 
 #[rocket::async_test]

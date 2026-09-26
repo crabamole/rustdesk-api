@@ -621,6 +621,7 @@ pub struct OidcState {
     pub redirect_url: Option<String>,
     pub callback_url: Option<String>,
     pub provider: Option<Arc<dyn OAuthProvider>>,
+    pub sub: Option<String>, // is the OIDC subject, the user's identity
     pub name: Option<String>,
     pub email: Option<String>,
     pub client_redirect_uri: Option<String>,
@@ -635,6 +636,7 @@ impl Default for OidcState {
             redirect_url: None,
             callback_url: None,
             provider: None,
+            sub: None,
             name: None,
             email: None,
             client_redirect_uri: None,

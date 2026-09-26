@@ -36,9 +36,10 @@ pub enum Command {
 
 #[derive(Subcommand, Debug)]
 pub enum AdminCommand {
-    /// Make a user an active admin. The user must have logged in through OIDC once.
+    /// Make a user an active admin. USER is an OIDC subject, email or name that matches
+    /// exactly one user; the user must have logged in through OIDC once.
     Promote { user: String },
-    /// Take admin rights away from a user
+    /// Take admin rights away from a user (USER as for promote)
     Demote { user: String },
 }
 
@@ -49,14 +50,11 @@ pub async fn run_admin(cmd: &AdminCommand, db_url: &str) -> Result<String, Strin
         AdminCommand::Demote { user } => (user, false),
     };
     let state = ApiState::new_with_db(db_url).await;
-    state
-        .set_admin(user, admin)
-        .await
-        .ok_or_else(|| format!("no user named {user:?}; users are created on their first OIDC login"))?;
+    let name = state.set_admin(user, admin).await?;
     Ok(if admin {
-        format!("{user} is now an admin")
+        format!("{name} is now an admin")
     } else {
-        format!("{user} is no longer an admin")
+        format!("{name} is no longer an admin")
     })
 }
 
@@ -114,6 +112,6 @@ mod tests {
         let err = run_admin(&AdminCommand::Promote { user: "nobody".to_string() }, &db_url)
             .await
             .unwrap_err();
-        assert!(err.contains("nobody"), "{err}");
+        assert!(err.contains("no user matches \"nobody\""), "{err}");
     }
 }

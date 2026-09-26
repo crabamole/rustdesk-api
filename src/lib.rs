@@ -1100,6 +1100,7 @@ async fn oidc_auth(
                 redirect_url: Some(redirect_url.clone()),
                 callback_url: Some(callback_url),
                 provider: Some(provider_trait_object),
+                sub: None,
                 name: None,
                 email: None,
                 client_redirect_uri: request.redirect_uri.clone(),
@@ -3286,7 +3287,7 @@ mod tests {
             .post("/api/user")
             .header(ContentType::JSON)
             .header(auth_header(admin_token))
-            .body(format!(r#"{{"name":"{name}","password":"pass","confirm-password":"pass","email":"{name}@example.com","is_admin":false,"group_name":"Default"}}"#))
+            .body(format!(r#"{{"name":"{name}","password":"pass","confirm-password":"pass","email":"{name}@example.org","is_admin":false,"group_name":"Default"}}"#))
             .dispatch()
             .await;
         assert_eq!(resp.status(), Status::Ok);

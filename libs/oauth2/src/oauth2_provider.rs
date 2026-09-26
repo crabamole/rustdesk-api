@@ -17,7 +17,7 @@ use std::{future::Future, pin::Pin};
 
 use crate::{
     errors::Oauth2Error,
-    oauth_provider::{decode_oauth2_id_token, OAuthProvider, OAuthProviderFactory, OAuthResponse},
+    oauth_provider::{decode_id_token, OAuthProvider, OAuthProviderFactory, OAuthResponse},
     exchange_err, response_text, Provider, ProviderConfig, TokenResponse,
 };
 use base64::prelude::{Engine as _, BASE64_STANDARD};
@@ -99,11 +99,12 @@ impl OAuthProvider for Oauth2Provider {
                 .map_err(|e| exchange_err("token response", e))?;
 
             if let Some(id_token) = body.id_token {
-                let (username, email) = decode_oauth2_id_token(&id_token)?;
+                let id = decode_id_token(&id_token)?;
                 Ok(OAuthResponse {
                     access_token: body.access_token,
-                    username,
-                    email,
+                    subject: id.sub,
+                    name: id.name,
+                    email: id.email,
                 })
             } else {
                 Err(exchange_err("token response", "no id_token"))
