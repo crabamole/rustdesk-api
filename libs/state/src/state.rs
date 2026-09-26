@@ -119,8 +119,8 @@ impl ApiState {
         }
     }
 
-    /// Simulates a successful OIDC login for `username` (creating it, and promoting
-    /// it when no admin exists) and issues a session. Test-only.
+    /// Simulates a successful OIDC login for `username` (creating it if needed)
+    /// and issues a session. Test-only.
     #[cfg(any(test, feature = "test-util"))]
     pub async fn test_oidc_login(&self, username: &String) -> Option<(utils::UserInfo, Token)> {
         let email = format!("{username}@example.org");
@@ -283,6 +283,12 @@ impl ApiState {
 
     pub async fn ui_get_all_users(&self) -> Option<Vec<types::UserInfo>> {
         self.db.ui_get_all_users().await
+    }
+
+    /// Promotes (`admin = true`) or demotes a user; `None` if no such user.
+    /// Backs the `rustdesk-api admin` CLI, the only way to make an admin.
+    pub async fn set_admin(&self, name: &str, admin: bool) -> Option<()> {
+        self.db.set_admin(name, admin).await
     }
 
     pub async fn ui_create_user(&self, username: String, admin: bool) -> Option<UserId> {
@@ -763,7 +769,7 @@ mod tests {
     use super::*;
     use crate::bearer::AuthenticatedUserInfo;
 
-    /// State whose first OIDC user, `admin`, is the admin.
+    /// State with an OIDC user `admin` promoted to admin.
     async fn test_state() -> ApiState {
         let state = ApiState::new_with_db(&crate::testing::fresh_database_url().await).await;
         state
@@ -771,6 +777,7 @@ mod tests {
             .get_user_for_oauth2("admin".to_string(), "admin@example.org".to_string(), "admin-uuid".to_string())
             .await
             .unwrap();
+        state.set_admin("admin", true).await.unwrap();
         state
     }
 
@@ -789,7 +796,7 @@ mod tests {
 
     #[tokio::test]
     async fn new_oidc_user_gets_no_session_until_activated() {
-        // An admin exists and OAUTH2_CREATE_USER is unset, so the new user is inactive.
+        // OAUTH2_CREATE_USER is unset, so the new user is inactive.
         let state = test_state().await;
         let result = state
             .test_oidc_login(&"nobody".to_string())

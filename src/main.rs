@@ -17,41 +17,35 @@ use rocket::{
     config::LogLevel,
     data::{Limits, ToByteUnit},
 };
+use rustdesk_api::cli::{run_admin, Cli, Command};
 use rustdesk_api::{build_rocket, database_url_from_env};
-use clap::{Arg, Command};
+use clap::Parser;
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use getrandom::getrandom;
 
+fn db_url_or_exit() -> String {
+    database_url_from_env().unwrap_or_else(|msg| {
+        eprintln!("{msg}");
+        std::process::exit(2);
+    })
+}
+
 #[rocket::main]
 async fn main() -> Result<(), rocket::Error> {
-    // Command line argument parsing
-    let matches = Command::new("rustdesk-api")
-        .version(env!("CARGO_PKG_VERSION"))
-        .about("Runs the RustDesk API server")
-        .arg(Arg::new("address")
-            .long("address")
-            .value_name("ADDRESS")
-            .help("Sets the address for the server")
-            .to_owned()
-            .default_value("127.0.0.1"))
-        .arg(Arg::new("port")
-            .long("port")
-            .value_name("PORT")
-            .help("Sets the port for the server")
-            .to_owned()
-            .default_value("21114"))
-        .arg(Arg::new("log_level")
-            .long("log_level")
-            .value_name("LOG_LEVEL")
-            .help("Sets the log level for the server")
-            .to_owned()
-            .default_value("debug"))
-        .get_matches();
-
-    // Get values from command line arguments
-    let address = matches.get_one::<String>("address").unwrap();
-    let port = (matches.get_one::<String>("port").unwrap()).parse::<u16>().unwrap();
-    let log_level = match (matches.get_one::<String>("log_level").unwrap() as &str).to_lowercase().as_str() {
+    let (address, port, log_level) = match Cli::parse().command {
+        Command::Serve { address, port, log_level } => (address, port, log_level),
+        Command::Admin(cmd) => match run_admin(&cmd, &db_url_or_exit()).await {
+            Ok(msg) => {
+                println!("{msg}");
+                return Ok(());
+            }
+            Err(msg) => {
+                eprintln!("{msg}");
+                std::process::exit(1);
+            }
+        },
+    };
+    let log_level = match log_level.to_lowercase().as_str() {
         "off" => LogLevel::Off,
         "critical" => LogLevel::Critical,
         "normal" => LogLevel::Normal,
@@ -84,13 +78,7 @@ async fn main() -> Result<(), rocket::Error> {
     }
 
     // Launch Rocket
-    let db_url = match database_url_from_env() {
-        Ok(url) => url,
-        Err(msg) => {
-            eprintln!("{msg}");
-            std::process::exit(2);
-        }
-    };
+    let db_url = db_url_or_exit();
     let _rocket = build_rocket(figment, &db_url).await.ignite().await?.launch().await?;
     
     // End of API Server start

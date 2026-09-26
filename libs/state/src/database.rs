@@ -445,33 +445,6 @@ impl Database {
             );
         }
 
-        // No password login exists, so the first OIDC user to log in bootstraps the admin.
-        let promoted = sqlx::query(
-            "UPDATE \"user\" SET role = 1, status = 1 WHERE name = $1 \
-             AND NOT EXISTS (SELECT 1 FROM \"user\" WHERE role = 1)",
-        )
-        .bind(&id)
-        .execute(&self.pool)
-        .await;
-        match promoted {
-            Ok(r) if r.rows_affected() > 0 => {
-                log::warn!("no admin existed; {id} is now admin");
-                // Shared address books left ownerless by migration 0002.
-                let adopted = sqlx::query(
-                    "UPDATE ab SET owner = (SELECT guid FROM \"user\" WHERE name = $1) \
-                     WHERE personal = 0 AND owner NOT IN (SELECT guid FROM \"user\")",
-                )
-                .bind(&id)
-                .execute(&self.pool)
-                .await;
-                if let Err(e) = adopted {
-                    log::error!("get_user_for_oauth2 error while adopting shared address books: {e:?}");
-                }
-            }
-            Ok(_) => {}
-            Err(e) => log::error!("get_user_for_oauth2 error while promoting first admin: {e:?}"),
-        }
-
         let res = sqlx::query(
             "SELECT guid, status, role, name FROM \"user\" WHERE name = $1",
         )
@@ -493,6 +466,39 @@ impl Database {
             admin: res.try_get::<i16, _>("role").unwrap_or(0) == 1,
         };
         Some((user_id, res.try_get::<String, _>("name").unwrap(), dbi))
+    }
+
+    /// Promotes (active admin) or demotes `name`; `None` if no such user.
+    /// Promoting also hands over shared address books whose owner was deleted.
+    pub async fn set_admin(&self, name: &str, admin: bool) -> Option<()> {
+        let sql = if admin {
+            "UPDATE \"user\" SET role = 1, status = 1 WHERE name = $1"
+        } else {
+            "UPDATE \"user\" SET role = 0 WHERE name = $1"
+        };
+        let updated = sqlx::query(sql)
+            .bind(name)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| log::error!("set_admin error: {e:?}"))
+            .ok()?
+            .rows_affected();
+        if updated == 0 {
+            return None;
+        }
+        if admin {
+            // Shared address books left ownerless by migration 0002.
+            sqlx::query(
+                "UPDATE ab SET owner = (SELECT guid FROM \"user\" WHERE name = $1) \
+                 WHERE personal = 0 AND owner NOT IN (SELECT guid FROM \"user\")",
+            )
+            .bind(name)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| log::error!("set_admin error while adopting shared address books: {e:?}"))
+            .ok()?;
+        }
+        Some(())
     }
 
     pub async fn get_personal_address_book(&self, user_id: UserId) {
@@ -1751,12 +1757,13 @@ mod tests {
             .unwrap()
     }
 
-    /// A database whose first OIDC user, `admin`, is the admin, as most tests expect.
+    /// A database with an OIDC user `admin` promoted to admin, as most tests expect.
     async fn test_db() -> Database {
         let db = bare_db().await;
         db.get_user_for_oauth2("admin".to_string(), "admin@example.org".to_string(), "admin-uuid".to_string())
             .await
             .unwrap();
+        db.set_admin("admin", true).await.unwrap();
         db
     }
 
@@ -1863,21 +1870,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn first_admin_adopts_the_ownerless_shared_address_book() {
-        let db = bare_db().await;
-        let (admin_id, _, _) = db
-            .get_user_for_oauth2("first".to_string(), "first@example.org".to_string(), "u1".to_string())
-            .await
-            .unwrap();
-        let owners: Vec<Vec<u8>> = sqlx::query_scalar("SELECT owner FROM ab WHERE personal = 0")
-            .fetch_all(&db.pool)
-            .await
-            .unwrap();
-        assert!(!owners.is_empty(), "the seeded shared address book is kept");
-        assert!(owners.iter().all(|o| *o == admin_id));
-    }
-
-    #[tokio::test]
     async fn migrations_drop_the_password_column() {
         let db = bare_db().await;
         let n: i64 = sqlx::query_scalar(
@@ -1890,34 +1882,47 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn first_oauth2_user_becomes_active_admin() {
+    async fn oauth2_login_never_promotes() {
         let db = bare_db().await;
-        let (_, _, first) = db
+        let (_, _, info) = db
             .get_user_for_oauth2("first".to_string(), "first@example.org".to_string(), "u1".to_string())
             .await
             .unwrap();
-        assert!(first.admin && first.active, "no admin yet, so the first login becomes admin");
-
-        let (_, _, second) = db
-            .get_user_for_oauth2("second".to_string(), "second@example.org".to_string(), "u2".to_string())
-            .await
-            .unwrap();
-        assert!(!second.admin, "an admin exists, so later logins are not promoted");
+        assert!(!info.admin, "admins are promoted manually, never by logging in");
     }
 
     #[tokio::test]
-    async fn existing_user_is_promoted_when_no_admin_exists() {
+    async fn promote_makes_an_active_admin_and_adopts_ownerless_shared_books() {
         let db = bare_db().await;
-        db.create_user("carol".to_string(), false).await.unwrap();
-        let (_, _, info) = db
-            .get_user_for_oauth2("carol".to_string(), "carol@example.org".to_string(), "u3".to_string())
+        let (user_id, _, _) = db
+            .get_user_for_oauth2("first".to_string(), "first@example.org".to_string(), "u1".to_string())
             .await
             .unwrap();
+        assert!(db.set_admin("first", true).await.is_some());
+        let (_, found) = db.find_user_by_name("first").await;
+        let (_, _, info) = found.unwrap();
         assert!(info.admin && info.active);
+
+        let owners: Vec<Vec<u8>> = sqlx::query_scalar("SELECT owner FROM ab WHERE personal = 0")
+            .fetch_all(&db.pool)
+            .await
+            .unwrap();
+        assert!(!owners.is_empty(), "the seeded shared address book is kept");
+        assert!(owners.iter().all(|o| *o == user_id));
     }
 
+    db_test!(demote_removes_admin, |db| {
+        assert!(db.set_admin("admin", false).await.is_some());
+        let (_, found) = db.find_user_by_name("admin").await;
+        assert!(!found.unwrap().2.admin);
+    });
+
+    db_test!(set_admin_on_unknown_user_fails, |db| {
+        assert!(db.set_admin("nobody", true).await.is_none());
+    });
+
     db_test!(get_user_for_oauth2_creates_inactive_non_admin_user, |db| {
-        // An admin exists and OAUTH2_CREATE_USER is unset, so the new user is inactive non-admin.
+        // OAUTH2_CREATE_USER is unset, so the new user is inactive non-admin.
         assert!(std::env::var("OAUTH2_CREATE_USER").is_err());
         let result = db
             .get_user_for_oauth2(

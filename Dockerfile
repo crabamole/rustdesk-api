@@ -25,4 +25,4 @@ ENV LLVM_PROFILE_FILE=/data/coverage/%p-%m.profraw
 
 EXPOSE 21114
 
-CMD ["./rustdesk-api", "--address", "0.0.0.0", "--port", "21114"]
+CMD ["./rustdesk-api", "serve", "--address", "0.0.0.0", "--port", "21114"]

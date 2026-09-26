@@ -15,6 +15,7 @@
 // along with SCTGDesk. If not, see <https://www.gnu.org/licenses/agpl-3.0.html>.
 mod api;
 mod extended_json;
+pub mod cli;
 
 use std::collections::HashMap;
 use std::env;
@@ -2447,7 +2448,7 @@ mod tests {
         Client::tracked(rocket).await.unwrap()
     }
 
-    /// Session for `name` as if it had logged in through OIDC; the first one becomes admin.
+    /// Session for `name` as if it had logged in through OIDC.
     async fn oidc_token(client: &Client, name: &str) -> String {
         let state = client.rocket().state::<ApiState>().unwrap();
         let (_, token) = state.test_oidc_login(&name.to_string()).await.unwrap();
@@ -2455,6 +2456,9 @@ mod tests {
     }
 
     async fn login_admin(client: &Client) -> String {
+        let state = client.rocket().state::<ApiState>().unwrap();
+        state.test_oidc_login(&"admin".to_string()).await;
+        state.set_admin("admin", true).await.unwrap();
         oidc_token(client, "admin").await
     }
 
