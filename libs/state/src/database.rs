@@ -126,6 +126,7 @@ impl Database {
         }
     }
 
+    #[cfg(any(test, feature = "test-util"))]
     pub async fn find_user_by_name(
         &self,
         username: &str,
@@ -158,6 +159,7 @@ impl Database {
         (conn, Some((user_id, email, dbi)))
     }
 
+    #[cfg(any(test, feature = "test-util"))]
     pub async fn get_user_hashed_password(
         &self,
         conn: DatabaseConnection,
@@ -515,19 +517,13 @@ impl Database {
         &self,
         id: String,
         email: String,
-        uuid: String,
+        _uuid: String,
     ) -> Option<(UserId, String, DatabaseUserInfo)> {
         let status = { env::var("OAUTH2_CREATE_USER").unwrap_or("0".to_string()) == "1" };
         let ab_guid = Uuid::new_v4().as_bytes().to_vec();
         let user_guid = Uuid::new_v4().as_bytes().to_vec();
         let random_password = Uuid::new_v4().to_string();
         let hashed_random_password = UserPasswordInfo::hash_password(random_password.as_str());
-        log::debug!(
-            "user: {:?}/{:?} has random_password: {:?}",
-            uuid,
-            id,
-            random_password
-        );
         let name = format!("{}'s Personal Address Book", id);
         let status_val: i16 = if status { 1 } else { 0 };
 
@@ -567,6 +563,33 @@ impl Database {
                 "get_user_for_oauth2 error while creating ab: {:?}",
                 res2
             );
+        }
+
+        // No password login exists, so the first OIDC user to log in bootstraps the admin.
+        let promoted = sqlx::query(
+            "UPDATE \"user\" SET role = 1, status = 1 WHERE name = $1 \
+             AND NOT EXISTS (SELECT 1 FROM \"user\" WHERE role = 1)",
+        )
+        .bind(&id)
+        .execute(&self.pool)
+        .await;
+        match promoted {
+            Ok(r) if r.rows_affected() > 0 => {
+                log::warn!("no admin existed; {id} is now admin");
+                // Shared address books left ownerless by migration 0002.
+                let adopted = sqlx::query(
+                    "UPDATE ab SET owner = (SELECT guid FROM \"user\" WHERE name = $1) \
+                     WHERE personal = 0 AND owner NOT IN (SELECT guid FROM \"user\")",
+                )
+                .bind(&id)
+                .execute(&self.pool)
+                .await;
+                if let Err(e) = adopted {
+                    log::error!("get_user_for_oauth2 error while adopting shared address books: {e:?}");
+                }
+            }
+            Ok(_) => {}
+            Err(e) => log::error!("get_user_for_oauth2 error while promoting first admin: {e:?}"),
         }
 
         let res = sqlx::query(
@@ -1859,10 +1882,22 @@ mod tests {
     use super::*;
     use utils::AbTag;
 
-    async fn test_db() -> Database {
+    async fn bare_db() -> Database {
         Database::new(&crate::testing::fresh_database_url().await)
             .await
             .unwrap()
+    }
+
+    /// A database whose first OIDC user, `admin`, is the admin, as most tests expect.
+    async fn test_db() -> Database {
+        let db = bare_db().await;
+        db.get_user_for_oauth2("admin".to_string(), "admin@example.org".to_string(), "admin-uuid".to_string())
+            .await
+            .unwrap();
+        db.reset_user_password("admin".to_string(), "Hello,world!".to_string())
+            .await
+            .unwrap();
+        db
     }
 
     macro_rules! db_test {
@@ -1908,7 +1943,11 @@ mod tests {
     async fn connect_with_retry_returns_once_database_is_reachable() {
         let url = crate::testing::fresh_database_url().await;
         let db = Database::connect_with_retry(&url).await;
-        assert!(db.find_user_by_name("admin").await.1.is_some());
+        let (groups,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM grp WHERE name = 'Default'")
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+        assert_eq!(groups, 1, "migrations ran");
     }
 
     #[tokio::test]
@@ -1920,16 +1959,16 @@ mod tests {
                 .fetch_all(&first.pool)
                 .await
                 .unwrap();
-        assert_eq!(applied, vec![(1, true)]);
+        assert_eq!(applied, vec![(1, true), (2, true)]);
         first.pool.close().await;
 
         // Second start on the same database must not fail or duplicate rows.
         let second = Database::new(&url).await.unwrap();
-        let (admins,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM \"user\" WHERE name = 'admin'")
+        let (groups,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM grp WHERE name = 'Default'")
             .fetch_one(&second.pool)
             .await
             .unwrap();
-        assert_eq!(admins, 1);
+        assert_eq!(groups, 1);
     }
 
     db_test!(find_default_admin_user, |db| {
@@ -1947,9 +1986,66 @@ mod tests {
         assert!(result.is_none());
     });
 
+    #[tokio::test]
+    async fn migrations_remove_the_seeded_admin() {
+        let db = bare_db().await;
+        assert!(db.find_user_by_name("admin").await.1.is_none());
+        let users: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM \"user\"")
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+        assert_eq!(users, 0);
+        let personal: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM ab WHERE personal = 1")
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+        assert_eq!(personal, 0, "the seeded admin's personal address book goes with it");
+    }
+
+    #[tokio::test]
+    async fn first_admin_adopts_the_ownerless_shared_address_book() {
+        let db = bare_db().await;
+        let (admin_id, _, _) = db
+            .get_user_for_oauth2("first".to_string(), "first@example.org".to_string(), "u1".to_string())
+            .await
+            .unwrap();
+        let owners: Vec<Vec<u8>> = sqlx::query_scalar("SELECT owner FROM ab WHERE personal = 0")
+            .fetch_all(&db.pool)
+            .await
+            .unwrap();
+        assert!(!owners.is_empty(), "the seeded shared address book is kept");
+        assert!(owners.iter().all(|o| *o == admin_id));
+    }
+
+    #[tokio::test]
+    async fn first_oauth2_user_becomes_active_admin() {
+        let db = bare_db().await;
+        let (_, _, first) = db
+            .get_user_for_oauth2("first".to_string(), "first@example.org".to_string(), "u1".to_string())
+            .await
+            .unwrap();
+        assert!(first.admin && first.active, "no admin yet, so the first login becomes admin");
+
+        let (_, _, second) = db
+            .get_user_for_oauth2("second".to_string(), "second@example.org".to_string(), "u2".to_string())
+            .await
+            .unwrap();
+        assert!(!second.admin, "an admin exists, so later logins are not promoted");
+    }
+
+    #[tokio::test]
+    async fn existing_user_is_promoted_when_no_admin_exists() {
+        let db = bare_db().await;
+        db.create_user("carol".to_string(), "unused".to_string(), false).await.unwrap();
+        let (_, _, info) = db
+            .get_user_for_oauth2("carol".to_string(), "carol@example.org".to_string(), "u3".to_string())
+            .await
+            .unwrap();
+        assert!(info.admin && info.active);
+    }
+
     db_test!(get_user_for_oauth2_creates_inactive_non_admin_user, |db| {
-        // OAUTH2_CREATE_USER is unset here, so the new user is created inactive (status=0);
-        // role is always hard-coded to 0 (non-admin) for oauth2-provisioned users.
+        // An admin exists and OAUTH2_CREATE_USER is unset, so the new user is inactive non-admin.
         assert!(std::env::var("OAUTH2_CREATE_USER").is_err());
         let result = db
             .get_user_for_oauth2(

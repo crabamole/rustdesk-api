@@ -12,16 +12,15 @@ async fn test_client() -> (Client, ()) {
     (Client::tracked(rocket).await.unwrap(), ())
 }
 
+/// Session for `name` as if it had logged in through OIDC; the first one becomes admin.
+async fn oidc_token(client: &Client, name: &str) -> String {
+    let state = client.rocket().state::<state::ApiState>().unwrap();
+    let (_, token) = state.test_oidc_login(&name.to_string()).await.unwrap();
+    token.to_base64()
+}
+
 async fn login_admin(client: &Client) -> String {
-    let resp = client
-        .post("/api/login")
-        .header(ContentType::JSON)
-        .body(r#"{"username":"admin","password":"Hello,world!","id":"test","uuid":"test"}"#)
-        .dispatch()
-        .await;
-    assert_eq!(resp.status(), Status::Ok);
-    let body: Value = resp.into_json().await.unwrap();
-    body["access_token"].as_str().unwrap().to_string()
+    oidc_token(client, "admin").await
 }
 
 fn auth_header(token: &str) -> Header<'static> {
@@ -29,19 +28,16 @@ fn auth_header(token: &str) -> Header<'static> {
 }
 
 #[rocket::async_test]
-async fn test_login_success() {
+async fn test_password_login_is_rejected_for_the_admin() {
     let (client, _dir) = test_client().await;
+    login_admin(&client).await;
     let resp = client
         .post("/api/login")
         .header(ContentType::JSON)
         .body(r#"{"username":"admin","password":"Hello,world!","id":"test","uuid":"test"}"#)
         .dispatch()
         .await;
-    assert_eq!(resp.status(), Status::Ok);
-    let body: Value = resp.into_json().await.unwrap();
-    assert_eq!(body["type"], "access_token");
-    assert!(body["access_token"].as_str().unwrap().len() > 0);
-    assert_eq!(body["user"]["name"], "admin");
+    assert_eq!(resp.status(), Status::Unauthorized);
 }
 
 #[rocket::async_test]
@@ -952,15 +948,7 @@ async fn create_and_login_user(client: &Client, admin_token: &str, name: &str) -
         .await;
     assert_eq!(resp.status(), Status::Ok);
     let user = find_user(client, admin_token, name).await.expect("created user not listed");
-    let resp = client
-        .post("/api/login")
-        .header(ContentType::JSON)
-        .body(format!(r#"{{"username":"{name}","password":"Pass1234!","id":"{name}","uuid":"{name}"}}"#))
-        .dispatch()
-        .await;
-    assert_eq!(resp.status(), Status::Ok);
-    let body: Value = resp.into_json().await.unwrap();
-    (body["access_token"].as_str().unwrap().to_string(), user["guid"].as_str().unwrap().to_string())
+    (oidc_token(client, name).await, user["guid"].as_str().unwrap().to_string())
 }
 
 async fn find_user(client: &Client, admin_token: &str, name: &str) -> Option<Value> {

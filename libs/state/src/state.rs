@@ -16,7 +16,7 @@
 use crate::database::DatabaseUserInfo;
 use crate::types;
 use crate::{
-    bearer::AuthenticatedUserInfo, database::Database, password::UserPasswordInfo, SessionId,
+    bearer::AuthenticatedUserInfo, database::Database, SessionId,
     UserId,
 };
 use std::{
@@ -119,13 +119,15 @@ impl ApiState {
         }
     }
 
-    pub async fn user_login<'s>(
-        &self,
-        username: &String,
-        password_info: UserPasswordInfo<'s>,
-        admin_only: bool,
-    ) -> Option<(utils::UserInfo, Token)> {
-        let (conn, user_id, email, db_user_info) =
+    /// Simulates a successful OIDC login for `username` (creating it, and promoting
+    /// it when no admin exists) and issues a session. Test-only.
+    #[cfg(any(test, feature = "test-util"))]
+    pub async fn test_oidc_login(&self, username: &String) -> Option<(utils::UserInfo, Token)> {
+        let email = format!("{username}@example.org");
+        self.db
+            .get_user_for_oauth2(username.clone(), email, String::new())
+            .await?;
+        let (_, user_id, email, db_user_info) =
             match self.db.find_user_by_name(username.as_str()).await {
                 (conn, Some((user_id, email, db_user_info))) => {
                     (conn, user_id, email, db_user_info)
@@ -135,27 +137,6 @@ impl ApiState {
         if !db_user_info.active {
             return None;
         }
-
-        if admin_only {
-            if !db_user_info.admin {
-                return None;
-            }
-        }
-
-        let (conn, db_password_info) = match self
-            .db
-            .get_user_hashed_password(conn, user_id.clone())
-            .await
-        {
-            (conn, Some(db_password_info)) => (conn, db_password_info),
-            _ => return None,
-        };
-
-        if !password_info.check(db_password_info) {
-            return None;
-        }
-
-        drop(conn);
 
         let access_token = self
             .get_access_token(user_id, username, db_user_info.admin)
@@ -807,16 +788,22 @@ mod tests {
     use super::*;
     use crate::bearer::AuthenticatedUserInfo;
 
+    /// State whose first OIDC user, `admin`, is the admin.
     async fn test_state() -> ApiState {
-        ApiState::new_with_db(&crate::testing::fresh_database_url().await).await
+        let state = ApiState::new_with_db(&crate::testing::fresh_database_url().await).await;
+        state
+            .db
+            .get_user_for_oauth2("admin".to_string(), "admin@example.org".to_string(), "admin-uuid".to_string())
+            .await
+            .unwrap();
+        state
     }
 
     #[tokio::test]
-    async fn login_admin_success() {
+    async fn test_oidc_login_issues_a_session_for_the_admin() {
         let state = test_state().await;
-        let pw = UserPasswordInfo::from_password("Hello,world!");
         let result = state
-            .user_login(&"admin".to_string(), pw, false)
+            .test_oidc_login(&"admin".to_string())
             .await;
         assert!(result.is_some());
         let (info, token) = result.unwrap();
@@ -826,41 +813,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn login_wrong_password() {
+    async fn new_oidc_user_gets_no_session_until_activated() {
+        // An admin exists and OAUTH2_CREATE_USER is unset, so the new user is inactive.
         let state = test_state().await;
-        let pw = UserPasswordInfo::from_password("wrong");
         let result = state
-            .user_login(&"admin".to_string(), pw, false)
-            .await;
-        assert!(result.is_none());
-    }
-
-    #[tokio::test]
-    async fn login_nonexistent_user() {
-        let state = test_state().await;
-        let pw = UserPasswordInfo::from_password("pass");
-        let result = state
-            .user_login(&"nobody".to_string(), pw, false)
-            .await;
-        assert!(result.is_none());
-    }
-
-    #[tokio::test]
-    async fn login_admin_only_rejects_non_admin() {
-        let state = test_state().await;
-        state
-            .add_user(AddUserRequest {
-                name: "regular".to_string(),
-                password: "pass".to_string(),
-                confirm_password: "pass".to_string(),
-                email: "reg@e.com".to_string(),
-                is_admin: false,
-                group_name: "Default".to_string(),
-            })
-            .await;
-        let pw = UserPasswordInfo::from_password("pass");
-        let result = state
-            .user_login(&"regular".to_string(), pw, true)
+            .test_oidc_login(&"nobody".to_string())
             .await;
         assert!(result.is_none());
     }
@@ -883,9 +840,8 @@ mod tests {
         let guid = uuid::Uuid::from_slice(&user_id).unwrap().to_string();
         state.user_change_status(&guid, true).await;
 
-        let pw = UserPasswordInfo::from_password("pass");
         let result = state
-            .user_login(&"inactive".to_string(), pw, false)
+            .test_oidc_login(&"inactive".to_string())
             .await;
         assert!(result.is_none());
     }
@@ -893,9 +849,8 @@ mod tests {
     #[tokio::test]
     async fn find_session_after_login() {
         let state = test_state().await;
-        let pw = UserPasswordInfo::from_password("Hello,world!");
         let (_, token) = state
-            .user_login(&"admin".to_string(), pw, false)
+            .test_oidc_login(&"admin".to_string())
             .await
             .unwrap();
         let session = state.find_session(&token).await;
@@ -913,9 +868,8 @@ mod tests {
     #[tokio::test]
     async fn get_current_user_name() {
         let state = test_state().await;
-        let pw = UserPasswordInfo::from_password("Hello,world!");
         let (_, token) = state
-            .user_login(&"admin".to_string(), pw, false)
+            .test_oidc_login(&"admin".to_string())
             .await
             .unwrap();
         let session = state.find_session(&token).await.unwrap();
@@ -931,9 +885,8 @@ mod tests {
     #[tokio::test]
     async fn is_current_user_admin() {
         let state = test_state().await;
-        let pw = UserPasswordInfo::from_password("Hello,world!");
         let (_, token) = state
-            .user_login(&"admin".to_string(), pw, false)
+            .test_oidc_login(&"admin".to_string())
             .await
             .unwrap();
         let session = state.find_session(&token).await.unwrap();
@@ -948,9 +901,8 @@ mod tests {
     #[tokio::test]
     async fn logout_removes_session() {
         let state = test_state().await;
-        let pw = UserPasswordInfo::from_password("Hello,world!");
         let (_, token) = state
-            .user_login(&"admin".to_string(), pw, false)
+            .test_oidc_login(&"admin".to_string())
             .await
             .unwrap();
         let session = state.find_session(&token).await.unwrap();
@@ -967,14 +919,12 @@ mod tests {
     #[tokio::test]
     async fn multiple_logins_then_logout() {
         let state = test_state().await;
-        let pw1 = UserPasswordInfo::from_password("Hello,world!");
         let (_, token1) = state
-            .user_login(&"admin".to_string(), pw1, false)
+            .test_oidc_login(&"admin".to_string())
             .await
             .unwrap();
-        let pw2 = UserPasswordInfo::from_password("Hello,world!");
         let (_, token2) = state
-            .user_login(&"admin".to_string(), pw2, false)
+            .test_oidc_login(&"admin".to_string())
             .await
             .unwrap();
 
@@ -1191,10 +1141,14 @@ mod tests {
     #[tokio::test]
     async fn update_and_reset_password() {
         let state = test_state().await;
+        assert!(state
+            .ui_reset_user_password("admin".to_string(), "known".to_string())
+            .await
+            .is_some());
         let result = state
             .ui_update_user_password(
                 "admin".to_string(),
-                "Hello,world!".to_string(),
+                "known".to_string(),
                 "new123".to_string(),
             )
             .await;
@@ -1229,9 +1183,8 @@ mod tests {
     #[tokio::test]
     async fn shared_address_book_lifecycle() {
         let state = test_state().await;
-        let pw = UserPasswordInfo::from_password("Hello,world!");
         let (_, token) = state
-            .user_login(&"admin".to_string(), pw, false)
+            .test_oidc_login(&"admin".to_string())
             .await
             .unwrap();
         let session = state.find_session(&token).await.unwrap();
@@ -1260,9 +1213,8 @@ mod tests {
     #[tokio::test]
     async fn delete_shared_address_books_batch() {
         let state = test_state().await;
-        let pw = UserPasswordInfo::from_password("Hello,world!");
         let (_, token) = state
-            .user_login(&"admin".to_string(), pw, false)
+            .test_oidc_login(&"admin".to_string())
             .await
             .unwrap();
         let session = state.find_session(&token).await.unwrap();
@@ -1288,9 +1240,8 @@ mod tests {
     #[tokio::test]
     async fn ab_personal_guid() {
         let state = test_state().await;
-        let pw = UserPasswordInfo::from_password("Hello,world!");
         let (_, token) = state
-            .user_login(&"admin".to_string(), pw, false)
+            .test_oidc_login(&"admin".to_string())
             .await
             .unwrap();
         let session = state.find_session(&token).await.unwrap();
@@ -1303,9 +1254,8 @@ mod tests {
     #[tokio::test]
     async fn ab_tags_lifecycle() {
         let state = test_state().await;
-        let pw = UserPasswordInfo::from_password("Hello,world!");
         let (_, token) = state
-            .user_login(&"admin".to_string(), pw, false)
+            .test_oidc_login(&"admin".to_string())
             .await
             .unwrap();
         let session = state.find_session(&token).await.unwrap();
@@ -1337,9 +1287,8 @@ mod tests {
     #[tokio::test]
     async fn ab_peers_lifecycle() {
         let state = test_state().await;
-        let pw = UserPasswordInfo::from_password("Hello,world!");
         let (_, token) = state
-            .user_login(&"admin".to_string(), pw, false)
+            .test_oidc_login(&"admin".to_string())
             .await
             .unwrap();
         let session = state.find_session(&token).await.unwrap();
@@ -1376,9 +1325,8 @@ mod tests {
     #[tokio::test]
     async fn ab_rules_lifecycle() {
         let state = test_state().await;
-        let pw = UserPasswordInfo::from_password("Hello,world!");
         let (_, token) = state
-            .user_login(&"admin".to_string(), pw, false)
+            .test_oidc_login(&"admin".to_string())
             .await
             .unwrap();
         let session = state.find_session(&token).await.unwrap();

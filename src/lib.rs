@@ -230,48 +230,19 @@ pub async fn build_rocket_with_db(figment: Figment, db_path: &str) -> Rocket<Bui
     rocket
 }
 
-/// # User Login
+/// # User Login (disabled)
 ///
-/// This function is an API endpoint that allows a user to log in without oauth.
-/// It is tagged with "login" for OpenAPI documentation. <br>
-///
-/// ## Parameters
-///
-/// - `request`: The request data, which includes the user's username and password.  <br>
-///
-/// ## Returns
-///
-/// If successful, this function returns a `Json<LoginReply>` object, which includes the user's information and access token.  <br>
-/// If the user is not authorized, this function returns a `status::Unauthorized` error.  <br>
-///
-/// ## Errors
-///
-/// This function will return an error if the user is not authorized or if the system is in maintenance mode.
+/// Password login is disabled; this endpoint always returns 401 Unauthorized.
+/// Log in through OIDC (`/api/oidc/auth`) instead. The route stays so that
+/// clients which still show a password form get a clear rejection.
 #[openapi(tag = "login")]
 #[post("/api/login", format = "application/json", data = "<request>")]
 async fn login(
-    state: &State<ApiState>,
     request: Json<LoginRequest>,
 ) -> Result<Json<LoginReply>, status::Unauthorized<()>> {
-    let status_forbidden = || status::Unauthorized::<()>(());
-
-    let user_password_info = UserPasswordInfo::from_password(request.password.as_str());
-    let (user, access_token) = state
-        .user_login(&request.username, user_password_info, false)
-        .await
-        .ok_or_else(status_forbidden)?;
-
-    let reply = LoginReply {
-        response_type: "access_token".to_string(),
-        user: user,
-        access_token,
-    };
-
-    log::debug!("login: {:?}", request);
-
-    state.check_maintenance().await;
-
-    Ok(Json(reply))
+    // Password login is disabled: only OIDC issues sessions.
+    log::info!("rejected password login for {:?}", request.username);
+    Err(status::Unauthorized::<()>(()))
 }
 
 /// # Get the User's Legacy Address Book
@@ -2483,16 +2454,15 @@ mod tests {
         Client::tracked(rocket).await.unwrap()
     }
 
+    /// Session for `name` as if it had logged in through OIDC; the first one becomes admin.
+    async fn oidc_token(client: &Client, name: &str) -> String {
+        let state = client.rocket().state::<ApiState>().unwrap();
+        let (_, token) = state.test_oidc_login(&name.to_string()).await.unwrap();
+        token.to_base64()
+    }
+
     async fn login_admin(client: &Client) -> String {
-        let resp = client
-            .post("/api/login")
-            .header(ContentType::JSON)
-            .body(r#"{"username":"admin","password":"Hello,world!","id":"test","uuid":"test-uuid"}"#)
-            .dispatch()
-            .await;
-        assert_eq!(resp.status(), Status::Ok);
-        let body: serde_json::Value = resp.into_json().await.unwrap();
-        body["access_token"].as_str().unwrap().to_string()
+        oidc_token(client, "admin").await
     }
 
     fn auth_header(token: &str) -> Header<'static> {
@@ -2500,19 +2470,16 @@ mod tests {
     }
 
     #[rocket::async_test]
-    async fn test_login_success() {
+    async fn test_password_login_is_rejected_for_the_admin() {
         let client = test_client().await;
+        login_admin(&client).await;
         let resp = client
             .post("/api/login")
             .header(ContentType::JSON)
             .body(r#"{"username":"admin","password":"Hello,world!","id":"test","uuid":"test-uuid"}"#)
             .dispatch()
             .await;
-        assert_eq!(resp.status(), Status::Ok);
-        let body: serde_json::Value = resp.into_json().await.unwrap();
-        assert_eq!(body["type"], "access_token");
-        assert!(body["access_token"].as_str().is_some());
-        assert_eq!(body["user"]["name"], "admin");
+        assert_eq!(resp.status(), Status::Unauthorized);
     }
 
     #[rocket::async_test]
@@ -2889,7 +2856,7 @@ mod tests {
     }
 
     #[rocket::async_test]
-    async fn test_user_add_and_login() {
+    async fn test_user_add_cannot_log_in_with_password() {
         let client = test_client().await;
         let token = login_admin(&client).await;
 
@@ -2908,7 +2875,7 @@ mod tests {
             .body(r#"{"username":"testuser","password":"testpass","id":"test","uuid":"test-uuid"}"#)
             .dispatch()
             .await;
-        assert_eq!(login_resp.status(), Status::Ok);
+        assert_eq!(login_resp.status(), Status::Unauthorized, "password login is disabled");
     }
 
     #[rocket::async_test]
@@ -3326,15 +3293,7 @@ mod tests {
             .dispatch()
             .await;
         assert_eq!(resp.status(), Status::Ok);
-        let resp = client
-            .post("/api/login")
-            .header(ContentType::JSON)
-            .body(format!(r#"{{"username":"{name}","password":"pass","id":"{name}","uuid":"{name}-uuid"}}"#))
-            .dispatch()
-            .await;
-        assert_eq!(resp.status(), Status::Ok);
-        let body: serde_json::Value = resp.into_json().await.unwrap();
-        let token = body["access_token"].as_str().unwrap().to_string();
+        let token = oidc_token(client, name).await;
         let resp = client
             .get("/api/user-list?current=1&pageSize=100")
             .header(ContentType::JSON)
