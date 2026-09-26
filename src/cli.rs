@@ -1,5 +1,5 @@
 //! Command line: `serve` runs the HTTP API; `admin` manages admins directly in the
-//! database, so only someone with access to the host or pod can use it.
+//! database, so only someone with access to the host or pod can use it; `openapi` prints the API spec.
 use clap::{Parser, Subcommand};
 use state::ApiState;
 
@@ -35,6 +35,8 @@ pub enum Command {
     /// Check the OIDC provider file
     #[command(subcommand)]
     Oidc(OidcCommand),
+    /// Print the OpenAPI spec of the HTTP API as JSON
+    Openapi,
 }
 
 #[derive(Subcommand, Debug)]
@@ -68,6 +70,11 @@ pub async fn run_oidc_check(file: &str) -> Result<String, String> {
     }
     let out = lines.join("\n");
     if ok { Ok(out) } else { Err(out) }
+}
+
+/// Runs `openapi`: the spec of the HTTP API, as pretty-printed JSON.
+pub fn run_openapi() -> Result<String, String> {
+    serde_json::to_string_pretty(&crate::api_routes().1).map_err(|e| e.to_string())
 }
 
 #[derive(Subcommand, Debug)]
@@ -151,6 +158,14 @@ op = "corp"
     async fn oidc_check_reports_unreachable_token_endpoints() {
         let err = run_oidc_check(&temp_file(PROVIDER)).await.unwrap_err();
         assert!(err.contains("configuration OK") && err.contains("corp: token endpoint unreachable"), "{err}");
+    }
+
+    #[test]
+    fn openapi_prints_the_spec() {
+        let cli = Cli::try_parse_from(["rustdesk-api", "openapi"]).unwrap();
+        assert!(matches!(cli.command, Command::Openapi));
+        let spec: serde_json::Value = serde_json::from_str(&run_openapi().unwrap()).unwrap();
+        assert!(spec["paths"]["/api/login"].is_object());
     }
 
     #[test]

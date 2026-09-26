@@ -64,7 +64,7 @@ use rocket::{
 };
 pub use state::ApiState;
 use utils::{
-    include_png_as_base64, unwrap_or_return, uuid_into_guid, AbTagRenameRequest, AddUserRequest,
+    unwrap_or_return, uuid_into_guid, AbTagRenameRequest, AddUserRequest,
     AddressBook, EnableUserRequest, DeleteUserRequest, GroupsResponse, OidcSettingsResponse, PeersResponse,
     SoftwareVersionResponse, UpdateUserRequest, UserList,
 };
@@ -76,7 +76,7 @@ use utils::{
 type AuthenticatedUser = state::AuthenticatedUser<BearerAuthToken>;
 type AuthenticatedAdmin = state::AuthenticatedAdmin<BearerAuthToken>;
 
-use rocket_okapi::{openapi, openapi_get_routes, rapidoc::*, settings::UrlObject};
+use rocket_okapi::{openapi, openapi_get_routes_spec};
 use uuid::Uuid;
 
 use include_dir::{include_dir, Dir};
@@ -118,6 +118,71 @@ pub fn database_url_from_env() -> Result<String, String> {
         .ok_or_else(|| "DATABASE_URL is required (postgres://user:pass@host:5432/db)".to_string())
 }
 
+/// The API routes and their OpenAPI spec. The spec is not served; `rustdesk-api openapi`
+/// prints it, e.g. for the web console client codegen.
+pub fn api_routes() -> (Vec<rocket::Route>, rocket_okapi::okapi::openapi3::OpenApi) {
+    openapi_get_routes_spec![
+        options,
+        login,
+        login_options,
+        ab_get,
+        ab_post,
+        ab,
+        current_user,
+        audit,
+        audit_conn,
+        audit_conn_active,
+        audit_file,
+        audit_alarm,
+        logout,
+        heartbeat,
+        sysinfo,
+        groups,
+        group_get,
+        group_add,
+        group_delete,
+        group_update,
+        users,
+        users_client,
+        user_add,
+        user_delete,
+        user_enable,
+        user_update,
+        peers,
+        peers_count,
+        peers_cpus,
+        strategies,
+        oidc_auth,
+        oidc_state,
+        oidc_add,
+        oidc_get,
+        ab_peer_add,
+        ab_peer_update,
+        ab_peer_delete,
+        ab_peers,
+        ab_personal,
+        ab_tags,
+        ab_tag_add,
+        ab_tag_update,
+        ab_tag_rename,
+        ab_tag_delete,
+        ab_shared,
+        ab_shared_add,
+        ab_shared_delete,
+        ab_shared_name,
+        ab_settings,
+        ab_rules,
+        ab_rule_add,
+        ab_rule_delete,
+        software_version,
+        software_download,
+        software_releases_tag,
+        webconsole_index,
+        webconsole_index_html,
+        // webconsole_assets,
+    ]
+}
+
 pub async fn build_rocket(figment: Figment, db_url: &str) -> Rocket<Build> {
     build_rocket_with_db(figment, db_url).await
 }
@@ -127,100 +192,12 @@ pub async fn build_rocket_with_db(figment: Figment, db_path: &str) -> Rocket<Bui
 
     let rocket = rocket::custom(figment)
         .attach(CORS)
-        .mount(
-            "/",
-            openapi_get_routes![
-                options,
-                login,
-                login_options,
-                ab_get,
-                ab_post,
-                ab,
-                current_user,
-                audit,
-                audit_conn,
-                audit_conn_active,
-                audit_file,
-                audit_alarm,
-                logout,
-                heartbeat,
-                sysinfo,
-                groups,
-                group_get,
-                group_add,
-                group_delete,
-                group_update,
-                users,
-                users_client,
-                user_add,
-                user_delete,
-                user_enable,
-                user_update,
-                peers,
-                peers_count,
-                peers_cpus,
-                strategies,
-                oidc_auth,
-                oidc_state,
-                oidc_add,
-                oidc_get,
-                ab_peer_add,
-                ab_peer_update,
-                ab_peer_delete,
-                ab_peers,
-                ab_personal,
-                ab_tags,
-                ab_tag_add,
-                ab_tag_update,
-                ab_tag_rename,
-                ab_tag_delete,
-                ab_shared,
-                ab_shared_add,
-                ab_shared_delete,
-                ab_shared_name,
-                ab_settings,
-                ab_rules,
-                ab_rule_add,
-                ab_rule_delete,
-                software_version,
-                software_download,
-                software_releases_tag,
-                webconsole_index,
-                webconsole_index_html,
-                // webconsole_assets,
-            ],
-        )
+        .mount("/", api_routes().0)
         .mount("/",routes![
             favicon,
             webconsole_vue,
-            openapi_snippet,
-            openapi_snippet_map,
             oidc_callback,
         ])
-        .mount(
-            "/api/doc/",
-            make_rapidoc(&RapiDocConfig {
-                title: Some("RustDesk API Doc".to_owned()),
-                custom_html: Some(include_str!("../rapidoc/index.html").to_owned()),
-                slots: SlotsConfig{
-                    logo: Some(include_png_as_base64!("../assets/logo.png")),
-                    footer: Some(r#"© 2024 <a style="color: #ffffff; text-decoration: none;" href='https://sctg.eu.org/'>SCTG</a>. All rights reserved. <a style="color: #ffffff; text-decoration: none;" href="https://github.com/sctg-development/sctgdesk-server">sctgdesk-server <svg style="height:1.25em" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 496 512"><path d="M165.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3 .3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6zm-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5 .3-6.2 2.3zm44.2-1.7c-2.9 .7-4.9 2.6-4.6 4.9 .3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9zM244.8 8C106.1 8 0 113.3 0 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C428.2 457.8 496 362.9 496 252 496 113.3 383.5 8 244.8 8zM97.2 352.9c-1.3 1-1 3.3 .7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1zm-10.8-8.1c-.7 1.3 .3 2.9 2.3 3.9 1.6 1 3.6 .7 4.3-.7 .7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3 .7zm32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3 .7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1zm-11.4-14.7c-1.6 1-1.6 3.6 0 5.9 1.6 2.3 4.3 3.3 5.6 2.3 1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2z"/></svg></a>"#.to_owned()),
-                    ..Default::default()
-                },
-                general: GeneralConfig {
-                    spec_urls: vec![UrlObject::new("General", "../../openapi.json")],
-                    ..Default::default()
-                },
-                hide_show: HideShowConfig {
-                    allow_spec_url_load: false,
-                    allow_spec_file_load: false,
-                    allow_spec_file_download: true,
-                    show_curl_before_try: true,
-                    ..Default::default()
-                },
-                ..Default::default()
-            }),
-        )
         .manage(state);
 
     #[cfg(feature = "ui")]
@@ -2341,24 +2318,6 @@ impl<'r> Responder<'r, 'r> for StaticFileResponse {
     }
 }
 
-#[get("/js/sctgdesk-server.min.js")]
-async fn openapi_snippet() -> Option<StaticFileResponse> {
-    let content = include_str!("../rapidoc/dist/sctgdesk-server.min.js");
-    Some(StaticFileResponse(
-        content.as_bytes().to_vec(),
-        ContentType::JavaScript,
-    ))
-}
-
-#[get("/js/sctgdesk-server.min.js.map")]
-async fn openapi_snippet_map() -> Option<StaticFileResponse> {
-    let content = include_str!("../rapidoc/dist/sctgdesk-server.min.js.map");
-    Some(StaticFileResponse(
-        content.as_bytes().to_vec(),
-        ContentType::JavaScript,
-    ))
-}
-
 #[get("/favicon.ico")]
 async fn favicon() -> Redirect {
     Redirect::to(uri!("/ui/favicon.ico"))
@@ -3704,10 +3663,12 @@ mod tests {
     }
 
     #[rocket::async_test]
-    async fn test_openapi_json() {
+    async fn test_openapi_not_served() {
         let client = test_client().await;
-        let resp = client.get("/openapi.json").dispatch().await;
-        assert_eq!(resp.status(), Status::Ok);
+        for path in ["/openapi.json", "/api/doc/index.html"] {
+            let resp = client.get(path).dispatch().await;
+            assert_eq!(resp.status(), Status::NotFound, "{path}");
+        }
     }
 
     #[rocket::async_test]
@@ -3716,19 +3677,5 @@ mod tests {
         let resp = client.get("/ui/index.html").dispatch().await;
         // Returns the static file or fallback
         assert!(resp.status() == Status::Ok || resp.status() == Status::NotFound);
-    }
-
-    #[rocket::async_test]
-    async fn test_openapi_snippet_js() {
-        let client = test_client().await;
-        let resp = client.get("/js/sctgdesk-server.min.js").dispatch().await;
-        assert_eq!(resp.status(), Status::Ok);
-    }
-
-    #[rocket::async_test]
-    async fn test_openapi_snippet_map() {
-        let client = test_client().await;
-        let resp = client.get("/js/sctgdesk-server.min.js.map").dispatch().await;
-        assert_eq!(resp.status(), Status::Ok);
     }
 }

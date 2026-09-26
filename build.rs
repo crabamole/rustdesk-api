@@ -57,32 +57,6 @@ fn main() {
         str::from_utf8(&output.stderr).unwrap_or("")
     );
 
-    // Install npm dependencies for rapidoc
-        let output = Command::new(command)
-        .current_dir("rapidoc")
-        .args(install_args)
-        .output()
-        .expect("Failed to execute command");
-    assert!(
-        output.status.success(),
-        "Failed to install npm dependencies: {}{}",
-        str::from_utf8(&output.stdout).unwrap_or(""),
-        str::from_utf8(&output.stderr).unwrap_or("")
-    );
-
-    // Build rapidoc
-    let output = Command::new(command)
-        .current_dir("rapidoc")
-        .args(build_args)
-        .output()
-        .expect("Failed to execute command");
-    assert!(
-        output.status.success(),
-        "Failed to build rapidoc: {}{}",
-        str::from_utf8(&output.stdout).unwrap_or(""),
-        str::from_utf8(&output.stderr).unwrap_or("")
-    );
-
 }
 
 /// Keep the webconsole version in sync with Cargo.toml, the single source of

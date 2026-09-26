@@ -933,13 +933,13 @@ async fn test_oidc_state_invalid_session() {
     assert!(body.is_null());
 }
 
-#[rocket::async_test]
-async fn test_openapi_json() {
-    let (client, _dir) = test_client().await;
-    let resp = client.get("/openapi.json").dispatch().await;
-    assert_eq!(resp.status(), Status::Ok);
-    let body: Value = resp.into_json().await.unwrap();
+#[test]
+fn test_openapi_spec() {
+    let (routes, spec) = rustdesk_api::api_routes();
+    let body = serde_json::to_value(&spec).unwrap();
     assert!(body["openapi"].as_str().is_some());
+    assert!(body["paths"]["/api/login"].is_object());
+    assert!(!routes.iter().any(|r| r.uri.path() == "/openapi.json"));
 }
 
 /// Create a non-admin user as admin, log in as it, and return (token, guid).

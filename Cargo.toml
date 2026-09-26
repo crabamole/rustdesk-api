@@ -25,7 +25,7 @@ sqlx = { version = "0.8", features = [
     "json",
 ] }
 reqwest = { version = "0.12", default-features = false, features = ["json","rustls-tls-native-roots"] }
-rocket_okapi = { version = "0.8", features = [ "rapidoc", "swagger" ]}
+rocket_okapi = { version = "0.8", features = [ "swagger" ]}
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 state = { path = "libs/state" }
