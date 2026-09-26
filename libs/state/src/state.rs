@@ -285,32 +285,8 @@ impl ApiState {
         self.db.ui_get_all_users().await
     }
 
-    pub async fn ui_update_user_password(
-        &self,
-        username: String,
-        old_password: String,
-        new_password: String,
-    ) -> Option<()> {
-        self.db
-            .update_user_password(username, old_password, new_password)
-            .await
-    }
-
-    pub async fn ui_reset_user_password(
-        &self,
-        username: String,
-        new_password: String,
-    ) -> Option<()> {
-        self.db.reset_user_password(username, new_password).await
-    }
-
-    pub async fn ui_create_user(
-        &self,
-        username: String,
-        password: String,
-        admin: bool,
-    ) -> Option<UserId> {
-        self.db.create_user(username, password, admin).await
+    pub async fn ui_create_user(&self, username: String, admin: bool) -> Option<UserId> {
+        self.db.create_user(username, admin).await
     }
 
     pub async fn user_delete(&self, user_id: &str) -> Option<()> {
@@ -554,7 +530,6 @@ impl ApiState {
         self.db
             .add_user(
                 user_parameters.name,
-                user_parameters.password,
                 user_parameters.email,
                 user_parameters.is_admin,
                 user_parameters.group_name,
@@ -828,8 +803,6 @@ mod tests {
         state
             .add_user(AddUserRequest {
                 name: "inactive".to_string(),
-                password: "pass".to_string(),
-                confirm_password: "pass".to_string(),
                 email: "inact@e.com".to_string(),
                 is_admin: false,
                 group_name: "Default".to_string(),
@@ -1106,8 +1079,6 @@ mod tests {
         let result = state
             .add_user(AddUserRequest {
                 name: "newuser".to_string(),
-                password: "pass".to_string(),
-                confirm_password: "pass".to_string(),
                 email: "new@e.com".to_string(),
                 is_admin: false,
                 group_name: "Default".to_string(),
@@ -1136,27 +1107,6 @@ mod tests {
         assert_eq!(g2.name, "G2");
         state.delete_group(&g.guid).await;
         assert!(state.get_group(&g.guid).await.is_none());
-    }
-
-    #[tokio::test]
-    async fn update_and_reset_password() {
-        let state = test_state().await;
-        assert!(state
-            .ui_reset_user_password("admin".to_string(), "known".to_string())
-            .await
-            .is_some());
-        let result = state
-            .ui_update_user_password(
-                "admin".to_string(),
-                "known".to_string(),
-                "new123".to_string(),
-            )
-            .await;
-        assert!(result.is_some());
-        let result = state
-            .ui_reset_user_password("admin".to_string(), "reset456".to_string())
-            .await;
-        assert!(result.is_some());
     }
 
     #[tokio::test]
@@ -1374,8 +1324,6 @@ mod tests {
         state
             .add_user(AddUserRequest {
                 name: "upd".to_string(),
-                password: "pass".to_string(),
-                confirm_password: "pass".to_string(),
                 email: "upd@e.com".to_string(),
                 is_admin: false,
                 group_name: "Default".to_string(),
@@ -1388,8 +1336,6 @@ mod tests {
             name: Some("updated".to_string()),
             email: None,
             note: None,
-            password: None,
-            confirm_password: None,
             status: None,
             is_admin: None,
             group_name: None,
@@ -1404,8 +1350,6 @@ mod tests {
         state
             .add_user(AddUserRequest {
                 name: "todelete".to_string(),
-                password: "pass".to_string(),
-                confirm_password: "pass".to_string(),
                 email: "del@e.com".to_string(),
                 is_admin: false,
                 group_name: "Default".to_string(),
@@ -1424,8 +1368,6 @@ mod tests {
         state
             .add_user(AddUserRequest {
                 name: "statususer".to_string(),
-                password: "pass".to_string(),
-                confirm_password: "pass".to_string(),
                 email: "status@e.com".to_string(),
                 is_admin: false,
                 group_name: "Default".to_string(),

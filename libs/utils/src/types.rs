@@ -495,10 +495,6 @@ pub struct UpdateUserRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub password: Option<String>,
-    #[serde(default, rename = "confirm-password", skip_serializing_if = "Option::is_none")]
-    pub confirm_password: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub email: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub is_admin: Option<bool>,
@@ -514,8 +510,6 @@ impl Default for UpdateUserRequest {
         UpdateUserRequest {
             uuid: uuid::Uuid::new_v4().to_string(),
             name: None,
-            password: None,
-            confirm_password: None,
             email: None,
             is_admin: None,
             group_name: None,
@@ -670,9 +664,6 @@ struct JwtClaims {
 #[derive(Serialize, Deserialize, Clone, JsonSchema)]
 pub struct AddUserRequest {
     pub name: String,
-    pub password: String,
-    #[serde(rename = "confirm-password")]
-    pub confirm_password: String,
     pub email: String,
     pub is_admin: bool,
     pub group_name: String,

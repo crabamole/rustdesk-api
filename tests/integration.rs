@@ -258,19 +258,21 @@ async fn test_user_add_and_delete() {
 }
 
 #[rocket::async_test]
-async fn test_user_add_password_mismatch() {
+async fn test_user_add_ignores_legacy_password_fields() {
     let (client, _dir) = test_client().await;
     let token = login_admin(&client).await;
+    // Old callers may still send (even mismatched) passwords; they are ignored.
     let resp = client
         .post("/api/user")
         .header(ContentType::JSON)
         .header(auth_header(&token))
-        .body(r#"{"name":"baduser","password":"a","confirm-password":"b","email":"bad@test.com","is_admin":false,"group_name":"Default"}"#)
+        .body(r#"{"name":"legacy","password":"a","confirm-password":"b","email":"legacy@example.com","is_admin":false,"group_name":"Default"}"#)
         .dispatch()
         .await;
     assert_eq!(resp.status(), Status::Ok);
     let body: Value = resp.into_json().await.unwrap();
-    assert!(body["msg"].as_str().unwrap().contains("mismatch"));
+    assert_eq!(body["msg"], "success");
+    assert!(find_user(&client, &token, "legacy").await.is_some());
 }
 
 #[rocket::async_test]

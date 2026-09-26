@@ -61,7 +61,7 @@ use base64::prelude::{Engine as _, BASE64_STANDARD};
 use rocket::{
     self, figment::Figment, get, post, response::status, serde::json::Json, Build, Rocket, State,
 };
-pub use state::{ApiState, UserPasswordInfo};
+pub use state::ApiState;
 use utils::{
     include_png_as_base64, unwrap_or_return, uuid_into_guid, AbTagRenameRequest, AddUserRequest,
     AddressBook, EnableUserRequest, DeleteUserRequest, GroupsResponse, OidcSettingsResponse, PeersResponse,
@@ -1808,13 +1808,6 @@ async fn user_add(
     state.check_maintenance().await;
 
     let user_parameters = request.0;
-    if user_parameters.password != user_parameters.confirm_password {
-        return Ok(Json(UsersResponse {
-            msg: "error: Passwords mismatch".to_string(),
-            total: 0,
-            data: "[{}]".to_string(),
-        }));
-    }
     let res = state.add_user(user_parameters).await;
     if res.is_none() {
         return Err(status::Unauthorized::<()>(()));

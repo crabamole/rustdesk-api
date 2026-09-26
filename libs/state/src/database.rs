@@ -13,10 +13,8 @@
 //
 // You should have received a copy of the Affero General Public License
 // along with SCTGDesk. If not, see <https://www.gnu.org/licenses/agpl-3.0.html>.
-use crate::password::UserPasswordInfo;
 use crate::types;
 use crate::UserId;
-use serde::Serialize;
 use sqlx::{
     postgres::{PgConnection, PgPool, PgPoolOptions},
     Connection, Row,
@@ -44,6 +42,7 @@ pub struct Database {
     pool: PgPool,
 }
 
+#[cfg(any(test, feature = "test-util"))]
 pub struct DatabaseConnection {
     pool: PgPool,
 }
@@ -53,13 +52,7 @@ pub struct DatabaseUserInfo {
     pub admin: bool,
 }
 
-#[derive(Serialize, Debug)]
-pub struct DatabaseUserPasswordInfo {
-    pub password: String,
-    pub username: String,
-    pub user_id: UserId,
-}
-
+#[cfg(any(test, feature = "test-util"))]
 macro_rules! unwrap_or_return_tuple {
     ($first:expr, $opt:expr) => {
         match $opt {
@@ -159,53 +152,6 @@ impl Database {
         (conn, Some((user_id, email, dbi)))
     }
 
-    #[cfg(any(test, feature = "test-util"))]
-    pub async fn get_user_hashed_password(
-        &self,
-        conn: DatabaseConnection,
-        user_id: UserId,
-    ) -> (DatabaseConnection, Option<DatabaseUserPasswordInfo>) {
-        let res = sqlx::query(
-            "SELECT guid, name, password FROM \"user\" WHERE guid = $1",
-        )
-        .bind(&user_id)
-        .fetch_one(&self.pool)
-        .await;
-
-        let res = unwrap_or_return_tuple!(conn, res.ok());
-
-        let dbpi = DatabaseUserPasswordInfo {
-            password: res.try_get::<String, _>("password").unwrap(),
-            username: res.try_get::<String, _>("name").unwrap(),
-            user_id: res.try_get::<Vec<u8>, _>("guid").unwrap(),
-        };
-
-        (conn, Some(dbpi))
-    }
-
-    pub async fn get_user_hashed_password_with_username(
-        &self,
-        conn: DatabaseConnection,
-        username: String,
-    ) -> (DatabaseConnection, Option<DatabaseUserPasswordInfo>) {
-        let res = sqlx::query(
-            "SELECT guid, name, password FROM \"user\" WHERE name = $1",
-        )
-        .bind(&username)
-        .fetch_one(&self.pool)
-        .await;
-
-        let res = unwrap_or_return_tuple!(conn, res.ok());
-
-        let dbpi = DatabaseUserPasswordInfo {
-            password: res.try_get::<String, _>("password").unwrap(),
-            username: res.try_get::<String, _>("name").unwrap(),
-            user_id: res.try_get::<Vec<u8>, _>("guid").unwrap(),
-        };
-
-        (conn, Some(dbpi))
-    }
-
     pub async fn get_legacy_address_book(&self, user_id: UserId) -> Option<AddressBook> {
         let res = sqlx::query(
             "SELECT ab FROM ab_legacy WHERE user_guid = $1",
@@ -222,62 +168,6 @@ impl Database {
         };
 
         Some(ab)
-    }
-
-    pub async fn update_user_password(
-        &self,
-        username: String,
-        old_password: String,
-        new_password: String,
-    ) -> Option<()> {
-        let conn = DatabaseConnection {
-            pool: self.pool.clone(),
-        };
-        let (_, dbpi) = self
-            .get_user_hashed_password_with_username(conn, username)
-            .await;
-
-        if dbpi.is_none() {
-            return None;
-        }
-
-        let dbpi = dbpi.unwrap();
-        let user_id = dbpi.user_id.clone();
-        let old_password_info = UserPasswordInfo::from_password(old_password.as_str());
-        if !old_password_info.check(dbpi) {
-            return None;
-        }
-        let new_password_hashed = UserPasswordInfo::hash_password(new_password.as_str());
-        let res = sqlx::query(
-            "UPDATE \"user\" SET password = $1 WHERE guid = $2",
-        )
-        .bind(&new_password_hashed)
-        .bind(&user_id)
-        .execute(&self.pool)
-        .await
-        .ok()?
-        .rows_affected();
-        if res == 0 {
-            return None;
-        }
-        Some(())
-    }
-
-    pub async fn reset_user_password(&self, username: String, new_password: String) -> Option<()> {
-        let new_password_hashed = UserPasswordInfo::hash_password(new_password.as_str());
-        let res = sqlx::query(
-            "UPDATE \"user\" SET password = $1 WHERE name = $2",
-        )
-        .bind(&new_password_hashed)
-        .bind(&username)
-        .execute(&self.pool)
-        .await
-        .ok()?
-        .rows_affected();
-        if res == 0 {
-            return None;
-        }
-        Some(())
     }
 
     pub async fn update_legacy_address_books(
@@ -315,7 +205,6 @@ impl Database {
                 "user".status,
                 "user".role,
                 "user".name as username,
-                "user".password,
                 ab_legacy.ab
             FROM
                 "user"
@@ -333,7 +222,6 @@ impl Database {
                 active: row.try_get::<i16, _>("status").unwrap_or(0) != 0,
                 admin: row.try_get::<i16, _>("role").unwrap_or(0) != 0,
                 username: row.try_get::<String, _>("username").unwrap_or_default(),
-                password: row.try_get::<String, _>("password").unwrap_or_default(),
                 address_book: row.try_get::<String, _>("ab").unwrap_or_default(),
             };
             users.push(info);
@@ -349,7 +237,6 @@ impl Database {
                 "user".status,
                 "user".role,
                 "user".name as username,
-                "user".password,
                 ab_legacy.ab
             FROM
                 "user"
@@ -368,7 +255,6 @@ impl Database {
             active: row.try_get::<i16, _>("status").unwrap_or(0) != 0,
             admin: row.try_get::<i16, _>("role").unwrap_or(0) != 0,
             username: row.try_get::<String, _>("username").unwrap_or_default(),
-            password: row.try_get::<String, _>("password").unwrap_or_default(),
             address_book: row.try_get::<String, _>("ab").unwrap_or_default(),
         })
     }
@@ -376,23 +262,20 @@ impl Database {
     pub async fn create_user(
         &self,
         username: String,
-        password: String,
         admin: bool,
     ) -> Option<UserId> {
-        let password_hashed = UserPasswordInfo::hash_password(password.as_str());
         let guid = Uuid::new_v4().as_bytes().to_vec();
         let role: i16 = if admin { 1 } else { 0 };
 
         sqlx::query(
-            "INSERT INTO \"user\" (guid, status, role, name, password, grp, team) \
-             VALUES ($1, 1, $2, $3, $4, \
+            "INSERT INTO \"user\" (guid, status, role, name, grp, team) \
+             VALUES ($1, 1, $2, $3, \
              (SELECT guid FROM grp WHERE name = 'Default'), \
              (SELECT guid FROM team WHERE name = 'Default'))",
         )
         .bind(&guid)
         .bind(role)
         .bind(&username)
-        .bind(&password_hashed)
         .execute(&self.pool)
         .await
         .ok()?;
@@ -522,23 +405,20 @@ impl Database {
         let status = { env::var("OAUTH2_CREATE_USER").unwrap_or("0".to_string()) == "1" };
         let ab_guid = Uuid::new_v4().as_bytes().to_vec();
         let user_guid = Uuid::new_v4().as_bytes().to_vec();
-        let random_password = Uuid::new_v4().to_string();
-        let hashed_random_password = UserPasswordInfo::hash_password(random_password.as_str());
         let name = format!("{}'s Personal Address Book", id);
         let status_val: i16 = if status { 1 } else { 0 };
 
         let res = sqlx::query(
-            "INSERT INTO \"user\"(guid, grp, team, status, role, name, email, password) \
+            "INSERT INTO \"user\"(guid, grp, team, status, role, name, email) \
              VALUES ($1, \
              (SELECT guid FROM grp WHERE name = 'Default'), \
-             (SELECT guid FROM team WHERE name = 'Default'), $2, 0, $3, $4, $5) \
+             (SELECT guid FROM team WHERE name = 'Default'), $2, 0, $3, $4) \
              ON CONFLICT DO NOTHING",
         )
         .bind(&user_guid)
         .bind(status_val)
         .bind(&id)
         .bind(&email)
-        .bind(&hashed_random_password)
         .execute(&self.pool)
         .await;
         if res.is_err() {
@@ -925,7 +805,6 @@ impl Database {
     pub async fn add_user(
         &self,
         name: String,
-        password: String,
         email: String,
         is_admin: bool,
         group_name: String,
@@ -946,19 +825,17 @@ impl Database {
         }
         let group_guid: Vec<u8> = res[0].try_get::<Vec<u8>, _>("guid").unwrap();
         let ab_guid = Uuid::new_v4().as_bytes().to_vec();
-        let password_hashed = UserPasswordInfo::hash_password(password.as_str());
         let role: i16 = if is_admin { 1 } else { 0 };
 
         let res = sqlx::query(
-            "INSERT INTO \"user\"(guid, grp, team, status, role, name, password, email) \
-             VALUES ($1, $2, (SELECT guid FROM team WHERE name = 'Default'), 1, $3, $4, $5, $6) \
+            "INSERT INTO \"user\"(guid, grp, team, status, role, name, email) \
+             VALUES ($1, $2, (SELECT guid FROM team WHERE name = 'Default'), 1, $3, $4, $5) \
              ON CONFLICT DO NOTHING",
         )
         .bind(&user_guid)
         .bind(&group_guid)
         .bind(role)
         .bind(&name)
-        .bind(&password_hashed)
         .bind(&email)
         .execute(&self.pool)
         .await;
@@ -1099,20 +976,6 @@ impl Database {
             set_clauses.push(format!("note = ${}", param_idx));
             query_params.push(user_parameters.note.unwrap());
             param_idx += 1;
-        }
-        if user_parameters.password.is_some()
-            && user_parameters.confirm_password.is_some()
-            && !user_parameters.password.as_ref().unwrap().is_empty()
-            && !user_parameters.confirm_password.as_ref().unwrap().is_empty()
-        {
-            let password = user_parameters.password.unwrap();
-            let confirm_password = user_parameters.confirm_password.unwrap();
-            if password == confirm_password {
-                let password_hashed = UserPasswordInfo::hash_password(password.as_str());
-                set_clauses.push(format!("password = ${}", param_idx));
-                query_params.push(password_hashed);
-                param_idx += 1;
-            }
         }
         if let Some(status) = user_parameters.status {
             set_clauses.push(format!("status = CAST(${} AS integer)", param_idx));
@@ -1894,9 +1757,6 @@ mod tests {
         db.get_user_for_oauth2("admin".to_string(), "admin@example.org".to_string(), "admin-uuid".to_string())
             .await
             .unwrap();
-        db.reset_user_password("admin".to_string(), "Hello,world!".to_string())
-            .await
-            .unwrap();
         db
     }
 
@@ -1959,7 +1819,7 @@ mod tests {
                 .fetch_all(&first.pool)
                 .await
                 .unwrap();
-        assert_eq!(applied, vec![(1, true), (2, true)]);
+        assert_eq!(applied, vec![(1, true), (2, true), (3, true)]);
         first.pool.close().await;
 
         // Second start on the same database must not fail or duplicate rows.
@@ -2018,6 +1878,18 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn migrations_drop_the_password_column() {
+        let db = bare_db().await;
+        let n: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM information_schema.columns WHERE table_name = 'user' AND column_name = 'password'",
+        )
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+        assert_eq!(n, 0);
+    }
+
+    #[tokio::test]
     async fn first_oauth2_user_becomes_active_admin() {
         let db = bare_db().await;
         let (_, _, first) = db
@@ -2036,7 +1908,7 @@ mod tests {
     #[tokio::test]
     async fn existing_user_is_promoted_when_no_admin_exists() {
         let db = bare_db().await;
-        db.create_user("carol".to_string(), "unused".to_string(), false).await.unwrap();
+        db.create_user("carol".to_string(), false).await.unwrap();
         let (_, _, info) = db
             .get_user_for_oauth2("carol".to_string(), "carol@example.org".to_string(), "u3".to_string())
             .await
@@ -2061,41 +1933,10 @@ mod tests {
         assert!(!info.admin, "role is always non-admin for oauth2-provisioned users");
     });
 
-    db_test!(get_hashed_password_for_admin, |db| {
-        let (conn, user) = db.find_user_by_name("admin").await;
-        let (user_id, _, _) = user.unwrap();
-        let (_, pw_info) = db.get_user_hashed_password(conn, user_id).await;
-        assert!(pw_info.is_some());
-        let pw_info = pw_info.unwrap();
-        assert_eq!(pw_info.username, "admin");
-        assert!(pw_info.password.starts_with("$2b$"));
-    });
-
-    db_test!(get_hashed_password_by_username, |db| {
-        let conn = DatabaseConnection {
-            pool: db.pool.clone(),
-        };
-        let (_, pw_info) = db
-            .get_user_hashed_password_with_username(conn, "admin".to_string())
-            .await;
-        assert!(pw_info.is_some());
-        assert_eq!(pw_info.unwrap().username, "admin");
-    });
-
-    db_test!(admin_password_is_hello_world, |db| {
-        let (conn, user) = db.find_user_by_name("admin").await;
-        let (user_id, _, _) = user.unwrap();
-        let (_, pw_info) = db.get_user_hashed_password(conn, user_id).await;
-        let pw_info = pw_info.unwrap();
-        let checker = UserPasswordInfo::from_password("Hello,world!");
-        assert!(checker.check(pw_info));
-    });
-
     db_test!(add_user_and_find, |db| {
         let result = db
             .add_user(
                 "testuser".to_string(),
-                "testpass".to_string(),
                 "test@example.com".to_string(),
                 false,
                 "Default".to_string(),
@@ -2112,7 +1953,6 @@ mod tests {
     db_test!(add_admin_user, |db| {
         db.add_user(
             "superadmin".to_string(),
-            "pass".to_string(),
             "super@example.com".to_string(),
             true,
             "Default".to_string(),
@@ -2121,58 +1961,6 @@ mod tests {
         let (_, found) = db.find_user_by_name("superadmin").await;
         let (_, _, info) = found.unwrap();
         assert!(info.admin);
-    });
-
-    db_test!(update_user_password, |db| {
-        let result = db
-            .update_user_password(
-                "admin".to_string(),
-                "Hello,world!".to_string(),
-                "newpass".to_string(),
-            )
-            .await;
-        assert!(result.is_some());
-        let conn = DatabaseConnection {
-            pool: db.pool.clone(),
-        };
-        let (_, pw_info) = db
-            .get_user_hashed_password_with_username(conn, "admin".to_string())
-            .await;
-        let checker = UserPasswordInfo::from_password("newpass");
-        assert!(checker.check(pw_info.unwrap()));
-    });
-
-    db_test!(update_user_password_wrong_old, |db| {
-        let result = db
-            .update_user_password(
-                "admin".to_string(),
-                "wrongold".to_string(),
-                "newpass".to_string(),
-            )
-            .await;
-        assert!(result.is_none());
-    });
-
-    db_test!(reset_user_password, |db| {
-        let result = db
-            .reset_user_password("admin".to_string(), "reset123".to_string())
-            .await;
-        assert!(result.is_some());
-        let conn = DatabaseConnection {
-            pool: db.pool.clone(),
-        };
-        let (_, pw_info) = db
-            .get_user_hashed_password_with_username(conn, "admin".to_string())
-            .await;
-        let checker = UserPasswordInfo::from_password("reset123");
-        assert!(checker.check(pw_info.unwrap()));
-    });
-
-    db_test!(reset_password_nonexistent_user, |db| {
-        let result = db
-            .reset_user_password("nobody".to_string(), "pass".to_string())
-            .await;
-        assert!(result.is_none());
     });
 
     db_test!(ui_get_all_users_returns_admin, |db| {
@@ -2221,7 +2009,6 @@ mod tests {
     db_test!(get_all_users_with_pagination, |db| {
         db.add_user(
             "user1".to_string(),
-            "p".to_string(),
             "u1@e.com".to_string(),
             false,
             "Default".to_string(),
@@ -2229,7 +2016,6 @@ mod tests {
         .await;
         db.add_user(
             "user2".to_string(),
-            "p".to_string(),
             "u2@e.com".to_string(),
             false,
             "Default".to_string(),
@@ -2321,7 +2107,6 @@ mod tests {
         let result = db
             .add_user(
                 "groupuser".to_string(),
-                "pass".to_string(),
                 "group@test.com".to_string(),
                 false,
                 "Default".to_string(),
@@ -2336,7 +2121,6 @@ mod tests {
         let result = db
             .add_user(
                 "baduser".to_string(),
-                "pass".to_string(),
                 "bad@test.com".to_string(),
                 false,
                 "NonexistentGroup".to_string(),
@@ -2587,7 +2371,6 @@ mod tests {
     db_test!(user_update_name_and_status, |db| {
         db.add_user(
             "updatable".to_string(),
-            "pass".to_string(),
             "upd@e.com".to_string(),
             false,
             "Default".to_string(),
@@ -2601,8 +2384,6 @@ mod tests {
             name: Some("renamed".to_string()),
             email: None,
             note: None,
-            password: None,
-            confirm_password: None,
             status: Some(0),
             is_admin: Some(true),
             group_name: None,
@@ -2614,40 +2395,6 @@ mod tests {
         let (_, _, info) = found.unwrap();
         assert!(!info.active);
         assert!(info.admin);
-    });
-
-    db_test!(user_update_password_matching, |db| {
-        db.add_user(
-            "pwuser".to_string(),
-            "old".to_string(),
-            "pw@e.com".to_string(),
-            false,
-            "Default".to_string(),
-        )
-        .await;
-        let (_, user) = db.find_user_by_name("pwuser").await;
-        let (user_id, _, _) = user.unwrap();
-
-        let params = UpdateUserRequest {
-            uuid: String::new(),
-            name: None,
-            email: None,
-            note: None,
-            password: Some("newpass".to_string()),
-            confirm_password: Some("newpass".to_string()),
-            status: None,
-            is_admin: None,
-            group_name: None,
-        };
-        db.user_update(user_id, params).await;
-        let conn = DatabaseConnection {
-            pool: db.pool.clone(),
-        };
-        let (_, pw_info) = db
-            .get_user_hashed_password_with_username(conn, "pwuser".to_string())
-            .await;
-        let checker = UserPasswordInfo::from_password("newpass");
-        assert!(checker.check(pw_info.unwrap()));
     });
 
     db_test!(insert_audit_conn, |db| {
