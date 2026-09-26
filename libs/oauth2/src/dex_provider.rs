@@ -98,7 +98,7 @@ impl OAuthProvider for DexProvider {
                 .map_err(|e| exchange_err("token response", e))?;
 
             if let Some(id_token) = body.id_token {
-                let id = decode_id_token(&id_token)?;
+                let id = decode_id_token(&id_token, &provider_config.issuer, &provider_config.app_id)?;
                 Ok(OAuthResponse {
                     access_token: body.access_token,
                     subject: id.sub,
@@ -130,6 +130,7 @@ mod tests {
             app_secret: "my-secret".to_string(),
             op_auth_string: "oidc/dex".to_string(),
             op: "dex".to_string(),
+            issuer: "https://idp.example.com".to_string(),
         }
     }
 

@@ -139,6 +139,7 @@ app_secret = "s3cret"
 scope = "openid email profile"
 op_auth_string = "oidc/corp"
 op = "corp"
+issuer = "https://idp.example.com"
 "#;
 
     #[test]

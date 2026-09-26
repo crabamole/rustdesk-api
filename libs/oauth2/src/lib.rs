@@ -32,6 +32,9 @@ pub struct ProviderConfig {
     pub app_secret: String,
     pub op_auth_string: String,
     pub op: String,
+    /// Expected `iss` of the provider's ID tokens; required for OIDC providers.
+    #[serde(default)]
+    pub issuer: String,
 }
 
 #[derive(Deserialize, Serialize, Copy, Clone, PartialEq, Eq, Hash, Debug)]
@@ -51,7 +54,9 @@ pub enum Provider {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Claims {
     #[serde(deserialize_with = "deserialize_aud")]
-    aud: String,
+    aud: Vec<String>,
+    #[serde(default)]
+    iss: String,
     #[serde(default)]
     sub: String,
     #[serde(default)]
@@ -64,25 +69,26 @@ pub struct Claims {
     exp: u64,
 }
 
-fn deserialize_aud<'de, D>(deserializer: D) -> Result<String, D::Error>
+fn deserialize_aud<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
     use serde::de;
     struct AudVisitor;
     impl<'de> de::Visitor<'de> for AudVisitor {
-        type Value = String;
+        type Value = Vec<String>;
         fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
             f.write_str("a string or array of strings")
         }
-        fn visit_str<E: de::Error>(self, v: &str) -> Result<String, E> {
-            Ok(v.to_owned())
+        fn visit_str<E: de::Error>(self, v: &str) -> Result<Vec<String>, E> {
+            Ok(vec![v.to_owned()])
         }
-        fn visit_seq<A: de::SeqAccess<'de>>(self, mut seq: A) -> Result<String, A::Error> {
-            let first = seq.next_element::<String>()?
-                .ok_or_else(|| de::Error::invalid_length(0, &"at least one audience"))?;
-            while seq.next_element::<serde::de::IgnoredAny>()?.is_some() {}
-            Ok(first)
+        fn visit_seq<A: de::SeqAccess<'de>>(self, mut seq: A) -> Result<Vec<String>, A::Error> {
+            let mut aud = Vec::new();
+            while let Some(a) = seq.next_element::<String>()? {
+                aud.push(a);
+            }
+            Ok(aud)
         }
     }
     deserializer.deserialize_any(AudVisitor)
@@ -291,6 +297,7 @@ mod tests {
             scope = "openid email profile"
             op_auth_string = "oidc/corp"
             op = "corp"
+            issuer = "https://idp.example.com"
         "#;
 
         let config_file = tempfile::NamedTempFile::new().unwrap();
@@ -311,10 +318,8 @@ mod tests {
     #[test]
     fn test_decode_id_token() {
         let id_token = "eyJhbGciOiJSUzI1NiIsImtpZCI6IjhiMjFkMTM0NjExZDQxNWJkMWU2MjUzOGE0ZGRjOTA4NmYxYTZiMjUifQ.eyJpc3MiOiJodHRwczovL2RleC1tb2NrLXNlcnZlci5OT05FL2RleCIsInN1YiI6IkNpUXdPR0U0TmpnMFlpMWtZamc0TFRSaU56TXRPVEJoT1MwelkyUXhOall4WmpVME5qWVNCV3h2WTJGcyIsImF1ZCI6InNjdGdkZXNrLWFwaS1zZXJ2ZXIiLCJleHAiOjE3MTU2NzEwODQsImlhdCI6MTcxNTU4NDY4NCwiYXRfaGFzaCI6IjVvZEdyU3VrMW9lejJkc1NaRXZFM0EiLCJjX2hhc2giOiJfdFZfZFNiU09qTVVmRVdMeVVNSTNnIiwiZW1haWwiOiJhZG1pbkBkZXNrLk5PTkUiLCJlbWFpbF92ZXJpZmllZCI6dHJ1ZSwibmFtZSI6ImFkbWluIn0.AqOiwBKq2i_AoJcbfxuaVY54PN3GJjnHIn3E2FWoZY2IOu8qxvZevcUb4mjnoUZGf2QaabIcTAIxIg-mpFTRxheOPiQ1c9VSZ0vd-wNGrAG12vdraRq0-evqmFduR2G9k20QMIV8iHiGM7l93k8Fw5_bnTQId044BjepayS98bpUclS4RIIGoOLBM5IenfBCqLhHHv6oYUM6HDU4rCD02U9_Bu597wedeLdYYa7lzBDyb88ab83-eALsDpbFZ90rUnvAhpTQcl9_t51Etx-sP1yWSQ3UZ-QL61cKreqWlMbimM43R4boUWnpQTMF7ZO0EftVixEfaIQvWDRm-TLl8A";
-        let id = decode_id_token(id_token).unwrap();
-        assert_eq!(id.name.as_deref(), Some("admin"));
-        assert_eq!(id.email.as_deref(), Some("admin@desk.NONE"));
-        assert!(!id.sub.is_empty());
+        // A real Dex token from 2024: well-formed, but long expired.
+        assert!(decode_id_token(id_token, "https://dex-mock-server.NONE/dex", "sctgdesk-api-server").is_err());
     }
 
     #[test]
@@ -382,6 +387,7 @@ mod tests {
             app_secret: "test_secret".to_string(),
             op_auth_string: "oidc/github".to_string(),
             op: "github".to_string(),
+            issuer: "https://idp.example.com".to_string(),
         };
         let json = serde_json::to_string(&config).unwrap();
         let deserialized: ProviderConfig = serde_json::from_str(&json).unwrap();
@@ -393,21 +399,21 @@ mod tests {
     fn test_deserialize_aud_string() {
         let json = r#"{"aud":"my-app","sub":"user1","name":"Test","email":"test@test.com","exp":9999999999}"#;
         let claims: Claims = serde_json::from_str(json).unwrap();
-        assert_eq!(claims.aud, "my-app");
+        assert_eq!(claims.aud, vec!["my-app"]);
     }
 
     #[test]
     fn test_deserialize_aud_array() {
         let json = r#"{"aud":["my-app","other"],"sub":"user1","name":"Test","email":"test@test.com","exp":9999999999}"#;
         let claims: Claims = serde_json::from_str(json).unwrap();
-        assert_eq!(claims.aud, "my-app");
+        assert_eq!(claims.aud, vec!["my-app", "other"]);
     }
 
     #[test]
     fn test_deserialize_aud_empty_array() {
         let json = r#"{"aud":[],"sub":"user1","name":"Test","email":"test@test.com","exp":9999999999}"#;
-        let result: Result<Claims, _> = serde_json::from_str(json);
-        assert!(result.is_err());
+        let claims: Claims = serde_json::from_str(json).unwrap();
+        assert!(claims.aud.is_empty());
     }
 
     #[test]

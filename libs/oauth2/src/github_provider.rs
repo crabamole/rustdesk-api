@@ -189,6 +189,7 @@ mod tests {
             app_secret: "gh-secret".to_string(),
             op_auth_string: "oidc/github".to_string(),
             op: "github".to_string(),
+            issuer: "https://idp.example.com".to_string(),
         }
     }
 

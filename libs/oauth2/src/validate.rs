@@ -77,6 +77,9 @@ fn check(providers: &[ProviderConfig]) -> Vec<String> {
         if p.op_auth_string != format!("oidc/{}", p.op) {
             problems.push(format!("{at}: op_auth_string must be \"oidc/{}\" (clients send op back), got {:?}", p.op, p.op_auth_string));
         }
+        if p.provider != Provider::Github && !matches!(url::Url::parse(&p.issuer), Ok(u) if u.scheme() == "https" || u.scheme() == "http") {
+            problems.push(format!("{at}: issuer {:?} must be the provider's issuer URL (the iss claim of its ID tokens)", p.issuer));
+        }
         if p.provider != Provider::Github && !p.scope.split_whitespace().any(|s| s == "openid") {
             problems.push(format!("{at}: scope must include \"openid\" (users are identified by the ID token's sub)"));
         }
@@ -104,6 +107,7 @@ app_secret = "s3cret"
 scope = "openid email profile"
 op_auth_string = "oidc/corp"
 op = "corp"
+issuer = "https://idp.example.com"
 "#;
 
     fn load(toml: &str) -> Result<Vec<ProviderConfig>, String> {
@@ -116,6 +120,14 @@ op = "corp"
     fn accepts_a_generic_oidc_provider() {
         let p = load(GOOD).unwrap();
         assert_eq!((p.len(), p[0].provider), (1, Provider::Oauth2));
+    }
+
+    #[test]
+    fn oidc_providers_need_an_issuer() {
+        let err = load(&GOOD.replace("issuer = \"https://idp.example.com\"\n", "")).unwrap_err();
+        assert!(err.contains("issuer"), "{err}");
+        let err = load(&GOOD.replace("https://idp.example.com\"\n", "not a url\"\n")).unwrap_err();
+        assert!(err.contains("issuer"), "{err}");
     }
 
     #[test]
