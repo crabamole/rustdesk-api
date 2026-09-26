@@ -15,33 +15,7 @@ This website use:
         </div>
 
         <div class="mt-10 sm:mx-auto sm:w-full sm:max-w-sm">
-            <form class="space-y-6" @submit="handleLogin">
-                <div>
-                    <label for="email" class="block text-sm font-medium leading-6 text-gray-900">Username</label>
-                    <div class="mt-2">
-                        <input v-model="name" id="email" name="email" type="text" required
-                            class="block w-full rounded-md border-0 py-1.5 text-gray-900 shadow-sm ring-1 ring-inset ring-gray-300 placeholder:text-gray-400 focus:ring-2 focus:ring-inset focus:ring-indigo-600 sm:text-sm sm:leading-6" />
-                    </div>
-                </div>
-
-                <div>
-                    <div class="flex items-center justify-between">
-                        <label for="password" class="block text-sm font-medium leading-6 text-gray-900">Password <span
-                                id="loginResult" class="text-red-700"></span></label>
-                    </div>
-                    <div class="mt-2">
-                        <input v-model="password" id="password" name="password" type="password"
-                            autocomplete="current-password" required
-                            class="block w-full rounded-md border-0 py-1.5 text-gray-900 shadow-sm ring-1 ring-inset ring-gray-300 placeholder:text-gray-400 focus:ring-2 focus:ring-inset focus:ring-indigo-600 sm:text-sm sm:leading-6" />
-                    </div>
-                </div>
-
-                <div>
-                    <button type="submit"
-                        class="flex w-full h-12 items-center justify-center rounded-md bg-indigo-600 px-3 py-1.5 text-sm font-semibold leading-6 text-white shadow-sm hover:bg-indigo-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600">Sign
-                        in</button>
-                </div>
-            </form>
+            <p id="loginResult" class="text-center text-sm text-red-700"></p>
             <div>
                 <div class="pt-1.5" v-for="oauthprovider in oauthproviders">
                     <button @click="oidcAuth_step1(oauthprovider)"
@@ -66,48 +40,12 @@ const serverVersion = ref("");
 const userStore = useUserStore();
 const router = useRouter();
 
-const name = ref("");
-const password = ref("");
-
 type OauthProvider = {
     name: string;
     rustdesk_name: string;
 };
 
 const oauthproviders = ref([] as OauthProvider[]);
-
-/**
- * Handles the login form submission event.
- *
- * @param {SubmitEvent} e - The submit event object.
- * @return {void} This function does not return a value.
- */
-function handleLogin(e: SubmitEvent): void {
-    e.preventDefault();
-    const configuration = new Configuration({
-        // Workaround for development environment
-        basePath: basePath,
-        username: name.value,
-        password: password.value
-    });
-    const loginApi = new LoginApi(configuration);
-    loginApi.login({ username: name.value, password: password.value, id: "", uuid: "" }).then((response) => {
-        if (response.status == 200) {
-            const data = response.data;
-            userStore.user = data.user;
-            userStore.api_configuration = configuration;
-            userStore.api_configuration.accessToken = data.access_token as any;
-            router.push({ name: 'index' });
-        } else {
-            console.log(response.data);
-            document.getElementById("loginResult").innerText = "Wrong username or password !";
-        }
-    }).catch((error) => {
-        console.log(error);
-        setLoginResult("Wrong username or password !");
-    });
-
-}
 
 /**
  * Sets the inner text of the element with the ID "loginResult" to the specified message.
@@ -128,8 +66,6 @@ function setLoginResult(message: string): void {
 function oidcAuth_step1(provider: OauthProvider) {
     const configuration = new Configuration({
         basePath: basePath,
-        username: name.value,
-        password: password.value
     });
     const loginApi = new LoginApi(configuration);
     const redirectUri = window.location.origin + '/ui/login';
@@ -220,8 +156,6 @@ onMounted(() => {
 
     const configuration = new Configuration({
         basePath: basePath,
-        username: name.value,
-        password: password.value
     });
     const loginApi = new LoginApi(configuration);
     loginApi.loginOptions().then((_providers) => {
