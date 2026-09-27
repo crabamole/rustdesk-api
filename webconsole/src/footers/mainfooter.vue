@@ -15,14 +15,10 @@ This website use:
       <div class="text-sm text-gray-600 dark:text-gray-400">
         © 2024 Ronan LE MEILLAT for SCTG Development - sctgdesk-api-server v{{ serverVersion }}
       </div>
-      <div class="text-xs">
-        <GithubButton owner="sctg-development" repo="sctgdesk-server"/>
-      </div>
     </div>
     </footer>
 </template>
 <script setup lang="ts">
-import GithubButton from '@/components/GithubButton.vue';
 import { useVersionsStore } from '@/stores/versionsStore';
 import { ref } from 'vue';
 const serverVersion = ref(useVersionsStore().serverVersion);
