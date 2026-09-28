@@ -3,7 +3,7 @@ members = [".", "libs/state", "libs/utils", "libs/oauth2"]
 
 [package]
 name = "rustdesk-api"
-version = "3.0.1"
+version = "3.1.0"
 edition = "2021"
 build = "build.rs"
 
