@@ -79,21 +79,26 @@ pub fn run_openapi() -> Result<String, String> {
 
 #[derive(Subcommand, Debug)]
 pub enum AdminCommand {
-    /// Make a user an active admin. USER is an OIDC subject, email or name that matches
-    /// exactly one user; the user must have logged in through OIDC once.
-    Promote { user: String },
-    /// Take admin rights away from a user (USER as for promote)
-    Demote { user: String },
+    /// Make a user an active admin; the user must have logged in through OIDC once
+    Promote {
+        /// The user's email, as the IdP reports it (case-insensitive)
+        email: String,
+    },
+    /// Take admin rights away from a user
+    Demote {
+        /// The user's email, as the IdP reports it (case-insensitive)
+        email: String,
+    },
 }
 
 /// Runs an `admin` subcommand and returns the message to print.
 pub async fn run_admin(cmd: &AdminCommand, db_url: &str) -> Result<String, String> {
-    let (user, admin) = match cmd {
-        AdminCommand::Promote { user } => (user, true),
-        AdminCommand::Demote { user } => (user, false),
+    let (email, admin) = match cmd {
+        AdminCommand::Promote { email } => (email, true),
+        AdminCommand::Demote { email } => (email, false),
     };
     let state = ApiState::new_with_db(db_url).await;
-    let name = state.set_admin(user, admin).await?;
+    let name = state.set_admin(email, admin).await?;
     Ok(if admin {
         format!("{name} is now an admin")
     } else {
@@ -171,10 +176,10 @@ issuer = "https://idp.example.com"
 
     #[test]
     fn admin_promote_and_demote_take_a_user() {
-        let cli = Cli::try_parse_from(["rustdesk-api", "admin", "promote", "alice"]).unwrap();
-        assert!(matches!(cli.command, Command::Admin(AdminCommand::Promote { user }) if user == "alice"));
-        let cli = Cli::try_parse_from(["rustdesk-api", "admin", "demote", "alice"]).unwrap();
-        assert!(matches!(cli.command, Command::Admin(AdminCommand::Demote { user }) if user == "alice"));
+        let cli = Cli::try_parse_from(["rustdesk-api", "admin", "promote", "alice@example.org"]).unwrap();
+        assert!(matches!(cli.command, Command::Admin(AdminCommand::Promote { email }) if email == "alice@example.org"));
+        let cli = Cli::try_parse_from(["rustdesk-api", "admin", "demote", "alice@example.org"]).unwrap();
+        assert!(matches!(cli.command, Command::Admin(AdminCommand::Demote { email }) if email == "alice@example.org"));
         assert!(Cli::try_parse_from(["rustdesk-api", "admin", "promote"]).is_err());
     }
 
@@ -184,12 +189,12 @@ issuer = "https://idp.example.com"
         let state = ApiState::new_with_db(&db_url).await;
         state.test_oidc_login(&"alice".to_string()).await;
 
-        let promote = AdminCommand::Promote { user: "alice".to_string() };
+        let promote = AdminCommand::Promote { email: "alice@example.org".to_string() };
         assert_eq!(run_admin(&promote, &db_url).await.unwrap(), "alice is now an admin");
         let (info, _) = state.test_oidc_login(&"alice".to_string()).await.unwrap();
         assert!(info.admin);
 
-        let demote = AdminCommand::Demote { user: "alice".to_string() };
+        let demote = AdminCommand::Demote { email: "alice@example.org".to_string() };
         assert_eq!(run_admin(&demote, &db_url).await.unwrap(), "alice is no longer an admin");
         let (info, _) = state.test_oidc_login(&"alice".to_string()).await.unwrap();
         assert!(!info.admin);
@@ -198,9 +203,9 @@ issuer = "https://idp.example.com"
     #[rocket::async_test]
     async fn promote_unknown_user_fails() {
         let db_url = state::testing::fresh_database_url().await;
-        let err = run_admin(&AdminCommand::Promote { user: "nobody".to_string() }, &db_url)
+        let err = run_admin(&AdminCommand::Promote { email: "nobody@example.org".to_string() }, &db_url)
             .await
             .unwrap_err();
-        assert!(err.contains("no user matches \"nobody\""), "{err}");
+        assert!(err.contains("no user has email \"nobody@example.org\""), "{err}");
     }
 }

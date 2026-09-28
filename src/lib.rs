@@ -2524,7 +2524,7 @@ mod tests {
     async fn login_admin(client: &Client) -> String {
         let state = client.rocket().state::<ApiState>().unwrap();
         state.test_oidc_login(&"admin".to_string()).await;
-        state.set_admin("admin", true).await.unwrap();
+        state.set_admin("admin@example.org", true).await.unwrap();
         oidc_token(client, "admin").await
     }
 

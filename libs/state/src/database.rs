@@ -501,41 +501,34 @@ impl Database {
         }
     }
 
-    /// Finds the one user whose OIDC subject, email or name is `identifier`
-    /// (an exact subject match wins). Errors list the candidates when ambiguous.
-    pub async fn resolve_user(&self, identifier: &str) -> Result<(UserId, String), String> {
-        let rows = sqlx::query(
-            "SELECT guid, name, email, oidc_sub FROM \"user\" \
-             WHERE oidc_sub = $1 OR email = $1 OR name = $1",
-        )
-        .bind(identifier)
-        .fetch_all(&self.pool)
-        .await
-        .map_err(|e| format!("database error: {e}"))?;
+    /// Finds the one user whose email is `email` (case-insensitive). Errors list the
+    /// candidates when several users share it.
+    pub async fn resolve_user(&self, email: &str) -> Result<(UserId, String), String> {
+        let rows = sqlx::query("SELECT guid, name, oidc_sub FROM \"user\" WHERE lower(email) = lower($1)")
+            .bind(email)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| format!("database error: {e}"))?;
         let field = |r: &sqlx::postgres::PgRow, c: &str| r.try_get::<Option<String>, _>(c).ok().flatten().unwrap_or_default();
-        let pick = |r: &sqlx::postgres::PgRow| (r.try_get::<Vec<u8>, _>("guid").unwrap_or_default(), field(r, "name"));
-        if let Some(r) = rows.iter().find(|r| field(r, "oidc_sub") == identifier) {
-            return Ok(pick(r));
-        }
         match rows.as_slice() {
-            [] => Err(format!("no user matches {identifier:?}; users are created on their first OIDC login")),
-            [r] => Ok(pick(r)),
+            [] => Err(format!("no user has email {email:?}; users are created on their first OIDC login")),
+            [r] => Ok((r.try_get::<Vec<u8>, _>("guid").unwrap_or_default(), field(r, "name"))),
             many => Err(format!(
-                "{identifier:?} matches {} users; use the OIDC subject instead:\n{}",
+                "{email:?} belongs to {} users; fix it at the IdP or in the console:\n{}",
                 many.len(),
                 many.iter()
-                    .map(|r| format!("  sub={} name={} email={}", field(r, "oidc_sub"), field(r, "name"), field(r, "email")))
+                    .map(|r| format!("  name={} sub={}", field(r, "name"), field(r, "oidc_sub")))
                     .collect::<Vec<_>>()
                     .join("\n")
             )),
         }
     }
 
-    /// Promotes (active admin) or demotes the user `identifier` resolves to (see
+    /// Promotes (active admin) or demotes the user with email `email` (see
     /// `resolve_user`) and returns its display name. Promoting also hands over shared
     /// address books whose owner was deleted.
-    pub async fn set_admin(&self, identifier: &str, admin: bool) -> Result<String, String> {
-        let (guid, name) = self.resolve_user(identifier).await?;
+    pub async fn set_admin(&self, email: &str, admin: bool) -> Result<String, String> {
+        let (guid, name) = self.resolve_user(email).await?;
         let sql = if admin {
             "UPDATE \"user\" SET role = 1, status = 1 WHERE guid = $1"
         } else {
@@ -1821,7 +1814,7 @@ mod tests {
         db.get_user_for_oauth2("admin", "admin", Some("admin@example.org"))
             .await
             .unwrap();
-        db.set_admin("admin", true).await.unwrap();
+        db.set_admin("admin@example.org", true).await.unwrap();
         db
     }
 
@@ -1956,7 +1949,7 @@ mod tests {
             .get_user_for_oauth2("first", "first", Some("first@example.org"))
             .await
             .unwrap();
-        assert_eq!(db.set_admin("first", true).await.unwrap(), "first");
+        assert_eq!(db.set_admin("first@example.org", true).await.unwrap(), "first");
         let (_, found) = db.find_user_by_name("first").await;
         let (_, _, info) = found.unwrap();
         assert!(info.admin && info.active);
@@ -1970,13 +1963,13 @@ mod tests {
     }
 
     db_test!(demote_removes_admin, |db| {
-        assert!(db.set_admin("admin", false).await.is_ok());
+        assert!(db.set_admin("admin@example.org", false).await.is_ok());
         let (_, found) = db.find_user_by_name("admin").await;
         assert!(!found.unwrap().2.admin);
     });
 
     db_test!(set_admin_on_unknown_user_fails, |db| {
-        assert!(db.set_admin("nobody", true).await.is_err());
+        assert!(db.set_admin("nobody@example.org", true).await.is_err());
     });
 
     db_test!(same_display_name_different_people_get_different_accounts, |db| {
@@ -2014,13 +2007,18 @@ mod tests {
         assert_eq!(name, "Pre Provisioned");
     });
 
-    db_test!(resolve_user_refuses_ambiguous_names, |db| {
-        db.get_user_for_oauth2("sub-a", "John Smith", Some("john.a@example.org")).await.unwrap();
-        db.get_user_for_oauth2("sub-b", "John Smith", Some("john.b@example.org")).await.unwrap();
-        let err = db.resolve_user("John Smith").await.unwrap_err();
-        assert!(err.contains("sub=sub-a") && err.contains("sub=sub-b"), "{err}");
-        assert_eq!(db.resolve_user("john.b@example.org").await.unwrap().1, "John Smith");
-        assert!(db.resolve_user("sub-a").await.is_ok());
+    db_test!(set_admin_matches_the_email_only, |db| {
+        db.get_user_for_oauth2("sub-a", "John Smith", Some("John.Smith@example.org")).await.unwrap();
+        assert!(db.set_admin("John Smith", true).await.is_err(), "a name is not an email");
+        assert!(db.set_admin("sub-a", true).await.is_err(), "a subject is not an email");
+        assert_eq!(db.set_admin("john.smith@example.org", true).await.unwrap(), "John Smith", "case-insensitive");
+    });
+
+    db_test!(set_admin_refuses_an_email_shared_by_several_users, |db| {
+        db.get_user_for_oauth2("sub-a", "John A", Some("shared@example.org")).await.unwrap();
+        db.get_user_for_oauth2("sub-b", "John B", Some("shared@example.org")).await.unwrap();
+        let err = db.set_admin("shared@example.org", true).await.unwrap_err();
+        assert!(err.contains("2 users") && err.contains("John A") && err.contains("John B"), "{err}");
     });
 
     db_test!(get_user_for_oauth2_creates_inactive_non_admin_user, |db| {

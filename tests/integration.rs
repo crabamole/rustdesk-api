@@ -22,7 +22,7 @@ async fn oidc_token(client: &Client, name: &str) -> String {
 async fn login_admin(client: &Client) -> String {
     let state = client.rocket().state::<state::ApiState>().unwrap();
     state.test_oidc_login(&"admin".to_string()).await;
-    state.set_admin("admin", true).await.unwrap();
+    state.set_admin("admin@example.org", true).await.unwrap();
     oidc_token(client, "admin").await
 }
 
@@ -992,7 +992,7 @@ async fn use_stub_idp(client: &Client, code: &str, sub: &str) {
     assert!(state.test_set_oidc_provider(code, std::sync::Arc::new(StubIdp { sub: sub.into() })).await);
     // New OIDC users start inactive; promoting activates them.
     state.test_oidc_login(&sub.to_string()).await;
-    state.set_admin(sub, true).await.unwrap();
+    state.set_admin(&format!("{sub}@example.org"), true).await.unwrap();
 }
 
 /// The IdP redirecting the browser back; `cookie` is what that browser holds.

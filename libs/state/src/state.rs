@@ -290,8 +290,8 @@ impl ApiState {
     /// Promotes (`admin = true`) or demotes the user matching `identifier` (OIDC subject,
     /// email or name; must be unambiguous) and returns its display name.
     /// Backs the `rustdesk-api admin` CLI, the only way to make an admin.
-    pub async fn set_admin(&self, identifier: &str, admin: bool) -> Result<String, String> {
-        self.db.set_admin(identifier, admin).await
+    pub async fn set_admin(&self, email: &str, admin: bool) -> Result<String, String> {
+        self.db.set_admin(email, admin).await
     }
 
     pub async fn ui_create_user(&self, username: String, admin: bool) -> Option<UserId> {
@@ -818,7 +818,7 @@ mod tests {
             .get_user_for_oauth2("admin", "admin", Some("admin@example.org"))
             .await
             .unwrap();
-        state.set_admin("admin", true).await.unwrap();
+        state.set_admin("admin@example.org", true).await.unwrap();
         state
     }
 
