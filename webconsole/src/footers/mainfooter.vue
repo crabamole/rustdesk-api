@@ -9,7 +9,7 @@ This website use:
 <template>
     <footer
     id="footer"
-    class="lg:fixed mt-4 p-4 bg-white sm:p-6 dark:bg-ambblue-800 font-neutra-demi inline-block w-full bottom-0 right-0"
+    class="mt-4 p-4 bg-white sm:p-6 dark:bg-ambblue-800 font-neutra-demi inline-block w-full"
   >
     <div class="flex flex-col items-center justify-center mx-auto">
       <div class="text-sm text-gray-600 dark:text-gray-400">
