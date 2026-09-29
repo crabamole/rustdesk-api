@@ -969,6 +969,59 @@ async fn untracked_client() -> Client {
     Client::untracked(build_rocket_with_db(figment, &db_url).await).await.unwrap()
 }
 
+async fn public_url_client(public_url: &str) -> Client {
+    let db_url = state::testing::fresh_database_url().await;
+    let figment = rocket::Config::figment()
+        .merge(("port", 0))
+        .merge(("public_url", public_url))
+        .merge(("secret_key", "hPRYyVRiMyxpw5sBB1XeCMN1kFsDCqKvBi2QJxBVHQk="));
+    Client::untracked(build_rocket_with_db(figment, &db_url).await).await.unwrap()
+}
+
+/// POSTs /api/oidc/auth with the given Host; returns the response body.
+async fn oidc_auth_as(client: &Client, host: &str, redirect_uri: Option<&str>) -> Value {
+    let uuid = base64::Engine::encode(&base64::prelude::BASE64_STANDARD, "device-uuid");
+    let redirect = redirect_uri.map(|r| format!(r#","redirectUri":"{r}""#)).unwrap_or_default();
+    client
+        .post("/api/oidc/auth")
+        .header(ContentType::JSON)
+        .header(Header::new("Host", host.to_string()))
+        .body(format!(r#"{{"op":"dex","id":"123456789","uuid":"{uuid}","deviceInfo":{{"name":"d","os":"windows","type":"client"}}{redirect}}}"#))
+        .dispatch()
+        .await
+        .into_json()
+        .await
+        .unwrap()
+}
+
+fn idp_redirect_uri(body: &Value) -> String {
+    let url = url::Url::parse(body["url"].as_str().unwrap()).unwrap();
+    url.query_pairs().find(|(k, _)| k == "redirect_uri").map(|(_, v)| v.into_owned()).unwrap_or_default()
+}
+
+#[rocket::async_test]
+async fn test_oidc_callback_url_keeps_host_port() {
+    let client = untracked_client().await;
+    let body = oidc_auth_as(&client, "rustdesk.example.com:30080", None).await;
+    assert_eq!(idp_redirect_uri(&body), "http://rustdesk.example.com:30080/api/oidc/callback");
+}
+
+#[rocket::async_test]
+async fn test_oidc_callback_url_uses_public_url() {
+    let client = public_url_client("https://rustdesk.example.com:8443").await;
+    let body = oidc_auth_as(&client, "internal-proxy", None).await;
+    assert_eq!(idp_redirect_uri(&body), "https://rustdesk.example.com:8443/api/oidc/callback");
+}
+
+#[rocket::async_test]
+async fn test_oidc_redirect_uri_checked_against_public_url() {
+    let client = public_url_client("https://rustdesk.example.com:8443").await;
+    let ok = oidc_auth_as(&client, "internal-proxy", Some("https://rustdesk.example.com:8443/ui/login")).await;
+    assert!(!ok["code"].as_str().unwrap().contains("ERROR"), "{ok}");
+    let refused = oidc_auth_as(&client, "internal-proxy", Some("http://internal-proxy/ui/login")).await;
+    assert_eq!(refused["code"], "REDIRECT_URI_ERROR");
+}
+
 /// Starts an OIDC login as a client would; returns (code, Set-Cookie header if any).
 async fn start_login(client: &Client, device_name: &str, redirect_uri: Option<&str>) -> (String, Option<String>) {
     let uuid = base64::Engine::encode(&base64::prelude::BASE64_STANDARD, "device-uuid");

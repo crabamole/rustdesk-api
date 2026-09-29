@@ -54,7 +54,7 @@ use utils::PeersCountResponse;
 use utils::Platform;
 use utils::UpdateGoupRequest;
 use utils::{
-    self, get_host::get_host, AbPeer, AbPeersResponse, AbPersonal, AbSettingsResponse,
+    self, get_host::{get_host, parse_public_url}, AbPeer, AbPeersResponse, AbPersonal, AbSettingsResponse,
     AbSharedProfilesResponse, AbTag, BearerAuthToken, OidcAuthRequest, OidcAuthUrl, OidcResponse,
     OidcState, OidcUser, OidcUserInfo, OidcUserStatus,
 };
@@ -188,8 +188,12 @@ pub async fn build_rocket(figment: Figment, db_url: &str) -> Rocket<Build> {
     build_rocket_with_db(figment, db_url).await
 }
 
+/// The server's external origin from `PUBLIC_URL`; `None` derives it from request headers.
+pub struct PublicUrl(pub Option<String>);
+
 pub async fn build_rocket_with_db(figment: Figment, db_path: &str) -> Rocket<Build> {
     let state = ApiState::new_with_db(db_path).await;
+    let public_url = figment.extract_inner::<String>("public_url").ok().and_then(|v| parse_public_url(&v).ok());
 
     let rocket = rocket::custom(figment)
         .attach(CORS)
@@ -200,7 +204,8 @@ pub async fn build_rocket_with_db(figment: Figment, db_path: &str) -> Rocket<Bui
             oidc_callback,
             oidc_confirm,
         ])
-        .manage(state);
+        .manage(state)
+        .manage(PublicUrl(public_url));
 
     #[cfg(feature = "ui")]
     {
@@ -1012,6 +1017,7 @@ async fn login_options(
 #[post("/api/oidc/auth", format = "application/json", data = "<request>")]
 async fn oidc_auth(
     state: &State<ApiState>,
+    public_url: &State<PublicUrl>,
     cookies: &CookieJar<'_>,
     request: ExtendedJson<OidcAuthRequest>,
 ) -> Json<OidcAuthUrl> {
@@ -1030,7 +1036,7 @@ async fn oidc_auth(
     }
     let uuid_decoded = uuid_decoded.unwrap();
     let uuid_client = String::from_utf8(uuid_decoded).unwrap();
-    let host = get_host(headers.clone());
+    let host = public_url.0.clone().unwrap_or_else(|| get_host(headers.clone()));
     if let Some(uri) = &request.redirect_uri {
         if !is_own_url(uri, &host) {
             log::warn!("oidc_auth: rejected redirectUri {uri:?} (not on {host:?})");

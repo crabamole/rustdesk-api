@@ -57,6 +57,13 @@ async fn main() -> Result<(), rocket::Error> {
         eprintln!("{msg}");
         std::process::exit(2);
     }
+    let public_url = match std::env::var("PUBLIC_URL").ok().filter(|v| !v.is_empty()) {
+        Some(v) => Some(utils::get_host::parse_public_url(&v).unwrap_or_else(|msg| {
+            eprintln!("{msg}");
+            std::process::exit(2);
+        })),
+        None => None,
+    };
     let log_level = match log_level.to_lowercase().as_str() {
         "off" => LogLevel::Off,
         "critical" => LogLevel::Critical,
@@ -76,6 +83,10 @@ async fn main() -> Result<(), rocket::Error> {
         .merge(("secret_key", secret_key))
         .merge(("ident", format!("rustdesk-api/{}", env!("CARGO_PKG_VERSION"))))
         .merge(("limits", Limits::new().limit("json", 2.mebibytes())));
+    let figment = match public_url {
+        Some(url) => figment.merge(("public_url", url)),
+        None => figment,
+    };
 
     #[cfg(all(unix, feature = "coverage"))]
     {

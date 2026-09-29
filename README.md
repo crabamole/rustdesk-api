@@ -69,6 +69,8 @@ default and ships as-is in every deployment.
 The server requires an `oauth2.toml` configuration file to function. By default, it is expected at `./oauth2.toml`, although this location can be modified using the `OAUTH2_CONFIG_FILE` environment variable. Setting the `OAUTH2_CREATE_USER` variable to `1` enables the automatic creation of a user upon the first OAuth2 login. The user is created with the Rustdesk ID and a random password, which is displayed in the server logs.  
 If you don't provide this file, the server will create it for you in the working directory.
 
+The OIDC callback URL is `<origin>/api/oidc/callback`, where the origin comes from the request's `Host` (or `X-Forwarded-Host` / `X-Forwarded-Proto`) headers. Set `PUBLIC_URL` to the URL users open (e.g. `https://rustdesk.example.com`, no path) when a proxy rewrites those headers or the service is reached on a non-default port; the server refuses to start if it is not a plain http(s) origin.
+
 ## OpenAPI
 
 The server is designed to be fully documented using OpenAPI. The documentation is generated using `rocket_okapi`. The server does not serve it; `rustdesk-api openapi` prints the spec as JSON.  
