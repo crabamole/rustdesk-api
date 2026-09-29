@@ -543,7 +543,7 @@ Legend: ✅ conforms · ⚠️ partial / deviates · ❌ missing
 | §6 alarms 3–5 (account login) | ❌ | `/api/login` generates no alarms. |
 | §7 `GET /api/audit/conn/active` | ❌ **(live)** | Route exists but: **no auth** (answers 200 without a token); filters `type = conn_type AND session_id match`, but rows always have `type=0` and `session_id=0` (§3.2 not stored) → always `""` → client exhausts retries, never gets a GUID → end-of-session note dialog (§8) never offered. `find_active_audit_conn` also does N+1 queries and parses `session_id` via `as_i64`. |
 | §8 `PUT /api/audit` | ❌ **(live)** | 404. Only legacy `POST /api/audit` exists, which just logs. |
-| §10 heartbeat `disconnect` | ❌ **(live)** | Heartbeat returns plain `OK` (not JSON); `conns` not parsed; no disconnect queue. |
+| §10 heartbeat `disconnect` | ❌ **(live)** | Heartbeat returns JSON `{"modified_at": ..., "strategy": {"config_options": {...}}}` (the `strategy` field only when the device's policy changed), used for device policy sync (2026-09-29), not disconnect; `conns` not parsed; no disconnect queue. |
 | §11 `ControlledContext` (hbbs) | ❌ | sctgdesk-server pins `hbb_common` `2985cd8` (2025-11-02), which predates `ControlledContext`; the client repo pins `69cea8d` (2026-07-26). hbbs sends no `conn_audit_ref`, so no controller-user attribution. *(Also means the api-server roadmap's "protos already match" claim is wrong.)* |
 | §2.2 hbbs raw-TCP API proxy | ❌ | hbbs does not handle `HttpProxyRequest`; the client's fallback path fails (only matters with `USE_RAW_TCP_FOR_API=Y` or during 5xx). |
 
