@@ -13,7 +13,7 @@
 //
 // You should have received a copy of the Affero General Public License
 // along with SCTGDesk. If not, see <https://www.gnu.org/licenses/agpl-3.0.html>.
-use std::collections::HashMap;
+use std::collections::{HashMap, BTreeMap};
 use std::fmt;
 use std::sync::Arc;
 
@@ -866,6 +866,53 @@ pub struct AbSharedNameRequest {
 #[derive(Serialize, Deserialize, Clone, JsonSchema)]
 pub struct DeleteUserRequest {
     pub rows: Vec<String>,
+}
+
+/// One setting the device policy can manage.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct PolicyKeyInfo {
+    pub key: String,
+    pub label: String,
+    pub values: Vec<String>,
+}
+
+/// A strategy in `GET /api/strategies` (Pro's `strategies.py list` reads `guid` and `name`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct StrategySummary {
+    pub guid: String,
+    pub name: String,
+    /// Epoch milliseconds; devices report the value they last received.
+    pub modified_at: i64,
+}
+
+/// A strategy with its managed options. A key missing from `options` is not managed;
+/// `""` resets it to the device's default.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct Strategy {
+    pub guid: String,
+    pub name: String,
+    pub modified_at: i64,
+    pub options: BTreeMap<String, String>,
+    /// The settings a policy may manage, for the webconsole.
+    pub keys: Vec<PolicyKeyInfo>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct UpdateStrategyRequest {
+    pub options: BTreeMap<String, String>,
+}
+
+/// Reply to `/api/heartbeat`; the client applies `strategy` when present (`hbbs_http/sync.rs`).
+#[derive(Debug, PartialEq, Serialize, JsonSchema)]
+pub struct HeartbeatResponse {
+    pub modified_at: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub strategy: Option<StrategyPush>,
+}
+
+#[derive(Debug, PartialEq, Serialize, JsonSchema)]
+pub struct StrategyPush {
+    pub config_options: BTreeMap<String, String>,
 }
 
 #[cfg(test)]

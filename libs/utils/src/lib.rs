@@ -19,6 +19,7 @@ pub mod address_book;
 
 pub mod types;
 pub mod get_host;
+pub mod policy;
 
 pub use tokens::Token;
 pub use bearer::{BearerAuthToken, CookieAuthToken, MixedAuthToken, IntoToken};
