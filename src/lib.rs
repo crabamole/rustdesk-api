@@ -1938,8 +1938,9 @@ async fn strategy_update(
 ///
 /// Not in Pro's published API. Every device receives the strategy again on its next
 /// heartbeat, which reverts local changes to managed settings.
+// no body, so no format: Rocket 0.5 404s a POST with a format guard and no Content-Type
 #[openapi(tag = "strategy")]
-#[post("/api/strategies/<guid>/repush", format = "application/json")]
+#[post("/api/strategies/<guid>/repush")]
 async fn strategy_repush(
     state: &State<ApiState>,
     user: AuthenticatedAdmin,

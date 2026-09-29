@@ -869,6 +869,17 @@ async fn test_strategy_get_update_repush() {
 }
 
 #[rocket::async_test]
+async fn test_strategy_repush_without_content_type() {
+    let (client, _dir) = test_client().await;
+    let token = login_admin(&client).await;
+    let path = format!("/api/strategies/{DEFAULT_STRATEGY}");
+
+    // webconsole's axios POST sends no Content-Type on an empty body; Rocket must not 404 it
+    let resp = client.post(format!("{path}/repush")).header(auth_header(&token)).dispatch().await;
+    assert_eq!(resp.status(), Status::Ok);
+}
+
+#[rocket::async_test]
 async fn test_strategy_update_rejects_invalid_options() {
     let (client, _dir) = test_client().await;
     let token = login_admin(&client).await;
