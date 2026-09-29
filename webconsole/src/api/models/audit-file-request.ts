@@ -16,61 +16,61 @@
  * 
  *
  * @export
- * @interface SystemInfo
+ * @interface AuditFileRequest
  */
-export interface SystemInfo {
+export interface AuditFileRequest {
 
     /**
      * @type {string}
-     * @memberof SystemInfo
+     * @memberof AuditFileRequest
      */
-    cpu?: string | null;
+    id?: string;
 
     /**
      * @type {string}
-     * @memberof SystemInfo
+     * @memberof AuditFileRequest
      */
-    hostname?: string | null;
+    uuid?: string;
 
     /**
      * @type {string}
-     * @memberof SystemInfo
+     * @memberof AuditFileRequest
      */
-    id?: string | null;
+    peer_id?: string;
+
+    /**
+     * @type {number}
+     * @memberof AuditFileRequest
+     */
+    conn_id?: number;
+
+    /**
+     * @type {number}
+     * @memberof AuditFileRequest
+     */
+    type?: number;
 
     /**
      * @type {string}
-     * @memberof SystemInfo
+     * @memberof AuditFileRequest
      */
-    memory?: string | null;
+    path?: string;
+
+    /**
+     * @type {boolean}
+     * @memberof AuditFileRequest
+     */
+    is_file?: boolean;
 
     /**
      * @type {string}
-     * @memberof SystemInfo
+     * @memberof AuditFileRequest
      */
-    os?: string | null;
+    info?: string;
 
     /**
      * @type {string}
-     * @memberof SystemInfo
+     * @memberof AuditFileRequest
      */
-    username?: string | null;
-
-    /**
-     * @type {string}
-     * @memberof SystemInfo
-     */
-    uuid?: string | null;
-
-    /**
-     * @type {string}
-     * @memberof SystemInfo
-     */
-    version?: string | null;
-
-    /**
-     * @type {string}
-     * @memberof SystemInfo
-     */
-    ip?: string | null;
+    nonce?: string;
 }

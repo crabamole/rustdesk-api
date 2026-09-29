@@ -16,37 +16,49 @@
  * 
  *
  * @export
- * @interface AuditRequest
+ * @interface AuditAlarmRequest
  */
-export interface AuditRequest {
-
-    /**
-     * @type {number}
-     * @memberof AuditRequest
-     */
-    id?: number;
+export interface AuditAlarmRequest {
 
     /**
      * @type {string}
-     * @memberof AuditRequest
-     */
-    action?: string;
-
-    /**
-     * @type {string}
-     * @memberof AuditRequest
+     * @memberof AuditAlarmRequest
      */
     id?: string;
 
     /**
      * @type {string}
-     * @memberof AuditRequest
+     * @memberof AuditAlarmRequest
      */
-    ip?: string;
+    uuid?: string;
+
+    /**
+     * @type {number}
+     * @memberof AuditAlarmRequest
+     */
+    typ?: number;
 
     /**
      * @type {string}
-     * @memberof AuditRequest
+     * @memberof AuditAlarmRequest
      */
-    uuid?: string;
+    info?: string;
+
+    /**
+     * @type {number}
+     * @memberof AuditAlarmRequest
+     */
+    conn_id?: number;
+
+    /**
+     * @type {string}
+     * @memberof AuditAlarmRequest
+     */
+    nonce?: string;
+
+    /**
+     * @type {string}
+     * @memberof AuditAlarmRequest
+     */
+    conn_audit_ref?: string | null;
 }

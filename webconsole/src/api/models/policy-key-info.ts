@@ -13,22 +13,28 @@
  */
 
  /**
- * 
+ * One setting the device policy can manage.
  *
  * @export
- * @interface AbSettingsResponse
+ * @interface PolicyKeyInfo
  */
-export interface AbSettingsResponse {
+export interface PolicyKeyInfo {
 
     /**
      * @type {string}
-     * @memberof AbSettingsResponse
+     * @memberof PolicyKeyInfo
      */
-    error?: string | null;
+    key: string;
 
     /**
-     * @type {number}
-     * @memberof AbSettingsResponse
+     * @type {string}
+     * @memberof PolicyKeyInfo
      */
-    max_peer_one_ab: number;
+    label: string;
+
+    /**
+     * @type {Array<string>}
+     * @memberof PolicyKeyInfo
+     */
+    values: Array<string>;
 }

@@ -13,22 +13,30 @@
  */
 
  /**
- * 
+ * A strategy in `GET /api/strategies` (Pro's `strategies.py list` reads `guid` and `name`).
  *
  * @export
- * @interface AbSettingsResponse
+ * @interface StrategySummary
  */
-export interface AbSettingsResponse {
+export interface StrategySummary {
 
     /**
      * @type {string}
-     * @memberof AbSettingsResponse
+     * @memberof StrategySummary
      */
-    error?: string | null;
+    guid: string;
 
     /**
-     * @type {number}
-     * @memberof AbSettingsResponse
+     * @type {string}
+     * @memberof StrategySummary
      */
-    max_peer_one_ab: number;
+    name: string;
+
+    /**
+     * Epoch milliseconds; devices report the value they last received.
+     *
+     * @type {number}
+     * @memberof StrategySummary
+     */
+    modified_at: number;
 }

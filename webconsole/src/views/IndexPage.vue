@@ -122,6 +122,9 @@ This website use:
       <div v-if="isCurrentPage('Groups')" class="mx-auto max-w-7xl py-6 sm:px-6 lg:px-8">
         <GroupsCard />
       </div>
+      <div v-if="isCurrentPage('Policy')" class="mx-auto max-w-7xl py-6 sm:px-6 lg:px-8">
+        <PolicyCard />
+      </div>
       <div v-if="isCurrentPage('Address books')" class="mx-auto max-w-7xl py-6 sm:px-6 lg:px-8">
         <AccessibleAddressBooks />
       </div>
@@ -144,6 +147,7 @@ import DashboardCard from '@/components/DashboardCard.vue';
 import MainFooter from '@/footers/mainfooter.vue';
 import { ref } from 'vue';
 import GroupsCard from '@/components/GroupsCard.vue';
+import PolicyCard from '@/components/PolicyCard.vue';
 import AccessibleAddressBooks from '@/components/AccessibleAddressBooks.vue';
 const userStore = useUserStore();
 const router = useRouter();
@@ -159,6 +163,7 @@ const navigation = ref([
   { name: 'Devices', href: '#', current: false },
   { name: 'Users', href: '#', current: false },
   { name: 'Groups', href: '#', current: false },
+  { name: 'Policy', href: '#', current: false },
   { name: 'Address books', href: '#', current: false },
 ])
 const userNavigation = [

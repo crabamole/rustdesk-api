@@ -12,23 +12,24 @@
  * Do not edit the class manually.
  */
 
+import { StrategyPush } from './strategy-push';
  /**
- * 
+ * Reply to `/api/heartbeat`; the client applies `strategy` when present (`hbbs_http/sync.rs`).
  *
  * @export
- * @interface AbSettingsResponse
+ * @interface HeartbeatResponse
  */
-export interface AbSettingsResponse {
-
-    /**
-     * @type {string}
-     * @memberof AbSettingsResponse
-     */
-    error?: string | null;
+export interface HeartbeatResponse {
 
     /**
      * @type {number}
-     * @memberof AbSettingsResponse
+     * @memberof HeartbeatResponse
      */
-    max_peer_one_ab: number;
+    modified_at: number;
+
+    /**
+     * @type {StrategyPush}
+     * @memberof HeartbeatResponse
+     */
+    strategy?: StrategyPush | null;
 }

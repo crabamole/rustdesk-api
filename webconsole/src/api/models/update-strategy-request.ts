@@ -16,19 +16,13 @@
  * 
  *
  * @export
- * @interface AbSettingsResponse
+ * @interface UpdateStrategyRequest
  */
-export interface AbSettingsResponse {
+export interface UpdateStrategyRequest {
 
     /**
-     * @type {string}
-     * @memberof AbSettingsResponse
+     * @type {{ [key: string]: string; }}
+     * @memberof UpdateStrategyRequest
      */
-    error?: string | null;
-
-    /**
-     * @type {number}
-     * @memberof AbSettingsResponse
-     */
-    max_peer_one_ab: number;
+    options: { [key: string]: string; };
 }

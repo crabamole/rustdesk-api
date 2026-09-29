@@ -1,8 +1,8 @@
 {
   "openapi": "3.0.0",
   "info": {
-    "title": "sctgdesk-api-server",
-    "version": "0.1.0"
+    "title": "rustdesk-api",
+    "version": "3.1.1"
   },
   "paths": {
     "/{_path}": {
@@ -38,8 +38,8 @@
         "tags": [
           "login"
         ],
-        "summary": "User Login",
-        "description": "This function is an API endpoint that allows a user to log in without oauth. It is tagged with \"login\" for OpenAPI documentation. <br>\n\n## Parameters\n\n- `request`: The request data, which includes the user's username and password.  <br>\n\n## Returns\n\nIf successful, this function returns a `Json<LoginReply>` object, which includes the user's information and access token.  <br> If the user is not authorized, this function returns a `status::Unauthorized` error.  <br>\n\n## Errors\n\nThis function will return an error if the user is not authorized or if the system is in maintenance mode.",
+        "summary": "User Login (disabled)",
+        "description": "Password login is disabled; this endpoint always returns 401 Unauthorized. Log in through OIDC (`/api/oidc/auth`) instead. The route stays so that clients which still show a password form get a clear rejection.",
         "operationId": "login",
         "requestBody": {
           "content": {
@@ -229,15 +229,141 @@
     "/api/audit": {
       "post": {
         "tags": [
-          "todo"
+          "audit"
         ],
-        "description": "Audit",
+        "description": "Audit (legacy endpoint, delegates to conn handler)",
         "operationId": "audit",
         "requestBody": {
           "content": {
             "application/json": {
               "schema": {
                 "$ref": "#/components/schemas/AuditRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/api/audit/conn": {
+      "post": {
+        "tags": [
+          "audit"
+        ],
+        "description": "Audit connection events",
+        "operationId": "audit_conn",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AuditConnRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/audit/conn/active": {
+      "get": {
+        "tags": [
+          "audit"
+        ],
+        "description": "Query active audit connection",
+        "operationId": "audit_conn_active",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "conn_type",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/audit/file": {
+      "post": {
+        "tags": [
+          "audit"
+        ],
+        "description": "Audit file transfer events",
+        "operationId": "audit_file",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AuditFileRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/api/audit/alarm": {
+      "post": {
+        "tags": [
+          "audit"
+        ],
+        "description": "Audit alarm events",
+        "operationId": "audit_alarm",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AuditAlarmRequest"
               }
             }
           },
@@ -296,7 +422,7 @@
           "peer"
         ],
         "summary": "Heartbeat",
-        "description": "This function is an API endpoint that is frequently hit by the client at the /api/heartbeat endpoint. It updates the `last_online` field of the peer. It is tagged with \"peer\" for OpenAPI documentation.\n\n## Parameters\n\n- `request`: The request data, which includes the heartbeat information.\n\n## Returns\n\nThis function always returns a `String` with the message \"OK\".  <br>\n\n## Errors\n\nThis function will return an error if the system is in maintenance mode.",
+        "description": "This function is an API endpoint that is frequently hit by the client at the /api/heartbeat endpoint. It updates the `last_online` field of the peer. It is tagged with \"peer\" for OpenAPI documentation.\n\n## Parameters\n\n- `request`: The request data, which includes the heartbeat information.\n\n## Returns\n\nthe device policy when the device's `modified_at` differs from it.  <br>\n\n## Errors\n\nThis function will return an error if the system is in maintenance mode.",
         "operationId": "heartbeat",
         "requestBody": {
           "content": {
@@ -312,9 +438,9 @@
           "200": {
             "description": "",
             "content": {
-              "text/plain": {
+              "application/json": {
                 "schema": {
-                  "type": "string"
+                  "$ref": "#/components/schemas/HeartbeatResponse"
                 }
               }
             }
@@ -965,13 +1091,13 @@
         ]
       }
     },
-    "/api/stategies": {
+    "/api/strategies": {
       "get": {
         "tags": [
-          "todo"
+          "strategy"
         ],
         "summary": "List strategies",
-        "description": "This function is an API endpoint that retrieves the list of all strategies. <br> TODO: This function is currently unused.",
+        "description": "Pro-compatible (`strategies.py list`). Only the \"Default\" strategy exists: it is the policy every device receives.",
         "operationId": "strategies",
         "responses": {
           "200": {
@@ -979,13 +1105,172 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/UsersResponse"
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/StrategySummary"
+                  }
                 }
               }
             }
           },
-          "404": {
-            "description": ""
+          "default": {
+            "description": "",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "authorization_admin": []
+          }
+        ]
+      }
+    },
+    "/api/strategies/{guid}": {
+      "get": {
+        "tags": [
+          "strategy"
+        ],
+        "summary": "Get a strategy",
+        "description": "Pro-compatible (`strategies.py view`). `options` holds the managed settings (a missing key is not managed, `\"\"` resets it to the device default); `keys` lists every setting a policy may manage.",
+        "operationId": "strategy_get",
+        "parameters": [
+          {
+            "name": "guid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Strategy"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "authorization_admin": []
+          }
+        ]
+      },
+      "put": {
+        "tags": [
+          "strategy"
+        ],
+        "summary": "Update a strategy's options",
+        "description": "Not in Pro's published API. Replaces the managed settings; devices receive them on their next heartbeat. 400 names the first invalid setting; nothing is saved then.",
+        "operationId": "strategy_update",
+        "parameters": [
+          {
+            "name": "guid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateStrategyRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Strategy"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "authorization_admin": []
+          }
+        ]
+      }
+    },
+    "/api/strategies/{guid}/repush": {
+      "post": {
+        "tags": [
+          "strategy"
+        ],
+        "summary": "Re-push a strategy",
+        "description": "Not in Pro's published API. Every device receives the strategy again on its next heartbeat, which reverts local changes to managed settings.",
+        "operationId": "strategy_repush",
+        "parameters": [
+          {
+            "name": "guid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Strategy"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -1068,46 +1353,6 @@
                 "schema": {
                   "$ref": "#/components/schemas/OidcResponse",
                   "nullable": true
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/oidc/callback": {
-      "get": {
-        "tags": [
-          "login"
-        ],
-        "summary": "OIDC Auth Callback",
-        "description": "This function is an API endpoint that serves as the OAuth2 callback. It exchanges the authorization code for an access token and stores it in the state. It is tagged with \"login\" for OpenAPI documentation.\n\n## Parameters\n\n- `code`: The authorization code received from the OIDC provider.\n\n- `state`: The state parameter received from the OIDC provider. This is the session code.\n\n## Returns\n\nIf successful, this function returns \"OK\".  <br> If the session does not exist or the code exchange fails, this function returns \"ERROR\".  <br>\n\n## Errors\n\nThis function will return an error if the system is in maintenance mode, or if the session does not exist or the code exchange fails.\n\n# Example\n\nGET /api/oidc/callback?code=authorization_code&state=session_code",
-        "operationId": "oidc_callback",
-        "parameters": [
-          {
-            "name": "code",
-            "in": "query",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "state",
-            "in": "query",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "",
-            "content": {
-              "text/plain": {
-                "schema": {
-                  "type": "string"
                 }
               }
             }
@@ -1218,7 +1463,7 @@
           "200": {
             "description": "\\\n            # [200 OK](https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/200)  \n            This response is given when the request is successful.  \n            The body is empty if there is no error,  \n            The body contains a json object with the error {\"error\":\"Error message\"}   \n            "
           },
-          "401": {
+          "default": {
             "description": ""
           }
         },
@@ -1264,7 +1509,7 @@
           "200": {
             "description": "\\\n            # [200 OK](https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/200)  \n            This response is given when the request is successful.  \n            The body is empty if there is no error,  \n            The body contains a json object with the error {\"error\":\"Error message\"}   \n            "
           },
-          "401": {
+          "default": {
             "description": ""
           }
         },
@@ -1313,7 +1558,7 @@
           "200": {
             "description": "\\\n            # [200 OK](https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/200)  \n            This response is given when the request is successful.  \n            The body is empty if there is no error,  \n            The body contains a json object with the error {\"error\":\"Error message\"}   \n            "
           },
-          "401": {
+          "default": {
             "description": ""
           }
         },
@@ -1373,7 +1618,7 @@
               }
             }
           },
-          "401": {
+          "default": {
             "description": ""
           }
         },
@@ -1446,7 +1691,7 @@
               }
             }
           },
-          "404": {
+          "default": {
             "description": ""
           }
         },
@@ -1492,7 +1737,7 @@
           "200": {
             "description": "\\\n            # [200 OK](https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/200)  \n            This response is given when the request is successful.  \n            The body is empty if there is no error,  \n            The body contains a json object with the error {\"error\":\"Error message\"}   \n            "
           },
-          "401": {
+          "default": {
             "description": ""
           }
         },
@@ -1538,7 +1783,7 @@
           "200": {
             "description": "\\\n            # [200 OK](https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/200)  \n            This response is given when the request is successful.  \n            The body is empty if there is no error,  \n            The body contains a json object with the error {\"error\":\"Error message\"}   \n            "
           },
-          "401": {
+          "default": {
             "description": ""
           }
         },
@@ -1584,7 +1829,7 @@
           "200": {
             "description": "\\\n            # [200 OK](https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/200)  \n            This response is given when the request is successful.  \n            The body is empty if there is no error,  \n            The body contains a json object with the error {\"error\":\"Error message\"}   \n            "
           },
-          "401": {
+          "default": {
             "description": ""
           }
         },
@@ -1633,7 +1878,7 @@
           "200": {
             "description": "\\\n            # [200 OK](https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/200)  \n            This response is given when the request is successful.  \n            The body is empty if there is no error,  \n            The body contains a json object with the error {\"error\":\"Error message\"}   \n            "
           },
-          "401": {
+          "default": {
             "description": ""
           }
         },
@@ -1872,7 +2117,7 @@
               }
             }
           },
-          "401": {
+          "default": {
             "description": ""
           }
         },
@@ -2220,6 +2465,141 @@
           }
         }
       },
+      "AuditConnRequest": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "default": "",
+            "type": "string"
+          },
+          "uuid": {
+            "default": "",
+            "type": "string"
+          },
+          "conn_id": {
+            "default": 0,
+            "type": "integer",
+            "format": "int64"
+          },
+          "session_id": {
+            "default": 0,
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 0.0
+          },
+          "nonce": {
+            "default": "",
+            "type": "string"
+          },
+          "ip": {
+            "default": "",
+            "type": "string"
+          },
+          "action": {
+            "default": "",
+            "type": "string"
+          },
+          "name": {
+            "default": null,
+            "type": "string",
+            "nullable": true
+          },
+          "os_login": {
+            "default": null,
+            "type": "string",
+            "nullable": true
+          },
+          "conn_audit_ref": {
+            "default": null,
+            "type": "string",
+            "nullable": true
+          },
+          "note": {
+            "default": null,
+            "type": "string",
+            "nullable": true
+          }
+        }
+      },
+      "AuditFileRequest": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "default": "",
+            "type": "string"
+          },
+          "uuid": {
+            "default": "",
+            "type": "string"
+          },
+          "peer_id": {
+            "default": "",
+            "type": "string"
+          },
+          "conn_id": {
+            "default": 0,
+            "type": "integer",
+            "format": "int64"
+          },
+          "type": {
+            "default": 0,
+            "type": "integer",
+            "format": "int8"
+          },
+          "path": {
+            "default": "",
+            "type": "string"
+          },
+          "is_file": {
+            "default": false,
+            "type": "boolean"
+          },
+          "info": {
+            "default": "",
+            "type": "string"
+          },
+          "nonce": {
+            "default": "",
+            "type": "string"
+          }
+        }
+      },
+      "AuditAlarmRequest": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "default": "",
+            "type": "string"
+          },
+          "uuid": {
+            "default": "",
+            "type": "string"
+          },
+          "typ": {
+            "default": 0,
+            "type": "integer",
+            "format": "int8"
+          },
+          "info": {
+            "default": "",
+            "type": "string"
+          },
+          "conn_id": {
+            "default": 0,
+            "type": "integer",
+            "format": "int64"
+          },
+          "nonce": {
+            "default": "",
+            "type": "string"
+          },
+          "conn_audit_ref": {
+            "default": null,
+            "type": "string",
+            "nullable": true
+          }
+        }
+      },
       "LogoutReply": {
         "type": "object",
         "required": [
@@ -2228,6 +2608,41 @@
         "properties": {
           "data": {
             "type": "string"
+          }
+        }
+      },
+      "HeartbeatResponse": {
+        "description": "Reply to `/api/heartbeat`; the client applies `strategy` when present (`hbbs_http/sync.rs`).",
+        "type": "object",
+        "required": [
+          "modified_at"
+        ],
+        "properties": {
+          "modified_at": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "strategy": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/StrategyPush"
+              }
+            ],
+            "nullable": true
+          }
+        }
+      },
+      "StrategyPush": {
+        "type": "object",
+        "required": [
+          "config_options"
+        ],
+        "properties": {
+          "config_options": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            }
           }
         }
       },
@@ -2514,21 +2929,13 @@
       "AddUserRequest": {
         "type": "object",
         "required": [
-          "confirm-password",
           "email",
           "group_name",
           "is_admin",
-          "name",
-          "password"
+          "name"
         ],
         "properties": {
           "name": {
-            "type": "string"
-          },
-          "password": {
-            "type": "string"
-          },
-          "confirm-password": {
             "type": "string"
           },
           "email": {
@@ -2584,14 +2991,6 @@
             "type": "string"
           },
           "name": {
-            "type": "string",
-            "nullable": true
-          },
-          "password": {
-            "type": "string",
-            "nullable": true
-          },
-          "confirm-password": {
             "type": "string",
             "nullable": true
           },
@@ -2745,6 +3144,101 @@
           }
         }
       },
+      "StrategySummary": {
+        "description": "A strategy in `GET /api/strategies` (Pro's `strategies.py list` reads `guid` and `name`).",
+        "type": "object",
+        "required": [
+          "guid",
+          "modified_at",
+          "name"
+        ],
+        "properties": {
+          "guid": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "modified_at": {
+            "description": "Epoch milliseconds; devices report the value they last received.",
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "Strategy": {
+        "description": "A strategy with its managed options. A key missing from `options` is not managed; `\"\"` resets it to the device's default.",
+        "type": "object",
+        "required": [
+          "guid",
+          "keys",
+          "modified_at",
+          "name",
+          "options"
+        ],
+        "properties": {
+          "guid": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "modified_at": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "options": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            }
+          },
+          "keys": {
+            "description": "The settings a policy may manage, for the webconsole.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PolicyKeyInfo"
+            }
+          }
+        }
+      },
+      "PolicyKeyInfo": {
+        "description": "One setting the device policy can manage.",
+        "type": "object",
+        "required": [
+          "key",
+          "label",
+          "values"
+        ],
+        "properties": {
+          "key": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          },
+          "values": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "UpdateStrategyRequest": {
+        "type": "object",
+        "required": [
+          "options"
+        ],
+        "properties": {
+          "options": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            }
+          }
+        }
+      },
       "OidcAuthUrl": {
         "type": "object",
         "required": [
@@ -2782,6 +3276,7 @@
             "type": "string"
           },
           "redirectUri": {
+            "default": null,
             "type": "string",
             "nullable": true
           }
