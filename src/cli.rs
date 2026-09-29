@@ -1,5 +1,4 @@
-//! Command line: `serve` runs the HTTP API; `admin` manages admins directly in the
-//! database, so only someone with access to the host or pod can use it; `openapi` prints the API spec.
+//! Command line: `serve` runs the HTTP API; `admin` and `policy` work directly on the database, so only someone with access to the host or pod can use them; `openapi` prints the API spec.
 use clap::{Parser, Subcommand};
 use state::ApiState;
 
@@ -32,6 +31,9 @@ pub enum Command {
     /// Manage admins directly in the database (needs DATABASE_URL)
     #[command(subcommand)]
     Admin(AdminCommand),
+    /// Show or re-push the device policy (needs DATABASE_URL)
+    #[command(subcommand)]
+    Policy(PolicyCommand),
     /// Check the OIDC provider file
     #[command(subcommand)]
     Oidc(OidcCommand),
@@ -104,6 +106,38 @@ pub async fn run_admin(cmd: &AdminCommand, db_url: &str) -> Result<String, Strin
     } else {
         format!("{name} is no longer an admin")
     })
+}
+
+#[derive(Subcommand, Debug)]
+pub enum PolicyCommand {
+    /// Print the managed settings
+    Show,
+    /// Send the policy to every device again; reverts local changes to managed settings on all devices
+    Repush,
+}
+
+/// Runs a `policy` subcommand and returns the message to print.
+pub async fn run_policy(cmd: &PolicyCommand, db_url: &str) -> Result<String, String> {
+    let guid = utils::policy::DEFAULT_STRATEGY_GUID;
+    let state = ApiState::new_with_db(db_url).await;
+    match cmd {
+        PolicyCommand::Show => {
+            let (s, options) = state.get_strategy(guid).await.ok_or("cannot read the policy")?;
+            let mut lines = vec![format!("modified_at: {}", s.modified_at)];
+            if options.is_empty() {
+                lines.push("no settings managed".to_string());
+            }
+            for (k, v) in options {
+                lines.push(format!("{k} = {}", if v.is_empty() { "(device default)" } else { &v }));
+            }
+            Ok(lines.join("\n"))
+        }
+        PolicyCommand::Repush => {
+            let m = state.bump_strategy(guid).await.ok_or("cannot update the policy")?;
+            log::info!("policy re-pushed from the CLI");
+            Ok(format!("policy re-pushed (modified_at {m}); devices receive it on their next heartbeat"))
+        }
+    }
 }
 
 #[cfg(test)]
@@ -207,5 +241,36 @@ issuer = "https://idp.example.com"
             .await
             .unwrap_err();
         assert!(err.contains("no user has email \"nobody@example.org\""), "{err}");
+    }
+
+    #[test]
+    fn policy_takes_show_and_repush() {
+        let cli = Cli::try_parse_from(["rustdesk-api", "policy", "show"]).unwrap();
+        assert!(matches!(cli.command, Command::Policy(PolicyCommand::Show)));
+        let cli = Cli::try_parse_from(["rustdesk-api", "policy", "repush"]).unwrap();
+        assert!(matches!(cli.command, Command::Policy(PolicyCommand::Repush)));
+    }
+
+    #[rocket::async_test]
+    async fn policy_show_then_repush() {
+        let db_url = state::testing::fresh_database_url().await;
+        let state = ApiState::new_with_db(&db_url).await;
+        let opts = [("enable-clipboard".to_string(), "N".to_string())].into();
+        let m = state.set_strategy_options(utils::policy::DEFAULT_STRATEGY_GUID, &opts).await.unwrap();
+
+        let shown = run_policy(&PolicyCommand::Show, &db_url).await.unwrap();
+        assert!(shown.contains("enable-clipboard = N") && shown.contains(&m.to_string()), "{shown}");
+
+        let pushed = run_policy(&PolicyCommand::Repush, &db_url).await.unwrap();
+        assert!(pushed.starts_with("policy re-pushed"), "{pushed}");
+        let (s, _) = state.get_strategy(utils::policy::DEFAULT_STRATEGY_GUID).await.unwrap();
+        assert!(s.modified_at > m);
+    }
+
+    #[rocket::async_test]
+    async fn policy_show_empty() {
+        let db_url = state::testing::fresh_database_url().await;
+        let shown = run_policy(&PolicyCommand::Show, &db_url).await.unwrap();
+        assert!(shown.contains("no settings managed"), "{shown}");
     }
 }

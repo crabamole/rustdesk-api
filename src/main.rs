@@ -17,7 +17,7 @@ use rocket::{
     config::LogLevel,
     data::{Limits, ToByteUnit},
 };
-use rustdesk_api::cli::{providers_file, run_admin, run_oidc_check, run_openapi, Cli, Command, OidcCommand};
+use rustdesk_api::cli::{providers_file, run_admin, run_policy, run_oidc_check, run_openapi, Cli, Command, OidcCommand};
 use rustdesk_api::{build_rocket, database_url_from_env};
 use clap::Parser;
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
@@ -49,6 +49,7 @@ async fn main() -> Result<(), rocket::Error> {
     let (address, port, log_level) = match Cli::parse().command {
         Command::Serve { address, port, log_level } => (address, port, log_level),
         Command::Admin(cmd) => finish(run_admin(&cmd, &db_url_or_exit()).await),
+        Command::Policy(cmd) => finish(run_policy(&cmd, &db_url_or_exit()).await),
         Command::Oidc(OidcCommand::Check { file }) => finish(run_oidc_check(&providers_file(file.as_deref())).await),
         Command::Openapi => finish(run_openapi()),
     };
