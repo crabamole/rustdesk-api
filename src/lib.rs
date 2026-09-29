@@ -72,6 +72,7 @@ use utils::{
 use utils::{
     AbGetResponse, AbRequest, AuditRequest, CurrentUserRequest, CurrentUserResponse,
     HeartbeatRequest, HeartbeatResponse, LoginReply, LoginRequest, LogoutReply, UserInfo, UsersResponse,
+    Strategy, StrategySummary, UpdateStrategyRequest,
 };
 
 type AuthenticatedUser = state::AuthenticatedUser<BearerAuthToken>;
@@ -153,6 +154,9 @@ pub fn api_routes() -> (Vec<rocket::Route>, rocket_okapi::okapi::openapi3::OpenA
         peers_count,
         peers_cpus,
         strategies,
+        strategy_get,
+        strategy_update,
+        strategy_repush,
         oidc_auth,
         oidc_state,
         oidc_add,
@@ -1855,27 +1859,99 @@ async fn ab_peer_delete(
     Ok(ActionResponse::Empty)
 }
 
+fn strategy_with_keys(summary: utils::StrategySummary, options: std::collections::BTreeMap<String, String>) -> Strategy {
+    Strategy {
+        guid: summary.guid,
+        name: summary.name,
+        modified_at: summary.modified_at,
+        options,
+        keys: utils::policy::key_info(),
+    }
+}
+
+async fn load_strategy(state: &ApiState, guid: &str) -> Result<Json<Strategy>, (Status, String)> {
+    let (summary, options) = state
+        .get_strategy(guid)
+        .await
+        .ok_or((Status::NotFound, format!("no strategy {guid}")))?;
+    Ok(Json(strategy_with_keys(summary, options)))
+}
+
 /// # List strategies
 ///
-/// This function is an API endpoint that retrieves the list of all strategies. <br>
-/// TODO: This function is currently unused.
-///
-#[openapi(tag = "todo")]
-#[get("/api/stategies", format = "application/json")]
+/// Pro-compatible (`strategies.py list`). Only the "Default" strategy exists: it is the
+/// policy every device receives.
+#[openapi(tag = "strategy")]
+#[get("/api/strategies", format = "application/json")]
 async fn strategies(
     state: &State<ApiState>,
     _user: AuthenticatedAdmin,
-) -> Result<Json<UsersResponse>, status::NotFound<()>> {
-    log::debug!("peers");
+) -> Result<Json<Vec<StrategySummary>>, (Status, String)> {
     state.check_maintenance().await;
+    state
+        .list_strategies()
+        .await
+        .map(Json)
+        .ok_or((Status::InternalServerError, "cannot read strategies".to_string()))
+}
 
-    let response = UsersResponse {
-        msg: "success".to_string(),
-        total: 1,
-        data: "[{}]".to_string(),
-    };
+/// # Get a strategy
+///
+/// Pro-compatible (`strategies.py view`). `options` holds the managed settings (a missing
+/// key is not managed, `""` resets it to the device default); `keys` lists every setting a
+/// policy may manage.
+#[openapi(tag = "strategy")]
+#[get("/api/strategies/<guid>", format = "application/json")]
+async fn strategy_get(
+    state: &State<ApiState>,
+    _user: AuthenticatedAdmin,
+    guid: &str,
+) -> Result<Json<Strategy>, (Status, String)> {
+    state.check_maintenance().await;
+    load_strategy(state, guid).await
+}
 
-    Ok(Json(response))
+/// # Update a strategy's options
+///
+/// Not in Pro's published API. Replaces the managed settings; devices receive them on
+/// their next heartbeat. 400 names the first invalid setting; nothing is saved then.
+#[openapi(tag = "strategy")]
+#[put("/api/strategies/<guid>", format = "application/json", data = "<request>")]
+async fn strategy_update(
+    state: &State<ApiState>,
+    user: AuthenticatedAdmin,
+    guid: &str,
+    request: Json<UpdateStrategyRequest>,
+) -> Result<Json<Strategy>, (Status, String)> {
+    state.check_maintenance().await;
+    let options = request.into_inner().options;
+    utils::policy::validate_options(&options).map_err(|e| (Status::BadRequest, e))?;
+    state
+        .set_strategy_options(guid, &options)
+        .await
+        .ok_or((Status::NotFound, format!("no strategy {guid}")))?;
+    log::info!("{} set strategy {guid} options: {:?}", user.username, options);
+    load_strategy(state, guid).await
+}
+
+/// # Re-push a strategy
+///
+/// Not in Pro's published API. Every device receives the strategy again on its next
+/// heartbeat, which reverts local changes to managed settings.
+#[openapi(tag = "strategy")]
+#[post("/api/strategies/<guid>/repush", format = "application/json")]
+async fn strategy_repush(
+    state: &State<ApiState>,
+    user: AuthenticatedAdmin,
+    guid: &str,
+) -> Result<Json<Strategy>, (Status, String)> {
+    state.check_maintenance().await;
+    state
+        .bump_strategy(guid)
+        .await
+        .ok_or((Status::NotFound, format!("no strategy {guid}")))?;
+    log::info!("{} re-pushed strategy {guid}", user.username);
+    load_strategy(state, guid).await
 }
 
 /// # Add user
@@ -3164,14 +3240,14 @@ mod tests {
         let client = test_client().await;
         let token = login_admin(&client).await;
         let resp = client
-            .get("/api/stategies")
+            .get("/api/strategies")
             .header(ContentType::JSON)
             .header(auth_header(&token))
             .dispatch()
             .await;
         assert_eq!(resp.status(), Status::Ok);
         let body: serde_json::Value = resp.into_json().await.unwrap();
-        assert_eq!(body["msg"], "success");
+        assert_eq!(body[0]["name"], "Default");
     }
 
     #[rocket::async_test]

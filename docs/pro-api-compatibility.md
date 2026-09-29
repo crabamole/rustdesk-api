@@ -58,8 +58,8 @@ Update this file with every API change.
 
 | Method | Path | Source | Status | Notes |
 |---|---|---|---|---|
-| GET | /api/strategies | [S] `strategies.py` | missing | stub `GET /api/stategies` (sic) returns a fake body; see "Our own endpoints" |
-| GET | /api/strategies/{guid} | [S] `strategies.py` | missing | |
+| GET | /api/strategies | [S] `strategies.py` | implemented | Default only; detail shape is ours, Pro's is unpublished |
+| GET | /api/strategies/{guid} | [S] `strategies.py` | implemented | Default only; detail shape is ours, Pro's is unpublished |
 | PUT | /api/strategies/{guid}/status | [S] `strategies.py` | missing | needs named policies |
 | POST | /api/strategies/assign | [S] `strategies.py` | missing | needs named policies |
 | GET | /api/devices | [S] `strategies.py` (also `devices.py`) | missing | no `/api/devices*` route exists |
@@ -145,8 +145,9 @@ Update this file with every API change.
 
 | Method | Path | Notes |
 |---|---|---|
-| GET | /api/stategies | stub (sic, typo); always returns a fake success body regardless of state; TODO in source |
 | POST | /api/ab/get | alias of `GET /api/ab` (same handler); not called by our client fork |
+| PUT | /api/strategies/{guid} | edit options; Pro edits in its console only |
+| POST | /api/strategies/{guid}/repush | force re-push to all devices |
 | POST | /api/enable-users | bulk enable/disable by uuid list |
 | POST | /api/user | create user (Pro uses `POST /api/users`) |
 | DELETE | /api/user | bulk delete by uuid list (Pro uses `DELETE /api/users/{guid}`) |

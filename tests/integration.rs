@@ -837,13 +837,78 @@ async fn test_ab_rules_crud() {
 async fn test_strategies() {
     let (client, _dir) = test_client().await;
     let token = login_admin(&client).await;
-    let resp = client
-        .get("/api/stategies")
-        .header(ContentType::JSON)
-        .header(auth_header(&token))
-        .dispatch()
-        .await;
+    let resp = client.get("/api/strategies").header(ContentType::JSON).header(auth_header(&token)).dispatch().await;
     assert_eq!(resp.status(), Status::Ok);
+    let body: Value = resp.into_json().await.unwrap();
+    assert_eq!(body[0]["guid"], DEFAULT_STRATEGY);
+    assert_eq!(body[0]["name"], "Default");
+}
+
+#[rocket::async_test]
+async fn test_strategy_get_update_repush() {
+    let (client, _dir) = test_client().await;
+    let token = login_admin(&client).await;
+    let path = format!("/api/strategies/{DEFAULT_STRATEGY}");
+
+    let resp = client.get(&path).header(ContentType::JSON).header(auth_header(&token)).dispatch().await;
+    let body: Value = resp.into_json().await.unwrap();
+    assert_eq!(body["options"], serde_json::json!({}));
+    assert_eq!(body["keys"].as_array().unwrap().len(), 15);
+
+    let resp = client.put(&path).header(ContentType::JSON).header(auth_header(&token))
+        .body(r#"{"options":{"enable-clipboard":"N","access-mode":""}}"#).dispatch().await;
+    assert_eq!(resp.status(), Status::Ok);
+    let saved: Value = resp.into_json().await.unwrap();
+    assert_eq!(saved["options"], serde_json::json!({"enable-clipboard": "N", "access-mode": ""}));
+
+    let resp = client.post(format!("{path}/repush")).header(ContentType::JSON).header(auth_header(&token)).dispatch().await;
+    assert_eq!(resp.status(), Status::Ok);
+    let pushed: Value = resp.into_json().await.unwrap();
+    assert!(pushed["modified_at"].as_i64() > saved["modified_at"].as_i64());
+    assert_eq!(pushed["options"], saved["options"]);
+}
+
+#[rocket::async_test]
+async fn test_strategy_update_rejects_invalid_options() {
+    let (client, _dir) = test_client().await;
+    let token = login_admin(&client).await;
+    let path = format!("/api/strategies/{DEFAULT_STRATEGY}");
+    let resp = client.put(&path).header(ContentType::JSON).header(auth_header(&token))
+        .body(r#"{"options":{"enable-clipboard":"N","relay-server":"evil"}}"#).dispatch().await;
+    assert_eq!(resp.status(), Status::BadRequest);
+    assert!(resp.into_string().await.unwrap().contains("relay-server"));
+    let resp = client.get(&path).header(ContentType::JSON).header(auth_header(&token)).dispatch().await;
+    let body: Value = resp.into_json().await.unwrap();
+    assert_eq!(body["options"], serde_json::json!({}), "nothing saved");
+}
+
+#[rocket::async_test]
+async fn test_strategy_unknown_guid_is_404() {
+    let (client, _dir) = test_client().await;
+    let token = login_admin(&client).await;
+    let path = "/api/strategies/00000000-0000-0000-0000-000000000000";
+    let get = client.get(path).header(ContentType::JSON).header(auth_header(&token)).dispatch().await;
+    assert_eq!(get.status(), Status::NotFound);
+    let put = client.put(path).header(ContentType::JSON).header(auth_header(&token)).body(r#"{"options":{}}"#).dispatch().await;
+    assert_eq!(put.status(), Status::NotFound);
+    let post = client.post(format!("{path}/repush")).header(ContentType::JSON).header(auth_header(&token)).dispatch().await;
+    assert_eq!(post.status(), Status::NotFound);
+}
+
+#[rocket::async_test]
+async fn test_strategy_endpoints_require_admin() {
+    let (client, _dir) = test_client().await;
+    let admin = login_admin(&client).await;
+    let (token, _) = create_and_login_user(&client, &admin, "bob").await;
+    let path = format!("/api/strategies/{DEFAULT_STRATEGY}");
+    for resp in [
+        client.get("/api/strategies").header(ContentType::JSON).header(auth_header(&token)).dispatch().await,
+        client.get(&path).header(ContentType::JSON).header(auth_header(&token)).dispatch().await,
+        client.put(&path).header(ContentType::JSON).header(auth_header(&token)).body(r#"{"options":{}}"#).dispatch().await,
+        client.post(format!("{path}/repush")).header(ContentType::JSON).header(auth_header(&token)).dispatch().await,
+    ] {
+        assert!(resp.status() == Status::Unauthorized || resp.status() == Status::Forbidden, "{}", resp.status());
+    }
 }
 
 #[rocket::async_test]
