@@ -19,6 +19,7 @@ use sqlx::{
     postgres::{PgConnection, PgPool, PgPoolOptions},
     Connection, Row,
 };
+use std::collections::BTreeMap;
 use std::env;
 use std::time::Duration;
 use utils::guid_into_uuid;
@@ -30,6 +31,7 @@ use utils::CpuCount;
 use utils::Group;
 use utils::Peer;
 use utils::Platform;
+use utils::StrategySummary;
 use utils::UpdateUserRequest;
 use utils::UserListResponse;
 
@@ -1482,6 +1484,71 @@ impl Database {
         Some(())
     }
 
+    pub async fn list_strategies(&self) -> Option<Vec<StrategySummary>> {
+        let rows = sqlx::query("SELECT guid, name, modified_at FROM strategy ORDER BY created_at, guid")
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| log::error!("list_strategies error: {e:?}"))
+            .ok()?;
+        rows.iter()
+            .map(|row| {
+                Some(StrategySummary {
+                    guid: guid_into_uuid(row.get("guid"))?,
+                    name: row.get("name"),
+                    modified_at: row.get("modified_at"),
+                })
+            })
+            .collect()
+    }
+
+    pub async fn get_strategy(&self, guid: &str) -> Option<(StrategySummary, BTreeMap<String, String>)> {
+        let guid_bytes = Uuid::parse_str(guid).ok()?.as_bytes().to_vec();
+        let row = sqlx::query("SELECT name, modified_at, options FROM strategy WHERE guid = $1")
+            .bind(&guid_bytes)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|e| log::error!("get_strategy error: {e:?}"))
+            .ok()??;
+        let options: String = row.get("options");
+        let options = serde_json::from_str(&options)
+            .map_err(|e| log::error!("strategy {guid} has invalid options: {e}"))
+            .unwrap_or_default();
+        let summary = StrategySummary {
+            guid: guid.to_string(),
+            name: row.get("name"),
+            modified_at: row.get("modified_at"),
+        };
+        Some((summary, options))
+    }
+
+    /// Saves `options` and bumps `modified_at` so every device receives them on its next heartbeat.
+    pub async fn set_strategy_options(&self, guid: &str, options: &BTreeMap<String, String>) -> Option<i64> {
+        let json = serde_json::to_string(options).ok()?;
+        self.touch_strategy(guid, Some(json)).await
+    }
+
+    /// Bumps `modified_at` only: devices receive the policy again, reverting local changes.
+    pub async fn bump_strategy(&self, guid: &str) -> Option<i64> {
+        self.touch_strategy(guid, None).await
+    }
+
+    async fn touch_strategy(&self, guid: &str, options: Option<String>) -> Option<i64> {
+        let guid_bytes = Uuid::parse_str(guid).ok()?.as_bytes().to_vec();
+        // Strictly increasing, so two saves in the same millisecond still differ.
+        sqlx::query_scalar(
+            "UPDATE strategy SET options = COALESCE($1, options), \
+             modified_at = GREATEST((extract(epoch FROM clock_timestamp()) * 1000)::bigint, modified_at + 1) \
+             WHERE guid = $2 RETURNING modified_at",
+        )
+        .bind(options)
+        .bind(&guid_bytes)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| log::error!("touch_strategy error: {e:?}"))
+        .ok()
+        .flatten()
+    }
+
     pub async fn add_shared_address_book(&self, name: &str, owner: &str) -> Option<String> {
         let ab_guid = Uuid::new_v4().as_bytes().to_vec();
         let rule_guid = Uuid::new_v4().as_bytes().to_vec();
@@ -1877,7 +1944,7 @@ mod tests {
                 .fetch_all(&first.pool)
                 .await
                 .unwrap();
-        assert_eq!(applied, vec![(1, true), (2, true), (3, true), (4, true)]);
+        assert_eq!(applied, vec![(1, true), (2, true), (3, true), (4, true), (5, true)]);
         first.pool.close().await;
 
         // Second start on the same database must not fail or duplicate rows.
@@ -2202,6 +2269,46 @@ mod tests {
     db_test!(get_group_invalid_uuid, |db| {
         let result = db.get_group("bad-uuid").await;
         assert!(result.is_none());
+    });
+
+    db_test!(default_strategy_is_seeded_and_empty, |db| {
+        let list = db.list_strategies().await.unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].guid, utils::policy::DEFAULT_STRATEGY_GUID);
+        assert_eq!(list[0].name, "Default");
+        let (s, options) = db.get_strategy(utils::policy::DEFAULT_STRATEGY_GUID).await.unwrap();
+        assert!(s.modified_at > 0);
+        assert!(options.is_empty());
+    });
+
+    db_test!(set_strategy_options_saves_and_bumps, |db| {
+        let guid = utils::policy::DEFAULT_STRATEGY_GUID;
+        let before = db.get_strategy(guid).await.unwrap().0.modified_at;
+        let opts: std::collections::BTreeMap<String, String> =
+            [("enable-clipboard".to_string(), "N".to_string())].into();
+        let m1 = db.set_strategy_options(guid, &opts).await.unwrap();
+        let m2 = db.set_strategy_options(guid, &opts).await.unwrap();
+        assert!(m1 > before && m2 > m1, "{before} {m1} {m2}");
+        let (s, saved) = db.get_strategy(guid).await.unwrap();
+        assert_eq!((s.modified_at, saved), (m2, opts));
+    });
+
+    db_test!(bump_strategy_changes_only_modified_at, |db| {
+        let guid = utils::policy::DEFAULT_STRATEGY_GUID;
+        let opts: std::collections::BTreeMap<String, String> =
+            [("access-mode".to_string(), "view".to_string())].into();
+        let m1 = db.set_strategy_options(guid, &opts).await.unwrap();
+        let m2 = db.bump_strategy(guid).await.unwrap();
+        assert!(m2 > m1);
+        assert_eq!(db.get_strategy(guid).await.unwrap().1, opts);
+    });
+
+    db_test!(unknown_strategy_is_none, |db| {
+        let unknown = "00000000-0000-0000-0000-000000000000";
+        assert!(db.get_strategy(unknown).await.is_none());
+        assert!(db.get_strategy("not-a-guid").await.is_none());
+        assert!(db.set_strategy_options(unknown, &Default::default()).await.is_none());
+        assert!(db.bump_strategy(unknown).await.is_none());
     });
 
     db_test!(add_user_with_group, |db| {

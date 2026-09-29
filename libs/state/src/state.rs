@@ -20,7 +20,7 @@ use crate::{
     UserId,
 };
 use std::{
-    collections::HashMap,
+    collections::{HashMap, BTreeMap},
     default::Default,
     sync::atomic::{AtomicU64, Ordering},
     time::SystemTime,
@@ -31,7 +31,7 @@ use oauth2::ProviderConfig;
 use tokio::sync::RwLock;
 use utils::{
     AbPeer, AbRule, AbTag, AddUserRequest, AddressBook, CpuCount, Group, OidcState, Peer, Platform,
-    Token, UpdateUserRequest, UserListResponse,
+    StrategySummary, Token, UpdateUserRequest, UserListResponse,
 };
 
 pub struct ApiState {
@@ -647,6 +647,22 @@ impl ApiState {
 
     pub async fn delete_group(&self, guid: &str) -> Option<()> {
         self.db.delete_group(guid).await
+    }
+
+    pub async fn list_strategies(&self) -> Option<Vec<StrategySummary>> {
+        self.db.list_strategies().await
+    }
+
+    pub async fn get_strategy(&self, guid: &str) -> Option<(StrategySummary, BTreeMap<String, String>)> {
+        self.db.get_strategy(guid).await
+    }
+
+    pub async fn set_strategy_options(&self, guid: &str, options: &BTreeMap<String, String>) -> Option<i64> {
+        self.db.set_strategy_options(guid, options).await
+    }
+
+    pub async fn bump_strategy(&self, guid: &str) -> Option<i64> {
+        self.db.bump_strategy(guid).await
     }
 
     /// Add a shared address book given its name and its owner
@@ -1432,5 +1448,16 @@ mod tests {
         let guid = uuid::Uuid::from_slice(&user_id).unwrap().to_string();
         let result = state.user_change_status(&guid, false).await;
         assert!(result.is_some());
+    }
+
+    #[tokio::test]
+    async fn strategy_wrappers() {
+        let state = test_state().await;
+        let guid = utils::policy::DEFAULT_STRATEGY_GUID;
+        assert_eq!(state.list_strategies().await.unwrap().len(), 1);
+        let opts: BTreeMap<String, String> = [("enable-audio".to_string(), "N".to_string())].into();
+        let m1 = state.set_strategy_options(guid, &opts).await.unwrap();
+        assert!(state.bump_strategy(guid).await.unwrap() > m1);
+        assert_eq!(state.get_strategy(guid).await.unwrap().1, opts);
     }
 }
