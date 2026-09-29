@@ -117,10 +117,10 @@ Update this file with every API change.
 
 | Method | Path | Source | Status | Notes |
 |---|---|---|---|---|
-| GET | /api/ab/personal | [S] `ab.py` | implemented | ours is `POST /api/ab/personal`, method differs (client also uses POST) |
-| GET | /api/ab/shared/profiles | [S] `ab.py` | implemented | ours is `POST /api/ab/shared/profiles`, method differs (client also uses POST) |
-| GET | /api/ab/peers | [S] `ab.py` | implemented | ours is `POST /api/ab/peers`, method differs (client also uses POST) |
-| GET | /api/ab/tags/{guid} | [S] `ab.py` | implemented | ours is `POST /api/ab/tags/{ab}`; the admin script's GET verb differs, but the client also uses POST on this route |
+| GET | /api/ab/personal | [S] `ab.py` | partial | same path, but ours only answers `POST /api/ab/personal`; an unmodified Pro script's GET would fail (client also uses POST) |
+| GET | /api/ab/shared/profiles | [S] `ab.py` | partial | same path, but ours only answers `POST /api/ab/shared/profiles`; an unmodified Pro script's GET would fail (client also uses POST) |
+| GET | /api/ab/peers | [S] `ab.py` | partial | same path, but ours only answers `POST /api/ab/peers`; an unmodified Pro script's GET would fail (client also uses POST) |
+| GET | /api/ab/tags/{guid} | [S] `ab.py` | partial | same path, but ours only answers `POST /api/ab/tags/{ab}`; an unmodified Pro script's GET would fail (client also uses POST) |
 | POST | /api/ab/peer/add/{guid} | [S] `ab.py` | implemented | |
 | DELETE | /api/ab/peer/{guid} | [S] `ab.py` | implemented | |
 | PUT | /api/ab/peer/update/{guid} | [S] `ab.py` | implemented | |
