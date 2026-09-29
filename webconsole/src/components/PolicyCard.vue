@@ -4,7 +4,7 @@
             <p class="mb-4 text-sm text-gray-600">
                 Settings pushed to every device. They limit what a device allows when someone connects to it,
                 not what its user can do on other machines. Devices pick up a change within about 15 seconds;
-                a user can change a setting locally afterwards until the next re-push.
+                a user can change a setting locally afterwards until the policy is saved or re-pushed again.
             </p>
             <div class="max-w-full overflow-x-auto">
                 <table class="w-full table-auto">
@@ -34,8 +34,8 @@
                 Not managed leaves devices as they are. Device default resets the setting to the device's built-in default.
             </p>
             <div class="mt-4 flex flex-wrap items-center gap-3">
-                <button @click="save" class="rounded-md bg-slate-600 px-4 py-2 text-white">Save</button>
-                <button v-if="!confirming" @click="confirming = true" class="rounded-md bg-black/20 px-4 py-2">
+                <button @click="save" :disabled="keys.length === 0" class="rounded-md bg-slate-600 px-4 py-2 text-white disabled:opacity-50 disabled:cursor-not-allowed">Save</button>
+                <button v-if="!confirming" @click="confirming = true" :disabled="keys.length === 0" class="rounded-md bg-black/20 px-4 py-2 disabled:opacity-50 disabled:cursor-not-allowed">
                     Re-push to all devices
                 </button>
                 <span v-else class="flex flex-wrap items-center gap-2">
