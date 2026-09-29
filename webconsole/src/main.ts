@@ -31,6 +31,11 @@ const routes = [
         name: 'login',
     },
     {
+        path: "/ui/forbidden",
+        component: () => import("@/views/ForbiddenPage.vue"),
+        name: 'forbidden',
+    },
+    {
         path: "/:pathMatch(.*)*",
         name: 'default',
         redirect: "/ui/login"
@@ -63,6 +68,9 @@ router.beforeEach((to: RouteLocationNormalized, from: RouteLocationNormalized, n
     const store = useUserStore();
     if (to.name !== 'login' && !store.user && !store.api_configuration) {
         next({ name: 'login' });
+    } else if (store.user && !store.user.admin && to.name !== 'login' && to.name !== 'forbidden') {
+        // The admin API refuses non-admins anyway; show why instead of pages that fail.
+        next({ name: 'forbidden' });
     } else {
         next();
     }
