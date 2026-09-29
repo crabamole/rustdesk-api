@@ -30,8 +30,8 @@ use oauth2::ProviderConfig;
 
 use tokio::sync::RwLock;
 use utils::{
-    AbPeer, AbRule, AbTag, AddUserRequest, AddressBook, CpuCount, Group, OidcState, Peer, Platform,
-    StrategySummary, Token, UpdateUserRequest, UserListResponse,
+    AbPeer, AbRule, AbTag, AddUserRequest, AddressBook, CpuCount, Group, HeartbeatResponse, OidcState, Peer, Platform,
+    StrategyPush, StrategySummary, Token, UpdateUserRequest, UserListResponse,
 };
 
 pub struct ApiState {
@@ -663,6 +663,18 @@ impl ApiState {
 
     pub async fn bump_strategy(&self, guid: &str) -> Option<i64> {
         self.db.bump_strategy(guid).await
+    }
+
+    /// The heartbeat reply: the policy only when the device's `modified_at` differs (Pro semantics).
+    pub async fn policy_for_heartbeat(&self, device_modified_at: i64) -> HeartbeatResponse {
+        match self.db.get_strategy(utils::policy::DEFAULT_STRATEGY_GUID).await {
+            Some((s, options)) if s.modified_at != device_modified_at => HeartbeatResponse {
+                modified_at: s.modified_at,
+                strategy: Some(StrategyPush { config_options: utils::policy::allowed_options(options) }),
+            },
+            Some((s, _)) => HeartbeatResponse { modified_at: s.modified_at, strategy: None },
+            None => HeartbeatResponse { modified_at: device_modified_at, strategy: None },
+        }
     }
 
     /// Add a shared address book given its name and its owner

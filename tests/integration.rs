@@ -119,18 +119,51 @@ async fn test_logout() {
     assert!(resp.status() == Status::Unauthorized || resp.status() == Status::Forbidden);
 }
 
-#[rocket::async_test]
-async fn test_heartbeat() {
-    let (client, _dir) = test_client().await;
+const DEFAULT_STRATEGY: &str = "018f2556-2316-7a02-b31c-5599e7cd5b5e";
+
+async fn heartbeat(client: &Client, modified_at: i64) -> Value {
     let resp = client
         .post("/api/heartbeat")
         .header(ContentType::JSON)
-        .body(r#"{"id":"test123","modified_at":1704067200,"uuid":"abc","ver":1}"#)
+        .body(format!(r#"{{"id":"test123","modified_at":{modified_at},"uuid":"abc","ver":1}}"#))
         .dispatch()
         .await;
     assert_eq!(resp.status(), Status::Ok);
-    let body = resp.into_string().await.unwrap();
-    assert_eq!(body, "OK");
+    resp.into_json().await.unwrap()
+}
+
+async fn set_policy(client: &Client, options: &[(&str, &str)]) -> i64 {
+    let state = client.rocket().state::<state::ApiState>().unwrap();
+    let options = options.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+    state.set_strategy_options(DEFAULT_STRATEGY, &options).await.unwrap()
+}
+
+#[rocket::async_test]
+async fn test_heartbeat_sends_policy_when_device_is_behind() {
+    let (client, _dir) = test_client().await;
+    let m = set_policy(&client, &[("enable-clipboard", "N"), ("enable-audio", "")]).await;
+    let body = heartbeat(&client, 0).await;
+    assert_eq!(body["modified_at"], m);
+    assert_eq!(body["strategy"]["config_options"], serde_json::json!({"enable-clipboard": "N", "enable-audio": ""}));
+}
+
+#[rocket::async_test]
+async fn test_heartbeat_omits_policy_when_device_is_current() {
+    let (client, _dir) = test_client().await;
+    let m = set_policy(&client, &[("enable-clipboard", "N")]).await;
+    let body = heartbeat(&client, m).await;
+    assert_eq!(body, serde_json::json!({"modified_at": m}));
+}
+
+#[rocket::async_test]
+async fn test_heartbeat_never_sends_keys_outside_the_allow_list() {
+    let (client, _dir) = test_client().await;
+    let state = client.rocket().state::<state::ApiState>().unwrap();
+    // Bypasses API validation, as a hand-edited database would.
+    let planted = [("api-server".to_string(), "http://evil".to_string()), ("enable-camera".to_string(), "N".to_string())].into();
+    state.set_strategy_options(DEFAULT_STRATEGY, &planted).await.unwrap();
+    let body = heartbeat(&client, 0).await;
+    assert_eq!(body["strategy"]["config_options"], serde_json::json!({"enable-camera": "N"}));
 }
 
 #[rocket::async_test]

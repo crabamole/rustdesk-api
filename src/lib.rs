@@ -71,7 +71,7 @@ use utils::{
 };
 use utils::{
     AbGetResponse, AbRequest, AuditRequest, CurrentUserRequest, CurrentUserResponse,
-    HeartbeatRequest, LoginReply, LoginRequest, LogoutReply, UserInfo, UsersResponse,
+    HeartbeatRequest, HeartbeatResponse, LoginReply, LoginRequest, LogoutReply, UserInfo, UsersResponse,
 };
 
 type AuthenticatedUser = state::AuthenticatedUser<BearerAuthToken>;
@@ -519,23 +519,24 @@ async fn logout(
 ///
 /// ## Parameters
 ///
-/// - `request`: The request data, which includes the heartbeat information.  
+/// - `request`: The request data, which includes the heartbeat information.
 ///
 /// ## Returns
 ///
-/// This function always returns a `String` with the message "OK".  <br>
+/// the device policy when the device's `modified_at` differs from it.  <br>
 ///
 /// ## Errors
 ///
 /// This function will return an error if the system is in maintenance mode.
 #[openapi(tag = "peer")]
 #[post("/api/heartbeat", format = "application/json", data = "<request>")]
-async fn heartbeat(state: &State<ApiState>, request: Json<HeartbeatRequest>) -> String {
+async fn heartbeat(state: &State<ApiState>, request: Json<HeartbeatRequest>) -> Json<HeartbeatResponse> {
     log::debug!("heartbeat: {:?}", request);
     let heartbeat = request.0;
+    let device_modified_at = heartbeat.modified_at as i64;
     let res = state.update_heartbeat(heartbeat).await;
     log::debug!("res: {:?}", res);
-    "OK".to_string()
+    Json(state.policy_for_heartbeat(device_modified_at).await)
 }
 
 /// # Set the System Info
@@ -2768,8 +2769,9 @@ mod tests {
             .dispatch()
             .await;
         assert_eq!(resp.status(), Status::Ok);
-        let body = resp.into_string().await.unwrap();
-        assert_eq!(body, "OK");
+        let body: serde_json::Value = resp.into_json().await.unwrap();
+        assert!(body["modified_at"].as_i64().unwrap() > 0);
+        assert_eq!(body["strategy"]["config_options"], serde_json::json!({}));
     }
 
     #[rocket::async_test]
