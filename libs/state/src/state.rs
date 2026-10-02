@@ -707,62 +707,59 @@ impl ApiState {
         self.db.update_shared_address_book(guid, name).await
     }
 
-    pub async fn audit_conn(&self, request: &utils::AuditConnRequest) -> Option<String> {
-        let action = request.action.to_lowercase();
-        match action.as_str() {
+    /// Stores one connection record (docs/audit-api-spec.md §3); `None` means it was not stored.
+    pub async fn audit_conn(&self, request: &utils::AuditConnRequest) -> Option<()> {
+        let (id, uuid, conn_id) = (&request.id, &request.uuid, request.conn_id);
+        match request.action.to_lowercase().as_str() {
             "new" => {
-                if !request.nonce.is_empty() {
-                    if let Some(existing) = self.db.find_audit_conn_by_nonce(&request.nonce).await {
-                        let uuid = uuid::Uuid::from_slice(&existing).ok()?;
-                        return Some(uuid.to_string());
-                    }
+                if !request.nonce.is_empty() && self.db.find_audit_conn_by_nonce(&request.nonce).await.is_some() {
+                    return Some(());
                 }
-                let guid = uuid::Uuid::new_v4();
+                // conn_id restarts with the RustDesk process, so an open row with this key is a dead session.
+                self.db.end_open_audit_conns(id, uuid, conn_id).await?;
                 let info = serde_json::json!({
-                    "id": request.id,
-                    "uuid": request.uuid,
-                    "conn_id": request.conn_id,
+                    "id": id,
+                    "uuid": uuid,
+                    "conn_id": conn_id,
                     "session_id": request.session_id,
                     "nonce": request.nonce,
                     "ip": request.ip,
                 });
-                self.db.insert_audit_conn(
-                    guid.as_bytes(),
-                    Some(0),
-                    request.id.as_bytes(),
-                    None,
-                    request.note.as_deref(),
-                    &info.to_string(),
-                ).await?;
-                Some(guid.to_string())
+                let guid = uuid::Uuid::new_v4();
+                self.db
+                    .insert_audit_conn(guid.as_bytes(), None, id.as_bytes(), None, request.note.as_deref(), &info.to_string())
+                    .await
             }
-            "close" => {
-                if let Some(ref conn_audit_ref) = request.conn_audit_ref {
-                    if let Ok(guid) = uuid::Uuid::parse_str(conn_audit_ref) {
-                        self.db.update_audit_conn_end_time(guid.as_bytes()).await;
+            // close carries neither the new record's nonce nor a conn_audit_ref.
+            "close" => match self.db.find_open_audit_conn(id, uuid, conn_id).await {
+                Some(guid) => self.db.update_audit_conn_end_time(&guid).await,
+                None => Some(()),
+            },
+            "" if request.peer.is_some() || request.conn_type.is_some() => {
+                let guid = match self.db.find_open_audit_conn(id, uuid, conn_id).await {
+                    Some(guid) => guid,
+                    None => {
+                        // The new record was lost; keep the connection anyway.
+                        let guid = uuid::Uuid::new_v4().as_bytes().to_vec();
+                        let info = serde_json::json!({ "id": id, "uuid": uuid, "conn_id": conn_id });
+                        self.db.insert_audit_conn(&guid, None, id.as_bytes(), None, None, &info.to_string()).await?;
+                        guid
                     }
-                } else if !request.nonce.is_empty() {
-                    if let Some(existing) = self.db.find_audit_conn_by_nonce(&request.nonce).await {
-                        self.db.update_audit_conn_end_time(&existing).await;
-                    }
-                }
-                None
+                };
+                let peer = request.peer.as_deref().unwrap_or_default();
+                let patch = serde_json::json!({
+                    "session_id": request.session_id,
+                    "peer_name": peer.get(1),
+                    "primary_auth": request.primary_auth,
+                    "two_factor": request.two_factor,
+                });
+                self.db
+                    .set_audit_conn_authorized(&guid, request.conn_type, peer.first().map(String::as_str), &patch.to_string())
+                    .await
             }
-            "login" => {
-                if let Some(ref conn_audit_ref) = request.conn_audit_ref {
-                    if let Ok(guid) = uuid::Uuid::parse_str(conn_audit_ref) {
-                        let note = serde_json::json!({
-                            "name": request.name,
-                            "os_login": request.os_login,
-                        });
-                        self.db.update_audit_conn_note(guid.as_bytes(), &note.to_string()).await;
-                    }
-                }
-                None
-            }
-            _ => {
-                log::debug!("audit_conn: unknown action {}", action);
-                None
+            action => {
+                log::debug!("audit_conn: unhandled record (action {action:?})");
+                Some(())
             }
         }
     }
@@ -1471,5 +1468,118 @@ mod tests {
         let m1 = state.set_strategy_options(guid, &opts).await.unwrap();
         assert!(state.bump_strategy(guid).await.unwrap() > m1);
         assert_eq!(state.get_strategy(guid).await.unwrap().1, opts);
+    }
+
+    fn conn_record(json: &str) -> utils::AuditConnRequest {
+        serde_json::from_str(json).unwrap()
+    }
+
+    // Bodies as sent by upstream clients (docs/audit-api-spec.md §3); every record has its own nonce.
+    fn new_record(conn_id: i64, nonce: &str) -> utils::AuditConnRequest {
+        conn_record(&format!(
+            r#"{{"action":"new","ip":"10.0.0.1","id":"dev1","uuid":"dXVpZA==","conn_id":{conn_id},"session_id":0,"nonce":"{nonce}"}}"#
+        ))
+    }
+
+    fn close_record(id: &str, uuid: &str, conn_id: i64, nonce: &str) -> utils::AuditConnRequest {
+        conn_record(&format!(
+            r#"{{"action":"close","id":"{id}","uuid":"{uuid}","conn_id":{conn_id},"session_id":0,"nonce":"{nonce}"}}"#
+        ))
+    }
+
+    #[tokio::test]
+    async fn audit_conn_close_matches_the_connection_key() {
+        let state = test_state().await;
+        state.audit_conn(&new_record(17, "n-new")).await.unwrap();
+        state.audit_conn(&close_record("dev1", "dXVpZA==", 17, "n-close")).await.unwrap();
+        let rows = state.db.audit_conn_rows("dev1").await;
+        assert_eq!(rows.len(), 1);
+        assert!(rows[0].end_time.is_some(), "close must set end_time");
+    }
+
+    #[tokio::test]
+    async fn audit_conn_close_ignores_other_connections() {
+        let state = test_state().await;
+        state.audit_conn(&new_record(17, "n-new")).await.unwrap();
+        state.audit_conn(&close_record("dev1", "dXVpZA==", 18, "c1")).await.unwrap();
+        state.audit_conn(&close_record("dev1", "b3RoZXI=", 17, "c2")).await.unwrap();
+        state.audit_conn(&close_record("dev2", "dXVpZA==", 17, "c3")).await.unwrap();
+        let rows = state.db.audit_conn_rows("dev1").await;
+        assert!(rows[0].end_time.is_none());
+    }
+
+    #[tokio::test]
+    async fn audit_conn_new_retry_is_stored_once() {
+        let state = test_state().await;
+        state.audit_conn(&new_record(17, "same")).await.unwrap();
+        state.audit_conn(&new_record(17, "same")).await.unwrap();
+        assert_eq!(state.db.audit_conn_rows("dev1").await.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn audit_conn_reused_conn_id_ends_the_stale_row() {
+        // conn_id restarts with the RustDesk process; a still-open row with the same key is dead.
+        let state = test_state().await;
+        state.audit_conn(&new_record(17, "first")).await.unwrap();
+        state.audit_conn(&new_record(17, "second")).await.unwrap();
+        let rows = state.db.audit_conn_rows("dev1").await;
+        assert_eq!(rows.len(), 2);
+        assert!(rows[0].end_time.is_some(), "older row ended");
+        assert!(rows[1].end_time.is_none(), "current row open");
+        state.audit_conn(&close_record("dev1", "dXVpZA==", 17, "c")).await.unwrap();
+        assert!(state.db.audit_conn_rows("dev1").await[1].end_time.is_some());
+    }
+
+    #[tokio::test]
+    async fn audit_conn_new_has_no_type_until_authorized() {
+        let state = test_state().await;
+        state.audit_conn(&new_record(17, "n")).await.unwrap();
+        assert_eq!(state.db.audit_conn_rows("dev1").await[0].conn_type, None);
+    }
+
+    #[tokio::test]
+    async fn audit_conn_authorized_records_the_controller() {
+        let state = test_state().await;
+        state.audit_conn(&new_record(17, "n")).await.unwrap();
+        state
+            .audit_conn(&conn_record(
+                r#"{"peer":["987654321","alice-laptop"],"type":1,"primary_auth":2,"two_factor":1,"id":"dev1","uuid":"dXVpZA==","conn_id":17,"session_id":18446744073709551615,"nonce":"a"}"#,
+            ))
+            .await
+            .unwrap();
+        let rows = state.db.audit_conn_rows("dev1").await;
+        assert_eq!(rows.len(), 1);
+        let row = &rows[0];
+        assert_eq!(row.conn_type, Some(1));
+        assert_eq!(row.local.as_deref(), Some(&b"987654321"[..]));
+        let info: serde_json::Value = serde_json::from_str(&row.info).unwrap();
+        assert_eq!(info["peer_name"], "alice-laptop");
+        assert_eq!(info["primary_auth"], 2);
+        assert_eq!(info["two_factor"], 1);
+        assert_eq!(info["session_id"].as_u64(), Some(u64::MAX));
+        assert_eq!(info["ip"], "10.0.0.1", "fields from new are kept");
+    }
+
+    #[tokio::test]
+    async fn audit_conn_authorized_without_new_creates_the_row() {
+        let state = test_state().await;
+        state
+            .audit_conn(&conn_record(
+                r#"{"peer":["987654321","alice-laptop"],"type":0,"id":"dev1","uuid":"dXVpZA==","conn_id":5,"session_id":7,"nonce":"a"}"#,
+            ))
+            .await
+            .unwrap();
+        let rows = state.db.audit_conn_rows("dev1").await;
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].conn_type, Some(0));
+        state.audit_conn(&close_record("dev1", "dXVpZA==", 5, "c")).await.unwrap();
+        assert!(state.db.audit_conn_rows("dev1").await[0].end_time.is_some());
+    }
+
+    #[tokio::test]
+    async fn audit_conn_unknown_shapes_are_accepted() {
+        let state = test_state().await;
+        assert!(state.audit_conn(&conn_record(r#"{"id":"dev1","session_id":1,"note":"hi"}"#)).await.is_some());
+        assert!(state.audit_conn(&conn_record(r#"{"action":"bogus","id":"dev1"}"#)).await.is_some());
     }
 }

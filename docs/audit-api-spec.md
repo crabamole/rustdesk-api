@@ -518,7 +518,7 @@ Pro [D].
 
 ## 14. Implementation status (sctgdesk-api-server / sctgdesk-server)
 
-**As of 2026-09-24** — api-server `main` @ `66905bc`, hbbs `master` @ `ae39ef5`.
+**As of 2026-09-24** — api-server `main` @ `66905bc`, hbbs `master` @ `ae39ef5`; §2.3, §2.4, §3 and §7 rows updated 2026-10-02.
 Verified by code reading; items marked **(live)** were also probed against a
 running deployment.
 
@@ -528,20 +528,20 @@ Legend: ✅ conforms · ⚠️ partial / deviates · ❌ missing
 
 | Spec | Status | Finding |
 |---|---|---|
-| §2.3 success = empty 2xx | ⚠️ | `/conn` `new` returns the row GUID as a JSON string (`src/lib.rs` `audit_conn`) → client treats it as "unexpected response body" and retries 3× (~40 s), stalling that connection's queued `authorized`/`close` records. `/file`, `/alarm` return empty. |
-| §2.3 failure → `{"error"}` / 5xx | ❌ | DB write failures are swallowed (`Option` ignored) and answered 2xx empty → client considers the record stored; it is lost. |
-| §2.4 nonce dedup | ⚠️ | Works functionally, but `find_audit_*_by_nonce` (`libs/state/src/database.rs`) loads **the whole table** and JSON-parses every `info` per request (O(n), unbounded). No unique constraint → concurrent duplicates both insert. No nonce release needed (no claim state), no 5-min expiry (harmless). |
+| §2.3 success = empty 2xx | ✅ | All three endpoints answer an empty body once stored (`/conn` returned the row GUID until 2026-10-02, which made the client retry every `new`). |
+| §2.3 failure → `{"error"}` / 5xx | ⚠️ | `/conn` answers `{"error": ...}` when a record is not stored, so the client retries. `/file`, `/alarm` still answer 2xx empty on DB failure → the record is lost. |
+| §2.4 nonce dedup | ⚠️ | `find_audit_*_by_nonce` look the nonce up in SQL (`info::jsonb->>'nonce'`); no index, so still a sequential scan inside Postgres. No unique constraint → concurrent duplicates both insert. No nonce release needed (no claim state), no 5-min expiry (harmless). |
 | §2.6 `session_id` as u64 | ✅ | Fixed on `fix/audit-session-id-u64`: request field is `u64` and the active-conn lookup compares as u64. Previously `i64`, so values > i64::MAX (≈ half of all random session ids) got **422 (live)** and the record was dropped. |
-| §3.1 `new` | ⚠️ | Inserts row with `type` hard-coded 0 (should be NULL = "Not Logged In"); `ip`, `uuid`, `conn_id`, `session_id` only inside `info` JSON text (not queryable). `conn_audit_ref` misinterpreted as an audit-row GUID. Live DB: rows are created. |
-| §3.2 `authorized` | ❌ | Body has no `action` → falls into "unknown action" branch, discarded. `peer`, `type`, `primary_auth`, `two_factor` never stored. |
-| §3.3 `close` | ❌ **(live)** | Matched by `conn_audit_ref` (never sent on close) or by nonce (differs from `new`'s) → never matches. Live DB: 12/12 conn rows have no `end_time`. |
+| §3.1 `new` | ✅ | Row with `type` NULL ("Not Logged In"); an older open row with the same connection key is ended first (the client restarted). `ip`, `uuid`, `conn_id`, `session_id` live in the `info` JSON text. `conn_audit_ref` is ignored (hbbs never issues one, §11). |
+| §3.2 `authorized` | ✅ | Matched by connection key (most recent open row; created if the `new` record was lost). Stores `type`, controller id in `local`, and `peer_name`, `primary_auth`, `two_factor`, `session_id` in `info`. |
+| §3.3 `close` | ✅ | Matched by connection key `(id, uuid, conn_id)`, most recent open row (§2.6) → sets `end_time`. Until 2026-10-02 it never matched (224/224 rows on a self-hosted instance had no `end_time`). |
 | §3.4 unknown shape → 2xx empty | ✅ | |
-| — `login` action branch | — | Dead code; no client sends `action:"login"`. |
+| — `login` action branch | — | Removed 2026-10-02; no client sends `action:"login"`. |
 | §4 menu note | ❌ **(live)** | No `action` → discarded as unknown. Live DB: 0/12 rows have a note. |
 | §5 file | ⚠️ | Stored (`remote`=`peer_id`, `local`=`id` — note: **reversed** vs. Pro semantics where remote = controlled device). `info` string double-encoded inside another JSON object. No controller attribution. Not exercised end-to-end (0 live rows). |
 | §6 alarm | ⚠️ | Stored with `typ`, `device`=`id`; `info` double-encoded. No attribution. Not exercised end-to-end (0 live rows). |
 | §6 alarms 3–5 (account login) | ❌ | `/api/login` generates no alarms. |
-| §7 `GET /api/audit/conn/active` | ❌ **(live)** | Route exists but: **no auth** (answers 200 without a token); filters `type = conn_type AND session_id match`, but rows always have `type=0` and `session_id=0` (§3.2 not stored) → always `""` → client exhausts retries, never gets a GUID → end-of-session note dialog (§8) never offered. `find_active_audit_conn` also does N+1 queries and parses `session_id` via `as_i64`. |
+| §7 `GET /api/audit/conn/active` | ⚠️ | Finds the row once `authorized` has stored `type` and `session_id` (2026-10-02). Still **no auth** (answers 200 without a token), and `find_active_audit_conn` does N+1 queries. The end-of-session note itself (§8) is still missing. |
 | §8 `PUT /api/audit` | ❌ **(live)** | 404. Only legacy `POST /api/audit` exists, which just logs. |
 | §10 heartbeat `disconnect` | ❌ **(live)** | Heartbeat returns JSON `{"modified_at": ..., "strategy": {"config_options": {...}}}` (the `strategy` field only when the device's policy changed), used for device policy sync (2026-09-29), not disconnect; `conns` not parsed; no disconnect queue. |
 | §11 `ControlledContext` (hbbs) | ❌ | sctgdesk-server pins `hbb_common` `2985cd8` (2025-11-02), which predates `ControlledContext`; the client repo pins `69cea8d` (2026-07-26). hbbs sends no `conn_audit_ref`, so no controller-user attribution. *(Also means the api-server roadmap's "protos already match" claim is wrong.)* |

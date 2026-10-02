@@ -418,6 +418,9 @@ async fn audit(state: &State<ApiState>, request: Json<AuditRequest>) {
 }
 
 /// Audit connection events
+///
+/// Answers an empty body once the record is stored and `{"error": ...}` otherwise; the client
+/// retries on any non-empty body (docs/audit-api-spec.md §2.3).
 #[openapi(tag = "audit")]
 #[post("/api/audit/conn", format = "application/json", data = "<request>")]
 async fn audit_conn(
@@ -425,11 +428,11 @@ async fn audit_conn(
     request: Json<utils::AuditConnRequest>,
 ) -> String {
     log::debug!("audit_conn: {:?}", request);
-    let result = state.audit_conn(&request).await;
+    let stored = state.audit_conn(&request).await;
     state.check_maintenance().await;
-    match result {
-        Some(guid) => serde_json::to_string(&guid).unwrap_or_default(),
-        None => String::new(),
+    match stored {
+        Some(()) => String::new(),
+        None => r#"{"error":"audit record not stored"}"#.to_owned(),
     }
 }
 
@@ -2704,10 +2707,8 @@ mod tests {
             .dispatch()
             .await;
         assert_eq!(resp.status(), Status::Ok);
-        let body = resp.into_string().await.unwrap();
-        assert!(!body.is_empty());
-        let guid: String = serde_json::from_str(&body).unwrap();
-        assert!(!guid.is_empty());
+        // Any other body makes the client retry the record (docs/audit-api-spec.md §2.3).
+        assert_eq!(resp.into_string().await.unwrap(), "");
     }
 
     #[rocket::async_test]
@@ -2720,16 +2721,15 @@ mod tests {
             .dispatch()
             .await;
         assert_eq!(resp.status(), Status::Ok);
-        let body = resp.into_string().await.unwrap();
-        let guid: String = serde_json::from_str(&body).unwrap();
 
         let resp = client
             .post("/api/audit/conn")
             .header(ContentType::JSON)
-            .body(format!(r#"{{"id":"peer2","uuid":"dXVpZA==","conn_id":1,"session_id":200,"nonce":"n3","ip":"10.0.0.2","action":"close","conn_audit_ref":"{}"}}"#, guid))
+            .body(r#"{"id":"peer2","uuid":"dXVpZA==","conn_id":1,"session_id":200,"nonce":"n3","action":"close"}"#)
             .dispatch()
             .await;
         assert_eq!(resp.status(), Status::Ok);
+        assert_eq!(resp.into_string().await.unwrap(), "");
     }
 
     #[rocket::async_test]
@@ -2738,12 +2738,17 @@ mod tests {
         let resp = client
             .post("/api/audit/conn")
             .header(ContentType::JSON)
-            .body(r#"{"id":"peer3","uuid":"dXVpZA==","conn_id":1,"session_id":300,"nonce":"n4","ip":"10.0.0.3","action":"new"}"#)
+            .body(r#"{"id":"peer3","uuid":"dXVpZA==","conn_id":1,"session_id":0,"nonce":"n4","ip":"10.0.0.3","action":"new"}"#)
             .dispatch()
             .await;
         assert_eq!(resp.status(), Status::Ok);
-        let body = resp.into_string().await.unwrap();
-        let expected_guid: String = serde_json::from_str(&body).unwrap();
+        let resp = client
+            .post("/api/audit/conn")
+            .header(ContentType::JSON)
+            .body(r#"{"peer":["111","viewer"],"type":0,"id":"peer3","uuid":"dXVpZA==","conn_id":1,"session_id":300,"nonce":"n5"}"#)
+            .dispatch()
+            .await;
+        assert_eq!(resp.status(), Status::Ok);
 
         let resp = client
             .get("/api/audit/conn/active?id=peer3&session_id=300&conn_type=0")
@@ -2752,7 +2757,7 @@ mod tests {
         assert_eq!(resp.status(), Status::Ok);
         let body = resp.into_string().await.unwrap();
         let guid: String = serde_json::from_str(&body).unwrap();
-        assert_eq!(guid, expected_guid);
+        assert!(uuid::Uuid::parse_str(&guid).is_ok(), "expected a row GUID, got {body}");
     }
 
     #[rocket::async_test]
@@ -2801,19 +2806,17 @@ mod tests {
             .body(r#"{"id":"peer6","uuid":"dXVpZA==","conn_id":1,"session_id":600,"nonce":"dedup1","ip":"10.0.0.6","action":"new"}"#)
             .dispatch()
             .await;
-        let body1 = resp.into_string().await.unwrap();
-        let guid1: String = serde_json::from_str(&body1).unwrap();
+        assert_eq!(resp.into_string().await.unwrap(), "");
 
+        // A retry of a stored record is answered as stored, not as an error.
         let resp = client
             .post("/api/audit/conn")
             .header(ContentType::JSON)
             .body(r#"{"id":"peer6","uuid":"dXVpZA==","conn_id":1,"session_id":600,"nonce":"dedup1","ip":"10.0.0.6","action":"new"}"#)
             .dispatch()
             .await;
-        let body2 = resp.into_string().await.unwrap();
-        let guid2: String = serde_json::from_str(&body2).unwrap();
-
-        assert_eq!(guid1, guid2);
+        assert_eq!(resp.status(), Status::Ok);
+        assert_eq!(resp.into_string().await.unwrap(), "");
     }
 
     #[rocket::async_test]

@@ -209,6 +209,16 @@ pub struct AuditConnRequest {
     pub conn_audit_ref: Option<String>,
     #[serde(default)]
     pub note: Option<String>,
+    /// `authorized` record: `[controller id, controller name]`.
+    #[serde(default)]
+    pub peer: Option<Vec<String>>,
+    /// `authorized` record: 0 remote desktop, 1 file transfer, 2 port forward, 3 camera, 4 terminal.
+    #[serde(default, rename = "type")]
+    pub conn_type: Option<i16>,
+    #[serde(default)]
+    pub primary_auth: Option<i32>,
+    #[serde(default)]
+    pub two_factor: Option<i32>,
 }
 
 #[derive(Deserialize, Debug, JsonSchema)]

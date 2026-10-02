@@ -44,6 +44,14 @@ pub struct Database {
     pool: PgPool,
 }
 
+#[cfg(test)]
+pub(crate) struct AuditConnRow {
+    pub conn_type: Option<i16>,
+    pub local: Option<Vec<u8>>,
+    pub end_time: Option<String>,
+    pub info: String,
+}
+
 #[cfg(any(test, feature = "test-util"))]
 pub struct DatabaseConnection {
     pool: PgPool,
@@ -1719,6 +1727,23 @@ impl Database {
         Some(())
     }
 
+    #[cfg(test)]
+    pub(crate) async fn audit_conn_rows(&self, remote: &str) -> Vec<AuditConnRow> {
+        sqlx::query("SELECT type, local, end_time, info FROM audit_conn WHERE remote = $1 ORDER BY created_at")
+            .bind(remote.as_bytes())
+            .fetch_all(&self.pool)
+            .await
+            .unwrap()
+            .iter()
+            .map(|r| AuditConnRow {
+                conn_type: r.get("type"),
+                local: r.get("local"),
+                end_time: r.get("end_time"),
+                info: r.get("info"),
+            })
+            .collect()
+    }
+
     pub async fn update_audit_conn_end_time(&self, guid: &[u8]) -> Option<()> {
         let now_expr = "to_char(NOW(), 'YYYY-MM-DD HH24:MI:SS.MS')";
         let sql = format!(
@@ -1778,53 +1803,82 @@ impl Database {
     }
 
     pub async fn find_audit_conn_by_nonce(&self, nonce: &str) -> Option<Vec<u8>> {
-        let rows = sqlx::query("SELECT guid, info FROM audit_conn ORDER BY created_at DESC")
-            .fetch_all(&self.pool)
+        sqlx::query("SELECT guid FROM audit_conn WHERE info::jsonb->>'nonce' = $1 LIMIT 1")
+            .bind(nonce)
+            .fetch_optional(&self.pool)
             .await
-            .ok()?;
-        for r in &rows {
-            let info_str: String = r.try_get("info").ok()?;
-            if let Ok(info) = serde_json::from_str::<serde_json::Value>(&info_str) {
-                if info.get("nonce").and_then(|v| v.as_str()) == Some(nonce) {
-                    return Some(r.try_get("guid").ok()?);
-                }
-            }
-        }
-        None
+            .ok()??
+            .try_get("guid")
+            .ok()
+    }
+
+    /// The most recent open row of one connection; `conn_id` alone repeats after the client restarts.
+    pub async fn find_open_audit_conn(&self, id: &str, uuid: &str, conn_id: i64) -> Option<Vec<u8>> {
+        sqlx::query(
+            "SELECT guid FROM audit_conn WHERE remote = $1 AND end_time IS NULL \
+             AND info::jsonb->>'uuid' = $2 AND (info::jsonb->>'conn_id')::bigint = $3 \
+             ORDER BY created_at DESC LIMIT 1",
+        )
+        .bind(id.as_bytes())
+        .bind(uuid)
+        .bind(conn_id)
+        .fetch_optional(&self.pool)
+        .await
+        .ok()??
+        .try_get("guid")
+        .ok()
+    }
+
+    pub async fn end_open_audit_conns(&self, id: &str, uuid: &str, conn_id: i64) -> Option<()> {
+        sqlx::query(
+            "UPDATE audit_conn SET end_time = to_char(NOW(), 'YYYY-MM-DD HH24:MI:SS.MS') \
+             WHERE remote = $1 AND end_time IS NULL \
+             AND info::jsonb->>'uuid' = $2 AND (info::jsonb->>'conn_id')::bigint = $3",
+        )
+        .bind(id.as_bytes())
+        .bind(uuid)
+        .bind(conn_id)
+        .execute(&self.pool)
+        .await
+        .ok()?;
+        Some(())
+    }
+
+    /// Stores the `authorized` record: connection type, controller id, and `patch` merged into `info`.
+    pub async fn set_audit_conn_authorized(
+        &self,
+        guid: &[u8],
+        conn_type: Option<i16>,
+        controller_id: Option<&str>,
+        patch: &str,
+    ) -> Option<()> {
+        sqlx::query(
+            "UPDATE audit_conn SET type = $2, local = $3, info = (info::jsonb || $4::jsonb)::text WHERE guid = $1",
+        )
+        .bind(guid)
+        .bind(conn_type)
+        .bind(controller_id.map(str::as_bytes))
+        .bind(patch)
+        .execute(&self.pool)
+        .await
+        .ok()?;
+        Some(())
     }
 
     pub async fn find_audit_file_by_nonce(&self, nonce: &str) -> bool {
-        let rows = sqlx::query("SELECT info FROM audit_file ORDER BY created_at DESC")
-            .fetch_all(&self.pool)
+        sqlx::query("SELECT 1 FROM audit_file WHERE info::jsonb->>'nonce' = $1 LIMIT 1")
+            .bind(nonce)
+            .fetch_optional(&self.pool)
             .await
-            .unwrap_or_default();
-        for r in &rows {
-            if let Ok(info_str) = r.try_get::<String, _>("info") {
-                if let Ok(info) = serde_json::from_str::<serde_json::Value>(&info_str) {
-                    if info.get("nonce").and_then(|v| v.as_str()) == Some(nonce) {
-                        return true;
-                    }
-                }
-            }
-        }
-        false
+            .map_or(false, |row| row.is_some())
     }
 
     pub async fn find_audit_alarm_by_nonce(&self, nonce: &str) -> bool {
-        let rows = sqlx::query("SELECT info FROM audit_alarm ORDER BY created_at DESC")
-            .fetch_all(&self.pool)
+        sqlx::query("SELECT 1 FROM audit_alarm WHERE info::jsonb->>'nonce' = $1 LIMIT 1")
+            .bind(nonce)
+            .fetch_optional(&self.pool)
             .await
-            .unwrap_or_default();
-        for r in &rows {
-            if let Ok(info_str) = r.try_get::<String, _>("info") {
-                if let Ok(info) = serde_json::from_str::<serde_json::Value>(&info_str) {
-                    if info.get("nonce").and_then(|v| v.as_str()) == Some(nonce) {
-                        return true;
-                    }
-                }
-            }
-        }
-        false
+            .map_or(false, |row| row.is_some())
     }
 
     pub async fn insert_audit_file(

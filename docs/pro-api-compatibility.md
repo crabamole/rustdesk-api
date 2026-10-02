@@ -26,7 +26,7 @@ Update this file with every API change.
 | GET | /api/oidc/auth-query | [C] `src/hbbs_http/account.rs` | implemented | |
 | POST | /api/logout | [C] `flutter/lib/models/user_model.dart` | implemented | |
 | POST | /api/currentUser | [C] `flutter/lib/models/user_model.dart` | implemented | |
-| POST | /api/audit/conn | [C] `src/server/connection.rs` | implemented | connection lifecycle + session-menu note; see audit-api-spec.md §3-4 |
+| POST | /api/audit/conn | [C] `src/server/connection.rs` | partial | connection lifecycle (`new`, `authorized`, `close`) per audit-api-spec.md §3; session-menu note (§4) not stored |
 | POST | /api/audit/file | [C] `src/server/connection.rs` | implemented | see audit-api-spec.md §5 |
 | POST | /api/audit/alarm | [C] `src/server/connection.rs` | implemented | see audit-api-spec.md §6 |
 | GET | /api/audit/conn/active | [C] `src/ui_session_interface.rs` | partial | route exists but no auth and wrong row filter, always returns "" per audit-api-spec.md §14.1 |
