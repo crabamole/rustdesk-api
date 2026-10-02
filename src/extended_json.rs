@@ -29,6 +29,8 @@ use serde::Deserialize;
 pub struct ExtendedJson<T> {
     pub data: T,
     pub headers: HashMap<String, String>,
+    /// The TCP peer, i.e. the nearest proxy behind a reverse proxy.
+    pub remote: Option<std::net::SocketAddr>,
 }
 
 #[derive(Debug)]
@@ -50,10 +52,10 @@ impl<T> ExtendedJson<T> {
 }
 
 impl<'r, T: Deserialize<'r>> ExtendedJson<T> {
-    fn from_str(s: &'r str, h: HashMap<String, String>) -> Result<Self, Error<'r>> {
+    fn from_str(s: &'r str, h: HashMap<String, String>, remote: Option<std::net::SocketAddr>) -> Result<Self, Error<'r>> {
         let data = serde_json::from_str(s).map_err(|e| Error::Parse(s, e))?;
         let headers = h;
-        Ok(Self { data, headers })
+        Ok(Self { data, headers, remote })
     }
 
     async fn from_data(req: &'r Request<'_>, data: Data<'r>) -> Result<Self, Error<'r>> {
@@ -71,7 +73,7 @@ impl<'r, T: Deserialize<'r>> ExtendedJson<T> {
             },
             Err(e) => return Err(Error::Io(e)),
         };
-        Self::from_str(local_cache!(req, string), headers)
+        Self::from_str(local_cache!(req, string), headers, req.remote())
     }
 }
 

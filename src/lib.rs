@@ -1032,6 +1032,7 @@ async fn oidc_auth(
     log::debug!("oidc_auth: {:?}", request);
     let headers = request.headers();
     log::debug!("headers: {:?}", headers);
+    let remote = request.remote;
     let request = request.data;
 
     let uuid_code = Uuid::new_v4().to_string();
@@ -1111,7 +1112,7 @@ async fn oidc_auth(
                 browser_key: Some(set_oidc_browser_cookie(cookies, host.starts_with("https://"))),
                 device_name: request.device_info.name.clone(),
                 device_os: request.device_info.os.clone(),
-                requester_ip: client_ip(&headers),
+                requester_ip: client_ip(&headers, remote, trusted_proxies()),
                 ..Default::default()
             },
         )
@@ -1224,13 +1225,41 @@ fn is_own_url(uri: &str, host: &str) -> bool {
     }
 }
 
-fn client_ip(headers: &std::collections::HashMap<String, String>) -> Option<String> {
-    headers
-        .get("x-forwarded-for")
-        .and_then(|v| v.split(',').next())
-        .or_else(|| headers.get("x-real-ip").map(String::as_str))
-        .map(|ip| ip.trim().to_string())
-        .filter(|ip| !ip.is_empty())
+/// Proxies whose forwarded headers are believed; empty trusts every peer (behaviour before 3.2.1).
+fn trusted_proxies() -> &'static [ipnetwork::IpNetwork] {
+    static NETS: std::sync::OnceLock<Vec<ipnetwork::IpNetwork>> = std::sync::OnceLock::new();
+    NETS.get_or_init(|| {
+        std::env::var("TRUSTED_PROXIES")
+            .unwrap_or_default()
+            .split(',')
+            .filter_map(|c| c.trim().parse().ok())
+            .collect()
+    })
+}
+
+fn client_ip(
+    headers: &std::collections::HashMap<String, String>,
+    remote: Option<std::net::SocketAddr>,
+    trusted: &[ipnetwork::IpNetwork],
+) -> Option<String> {
+    let peer = remote.map(|r| r.ip().to_canonical());
+    let is_trusted = |ip: std::net::IpAddr| trusted.is_empty() || trusted.iter().any(|n| n.contains(ip));
+    if peer.map_or(true, is_trusted) {
+        let parse = |v: &str| v.trim().parse::<std::net::IpAddr>().ok();
+        if let Some(ip) = headers.get("x-real-ip").and_then(|v| parse(v)) {
+            return Some(ip.to_string());
+        }
+        // Proxies append; the last entry not added by a trusted proxy is the client.
+        if let Some(chain) = headers.get("x-forwarded-for") {
+            let mut entries = chain.split(',').rev().filter_map(parse).peekable();
+            while let Some(ip) = entries.next() {
+                if trusted.is_empty() || !is_trusted(ip) || entries.peek().is_none() {
+                    return Some(ip.to_string());
+                }
+            }
+        }
+    }
+    peer.map(|ip| ip.to_string())
 }
 
 fn html_escape(s: &str) -> String {
@@ -2581,6 +2610,47 @@ mod tests {
     use super::*;
     use rocket::http::{ContentType, Header, Status};
     use rocket::local::asynchronous::Client;
+
+    fn headers(pairs: &[(&str, &str)]) -> std::collections::HashMap<String, String> {
+        pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+    }
+
+    fn nets(cidrs: &[&str]) -> Vec<ipnetwork::IpNetwork> {
+        cidrs.iter().map(|c| c.parse().unwrap()).collect()
+    }
+
+    #[test]
+    fn client_ip_prefers_x_real_ip() {
+        let h = headers(&[("x-real-ip", "203.0.113.5"), ("x-forwarded-for", "198.51.100.1, 10.0.0.1")]);
+        assert_eq!(client_ip(&h, Some("10.244.1.2:4000".parse().unwrap()), &[]).as_deref(), Some("203.0.113.5"));
+    }
+
+    #[test]
+    fn client_ip_ignores_headers_from_an_untrusted_peer() {
+        let h = headers(&[("x-real-ip", "203.0.113.5")]);
+        let peer = Some("192.0.2.9:4000".parse().unwrap());
+        assert_eq!(client_ip(&h, peer, &nets(&["10.244.0.0/16"])).as_deref(), Some("192.0.2.9"));
+    }
+
+    #[test]
+    fn client_ip_trusts_headers_from_a_trusted_peer() {
+        let h = headers(&[("x-real-ip", "203.0.113.5")]);
+        let peer = Some("10.244.1.2:4000".parse().unwrap());
+        assert_eq!(client_ip(&h, peer, &nets(&["10.244.0.0/16"])).as_deref(), Some("203.0.113.5"));
+    }
+
+    #[test]
+    fn client_ip_takes_the_last_untrusted_forwarded_entry() {
+        let h = headers(&[("x-forwarded-for", "198.51.100.1, 203.0.113.5, 10.244.3.3")]);
+        let peer = Some("10.244.1.2:4000".parse().unwrap());
+        assert_eq!(client_ip(&h, peer, &nets(&["10.244.0.0/16"])).as_deref(), Some("203.0.113.5"));
+    }
+
+    #[test]
+    fn client_ip_falls_back_to_the_peer() {
+        assert_eq!(client_ip(&headers(&[]), Some("192.0.2.9:4000".parse().unwrap()), &[]).as_deref(), Some("192.0.2.9"));
+        assert_eq!(client_ip(&headers(&[("x-real-ip", "not an ip")]), Some("192.0.2.9:4000".parse().unwrap()), &[]).as_deref(), Some("192.0.2.9"));
+    }
 
     #[test]
     fn database_url_is_required() {
