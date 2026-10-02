@@ -1,2 +1,5 @@
 target/
 .git/
+webconsole/node_modules/
+webconsole/dist/
+docs/
