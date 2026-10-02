@@ -315,6 +315,12 @@ impl Database {
             .await
             .ok();
 
+        sqlx::query("DELETE FROM session WHERE \"user\" = $1")
+            .bind(&user_id)
+            .execute(&self.pool)
+            .await
+            .ok();
+
         Some(())
     }
 
@@ -1591,6 +1597,13 @@ impl Database {
     }
 
     pub async fn insert_session(&self, token_id: &str, user_id: &[u8], ttl_secs: i64) -> Option<()> {
+        // Logins are the only source of rows, so pruning here keeps the table to live sessions.
+        if let Err(e) = sqlx::query("DELETE FROM session WHERE expiry_at <= NOW()::text")
+            .execute(&self.pool)
+            .await
+        {
+            log::warn!("removing expired sessions failed: {e}");
+        }
         let expiry_expr = format!("NOW() + INTERVAL '{} seconds'", ttl_secs);
         let query = format!(
             "INSERT INTO session (id, ttl_secs, \"user\", expiry_at, created_at) \
@@ -2156,6 +2169,36 @@ mod tests {
     db_test!(delete_user_invalid_uuid, |db| {
         let result = db.delete_user("not-a-uuid").await;
         assert!(result.is_none());
+    });
+
+    async fn session_exists(db: &Database, id: &str) -> bool {
+        let (n,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM session WHERE id = $1")
+            .bind(id)
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+        n == 1
+    }
+
+    db_test!(insert_session_removes_expired_sessions, |db| {
+        let user = admin_guid(&db).await;
+        db.insert_session("expired", &user, -60).await.unwrap();
+        db.insert_session("valid", &user, 3600).await.unwrap();
+        db.insert_session("new", &user, 3600).await.unwrap();
+        assert!(!session_exists(&db, "expired").await);
+        assert!(session_exists(&db, "valid").await);
+        assert!(session_exists(&db, "new").await);
+    });
+
+    db_test!(delete_user_removes_their_sessions, |db| {
+        let (user, _, _) = db.get_user_for_oauth2("bob", "bob", None).await.unwrap();
+        let admin = admin_guid(&db).await;
+        db.insert_session("bob-session", &user, 3600).await.unwrap();
+        db.insert_session("admin-session", &admin, 3600).await.unwrap();
+        let guid = Uuid::from_slice(&user).unwrap().to_string();
+        db.delete_user(&guid).await.unwrap();
+        assert!(!session_exists(&db, "bob-session").await);
+        assert!(session_exists(&db, "admin-session").await);
     });
 
     db_test!(user_change_status, |db| {
