@@ -576,6 +576,9 @@ pub struct HeartbeatRequest {
     pub modified_at: u64,
     pub uuid: String,
     pub ver: u32,
+    /// Live connection ids; absent when the device has none.
+    #[serde(default)]
+    pub conns: Vec<i64>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]

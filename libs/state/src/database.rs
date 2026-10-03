@@ -1854,6 +1854,26 @@ impl Database {
         Some(())
     }
 
+    /// Ends the device's open rows whose connection is not in its heartbeat's `alive` list
+    /// (spec §10); rows younger than `grace_secs` may predate the heartbeat's snapshot.
+    pub async fn end_audit_conns_not_alive(&self, id: &str, uuid: &str, alive: &[i64], grace_secs: i64) -> Option<()> {
+        sqlx::query(
+            "UPDATE audit_conn SET end_time = to_char(NOW(), 'YYYY-MM-DD HH24:MI:SS.MS') \
+             WHERE remote = $1 AND end_time IS NULL AND info::jsonb->>'uuid' = $2 \
+             AND NOT ((info::jsonb->>'conn_id')::bigint = ANY($3)) \
+             AND created_at::timestamptz < NOW() - make_interval(secs => $4)",
+        )
+        .bind(id.as_bytes())
+        .bind(uuid)
+        .bind(alive)
+        .bind(grace_secs as f64)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| log::error!("end_audit_conns_not_alive error: {e:?}"))
+        .ok()?;
+        Some(())
+    }
+
     /// Stores the `authorized` record: connection type, controller id, and `patch` merged into `info`.
     pub async fn set_audit_conn_authorized(
         &self,
@@ -3091,6 +3111,7 @@ mod tests {
             uuid: BASE64_STANDARD.encode("nonexistent"),
             modified_at: 0,
             ver: 1,
+            conns: vec![],
         };
         let result = db.update_heartbeat(hb).await;
         assert!(result.is_none());
@@ -3102,6 +3123,7 @@ mod tests {
             uuid: "not-base64!!!".to_string(),
             modified_at: 0,
             ver: 1,
+            conns: vec![],
         };
         let result = db.update_heartbeat(hb).await;
         assert!(result.is_none());

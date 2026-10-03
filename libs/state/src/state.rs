@@ -321,6 +321,10 @@ impl ApiState {
     }
 
     pub async fn update_heartbeat(&self, heartbeat: utils::HeartbeatRequest) -> Option<()> {
+        // The client can exit before its close record is sent; its next heartbeat no longer lists the connection.
+        self.db
+            .end_audit_conns_not_alive(&heartbeat.id, &heartbeat.uuid, &heartbeat.conns, AUDIT_CONN_HEARTBEAT_GRACE_SECS)
+            .await;
         self.db.update_heartbeat(heartbeat).await
     }
 
@@ -911,6 +915,9 @@ fn audit_info(raw: &str) -> serde_json::Value {
 
 /// How long a started OIDC login stays usable; the RustDesk client stops polling after 3 minutes.
 pub const OIDC_LOGIN_TTL_SECS: u64 = 180;
+
+/// Heartbeats come every 3–15 s; a row this young may have been opened after the heartbeat's snapshot.
+pub const AUDIT_CONN_HEARTBEAT_GRACE_SECS: i64 = 30;
 
 fn unix_now() -> u64 {
     SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
@@ -1585,6 +1592,37 @@ mod tests {
         let rows = state.db.audit_conn_rows("dev1").await;
         assert_eq!(rows.len(), 1);
         assert!(rows[0].end_time.is_some(), "close must set end_time");
+    }
+
+    #[tokio::test]
+    async fn heartbeat_ends_open_rows_missing_from_conns() {
+        let state = test_state().await;
+        state.audit_conn(&new_record(1, "n-hb1")).await.unwrap();
+        state.audit_conn(&new_record(2, "n-hb2")).await.unwrap();
+        state.db.end_audit_conns_not_alive("dev1", "dXVpZA==", &[2], 0).await.unwrap();
+        let rows = state.db.audit_conn_rows("dev1").await;
+        let ended: Vec<bool> = rows.iter().map(|r| r.end_time.is_some()).collect();
+        assert_eq!(ended, vec![true, false], "conn 1 is gone from the heartbeat, conn 2 is alive");
+    }
+
+    #[tokio::test]
+    async fn heartbeat_without_conns_ends_every_open_row_of_the_device_only() {
+        let state = test_state().await;
+        state.audit_conn(&new_record(3, "n-hb3")).await.unwrap();
+        state.audit_conn(&conn_record(
+            r#"{"action":"new","id":"dev2","uuid":"dXVpZA==","conn_id":3,"session_id":0,"nonce":"n-hb4"}"#,
+        )).await.unwrap();
+        state.db.end_audit_conns_not_alive("dev1", "dXVpZA==", &[], 0).await.unwrap();
+        assert!(state.db.audit_conn_rows("dev1").await[0].end_time.is_some());
+        assert!(state.db.audit_conn_rows("dev2").await[0].end_time.is_none(), "other devices are untouched");
+    }
+
+    #[tokio::test]
+    async fn heartbeat_spares_rows_younger_than_the_grace_period() {
+        let state = test_state().await;
+        state.audit_conn(&new_record(5, "n-hb5")).await.unwrap();
+        state.db.end_audit_conns_not_alive("dev1", "dXVpZA==", &[], AUDIT_CONN_HEARTBEAT_GRACE_SECS).await.unwrap();
+        assert!(state.db.audit_conn_rows("dev1").await[0].end_time.is_none());
     }
 
     #[tokio::test]

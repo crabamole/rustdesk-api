@@ -18,7 +18,7 @@ Update this file with every API change.
 
 | Method | Path | Source | Status | Notes |
 |---|---|---|---|---|
-| POST | /api/heartbeat | [C] `src/hbbs_http/sync.rs` | implemented | updates last_online; sends `strategy.config_options` (Default strategy, allow-listed keys) when the device's `modified_at` differs |
+| POST | /api/heartbeat | [C] `src/hbbs_http/sync.rs` | implemented | updates last_online; sends `strategy.config_options` (Default strategy, allow-listed keys) when the device's `modified_at` differs; `conns` ends open audit rows of connections that are gone (30 s grace) |
 | POST | /api/sysinfo | [C] `src/hbbs_http/sync.rs` (`url.replace("heartbeat","sysinfo")`) | implemented | |
 | POST | /api/login | [C] `flutter/lib/models/user_model.dart` | implemented | password login intentionally disabled, always 401; use OIDC |
 | GET | /api/login-options | [C] `src/hbbs_http/account.rs`, `flutter/lib/models/user_model.dart` | implemented | |

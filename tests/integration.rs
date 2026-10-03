@@ -139,6 +139,18 @@ async fn set_policy(client: &Client, options: &[(&str, &str)]) -> i64 {
 }
 
 #[rocket::async_test]
+async fn test_heartbeat_accepts_live_connections() {
+    let (client, _dir) = test_client().await;
+    let resp = client
+        .post("/api/heartbeat")
+        .header(ContentType::JSON)
+        .body(r#"{"id":"test123","modified_at":0,"uuid":"abc","ver":1,"conns":[3,7]}"#)
+        .dispatch()
+        .await;
+    assert_eq!(resp.status(), Status::Ok);
+}
+
+#[rocket::async_test]
 async fn test_heartbeat_sends_policy_when_device_is_behind() {
     let (client, _dir) = test_client().await;
     let m = set_policy(&client, &[("enable-clipboard", "N"), ("enable-audio", "")]).await;

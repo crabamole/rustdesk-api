@@ -544,7 +544,7 @@ Legend: ✅ conforms · ⚠️ partial / deviates · ❌ missing
 | §3.2 `authorized` | ✅ | Matched by connection key (most recent open row; created if the `new` record was lost). Stores `type`, controller id in `local`, and `peer_name`, `primary_auth`, `two_factor`, `session_id` in `info`. |
 | §3.3 `close` | ✅ | Matched by connection key `(id, uuid, conn_id)`, most recent open row (§2.6) → sets `end_time`. Until 2026-10-02 it never matched (224/224 rows on a self-hosted instance had no `end_time`). |
 | §3.4 unknown shape → 2xx empty | ✅ | |
-| — lost `close` on client restart | ⚠️ **(live)** | Observed on the Linux client: it restarts `--server` right after the last connection closes, before the `close` record (§3.3) is sent, so the row stays `active` forever. Proposed fix (not yet implemented): end a device's open rows that are missing from its heartbeat `conns` list (§10). |
+| — lost `close` on client restart | ✅ | The Linux client restarts `--server` right after the last connection closes, before the `close` record (§3.3) is sent. A heartbeat now ends the device's open rows (same `id` and `uuid`) whose `conn_id` is not in its `conns` list, once they are 30 s old (younger rows may postdate the heartbeat's snapshot). |
 | — `login` action branch | — | Removed 2026-10-02; no client sends `action:"login"`. |
 | §4 menu note | ✅ | Recognised by empty `action`, a `note`, no `peer`/`type`, empty `uuid`. Applied to the most recent row matching `remote = id` (`@server` suffix stripped) and `info.session_id = session_id`. Always answers 2xx empty. |
 | §5 file | ✅ | Stored with `remote`=`id` (controlled device), `local`=`peer_id` (viewer) — migration 0006. `info` is stored as an object. An unknown connection key is stored unattributed (`user` NULL); only a DB failure answers `{"error":...}` so the client retries (§2.3). Attributed to the connection row's `user` (by `(id, uuid, conn_id)`) when known. |
@@ -552,7 +552,7 @@ Legend: ✅ conforms · ⚠️ partial / deviates · ❌ missing
 | §6 alarms 3–5 (account login) | ❌ | `/api/login` generates no alarms. |
 | §7 `GET /api/audit/conn/active` | ✅ | Requires a login (Bearer) and returns only the caller's own rows or rows with no attributed user — rows attributed to someone else answer `""`. |
 | §8 `PUT /api/audit` | ✅ | Implemented: owner of the row's `user` (or an unattributed row) may set `note`; overwrites any existing note. 400/404 otherwise. |
-| §10 heartbeat `disconnect` | ❌ **(live)** | Heartbeat returns JSON `{"modified_at": ..., "strategy": {"config_options": {...}}}` (the `strategy` field only when the device's policy changed), used for device policy sync (2026-09-29), not disconnect; `conns` not parsed; no disconnect queue. |
+| §10 heartbeat `disconnect` | ❌ **(live)** | Heartbeat returns JSON `{"modified_at": ..., "strategy": {"config_options": {...}}}` (the `strategy` field only when the device's policy changed), used for device policy sync (2026-09-29), not disconnect; no disconnect queue. `conns` ends open conn rows of connections that are gone (see "lost `close`" above). |
 | §11 `ControlledContext` (hbbs) | ✅ | hbbs bumped `hbb_common` to `69cea8d`. A token on `PunchHoleRequest`/`RequestRelay` calls `POST /api/audit/ref` (5 s bound) to mint a ref, forwarded in `ControlledContext` on `PunchHole`/`FetchLocalAddr`/`RequestRelay`; a 404 (older api-server) falls back to `/api/currentUser` without a ref. The controlling-side viewer token is stripped from the forwarded `RequestRelay`. `LOGGED_IN_ONLY=Y` now also applies to relay requests. With `LOGGED_IN_ONLY=Y`, an unreachable api-server (timeout or any non-login answer) refuses the request with "Your session expired." rather than falling back. |
 | §2.2 hbbs raw-TCP API proxy | ❌ | hbbs does not handle `HttpProxyRequest`; the client's fallback path fails (only matters with `USE_RAW_TCP_FOR_API=Y` or during 5xx). |
 
@@ -592,5 +592,4 @@ and controller-user attribution end to end (§11, §3.1, §5, §6). The admin
 read API (§9) and a webconsole "Audit log" page (§9.3) are implemented.
 Still open: console Disconnect, CSV export, retention, console (admin
 action) logging, §12.1 write validation, alarms 3–5, hbbs's raw-TCP API
-proxy (§2.2), and rows whose `close` record is lost on client restart (see
-§14.1).
+proxy (§2.2).
