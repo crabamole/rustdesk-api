@@ -493,9 +493,10 @@ notes are accepted only if `(id, session_id)` matches an existing row.
 
 ### 12.2 Client IP behind proxies
 
-`ip` in conn/file/alarm records is what the controlled device saw. In
-WebSocket / relay deployments this may be a proxy or relay address rather than
-the controller's real IP **[I]**.
+`ip` in conn/file/alarm records is what the controlled device saw, which is
+the address hbbs resolved for the controller. Behind reverse proxies it is the
+real client address only when the proxies are configured as trusted
+(`TRUSTED_PROXIES`, chart `realIp`); otherwise it is a proxy address **[I]**.
 
 ### 12.3 Retention
 
