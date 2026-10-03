@@ -26,8 +26,17 @@ struct PgContainer {
 
 static PG: OnceCell<PgContainer> = OnceCell::const_new();
 
+/// Each test opens its own connection pool (`Database::new`) against the one shared
+/// Postgres server; left at the default (`num_cpus::get() * 4`), running tests at full
+/// parallelism multiplies that by the number of concurrent tests and can exceed
+/// Postgres's own connection limit. Capped low since one test needs only a few.
+const TEST_MAX_DATABASE_CONNECTIONS: &str = "5";
+
 async fn container() -> &'static PgContainer {
     PG.get_or_init(|| async {
+        if std::env::var_os("MAX_DATABASE_CONNECTIONS").is_none() {
+            std::env::set_var("MAX_DATABASE_CONNECTIONS", TEST_MAX_DATABASE_CONNECTIONS);
+        }
         let container = Postgres::default()
             .with_tag("17-alpine")
             .with_container_name(CONTAINER_NAME)
