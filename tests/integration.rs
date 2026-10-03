@@ -255,6 +255,87 @@ async fn test_audit_ref_is_minted_for_the_caller() {
 }
 
 #[rocket::async_test]
+async fn test_audit_conn_active_requires_auth() {
+    let (client, _dir) = test_client().await;
+    let resp = client
+        .get("/api/audit/conn/active?id=dev&session_id=1&conn_type=0")
+        .dispatch()
+        .await;
+    assert!(resp.status() == Status::Unauthorized || resp.status() == Status::Forbidden);
+}
+
+#[rocket::async_test]
+async fn test_audit_conn_active_and_note() {
+    let (client, _dir) = test_client().await;
+    let state = client.rocket().state::<state::ApiState>().unwrap();
+    // A plain (non-admin) logged-in user: created inactive, then activated and demoted.
+    state.test_oidc_login(&"ivy".to_string()).await;
+    state.set_admin("ivy@example.org", true).await.unwrap();
+    state.set_admin("ivy@example.org", false).await.unwrap();
+    let token = oidc_token(&client, "ivy").await;
+
+    let resp = client.post("/api/audit/ref").header(auth_header(&token)).dispatch().await;
+    let body: Value = resp.into_json().await.unwrap();
+    let conn_ref = body["ref"].as_str().unwrap().to_string();
+
+    let resp = client
+        .post("/api/audit/conn")
+        .header(ContentType::JSON)
+        .body(format!(
+            r#"{{"action":"new","id":"devX","uuid":"uX","conn_id":1,"session_id":99,"nonce":"nA","conn_audit_ref":"{conn_ref}"}}"#
+        ))
+        .dispatch()
+        .await;
+    assert_eq!(resp.status(), Status::Ok);
+    let resp = client
+        .post("/api/audit/conn")
+        .header(ContentType::JSON)
+        .body(r#"{"peer":["v1","Viewer"],"type":0,"id":"devX","uuid":"uX","conn_id":1,"session_id":99,"nonce":"nB"}"#)
+        .dispatch()
+        .await;
+    assert_eq!(resp.status(), Status::Ok);
+
+    let resp = client
+        .get("/api/audit/conn/active?id=devX&session_id=99&conn_type=0")
+        .header(auth_header(&token))
+        .dispatch()
+        .await;
+    assert_eq!(resp.status(), Status::Ok);
+    let guid: String = resp.into_json().await.unwrap();
+    assert!(!guid.is_empty());
+
+    // bad guid -> 400
+    let resp = client
+        .put("/api/audit")
+        .header(ContentType::JSON)
+        .header(auth_header(&token))
+        .body(r#"{"guid":"xyz","note":"n"}"#)
+        .dispatch()
+        .await;
+    assert_eq!(resp.status(), Status::BadRequest);
+
+    // no token -> 401/403
+    let resp = client
+        .put("/api/audit")
+        .header(ContentType::JSON)
+        .body(format!(r#"{{"guid":"{guid}","note":"n"}}"#))
+        .dispatch()
+        .await;
+    assert!(resp.status() == Status::Unauthorized || resp.status() == Status::Forbidden);
+
+    // owner -> 200, note lands on the row
+    let resp = client
+        .put("/api/audit")
+        .header(ContentType::JSON)
+        .header(auth_header(&token))
+        .body(format!(r#"{{"guid":"{guid}","note":"end note"}}"#))
+        .dispatch()
+        .await;
+    assert_eq!(resp.status(), Status::Ok);
+    assert_eq!(state.audit_conn_note_for_test("devX").await.as_deref(), Some("end note"));
+}
+
+#[rocket::async_test]
 async fn test_users_list() {
     let (client, _dir) = test_client().await;
     let token = login_admin(&client).await;

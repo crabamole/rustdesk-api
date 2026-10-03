@@ -44,12 +44,13 @@ pub struct Database {
     pool: PgPool,
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-util"))]
 pub(crate) struct AuditConnRow {
     pub conn_type: Option<i16>,
     pub local: Option<Vec<u8>>,
     pub end_time: Option<String>,
     pub info: String,
+    pub note: Option<String>,
 }
 
 #[cfg(test)]
@@ -1728,9 +1729,9 @@ impl Database {
         Some(())
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-util"))]
     pub(crate) async fn audit_conn_rows(&self, remote: &str) -> Vec<AuditConnRow> {
-        sqlx::query("SELECT type, local, end_time, info FROM audit_conn WHERE remote = $1 ORDER BY created_at")
+        sqlx::query("SELECT type, local, end_time, info, note FROM audit_conn WHERE remote = $1 ORDER BY created_at")
             .bind(remote.as_bytes())
             .fetch_all(&self.pool)
             .await
@@ -1741,6 +1742,7 @@ impl Database {
                 local: r.get("local"),
                 end_time: r.get("end_time"),
                 info: r.get("info"),
+                note: r.get("note"),
             })
             .collect()
     }
@@ -1759,48 +1761,55 @@ impl Database {
         Some(())
     }
 
-    pub async fn update_audit_conn_note(&self, guid: &[u8], note: &str) -> Option<()> {
-        sqlx::query("UPDATE audit_conn SET note = $1 WHERE guid = $2")
-            .bind(note)
-            .bind(guid)
-            .execute(&self.pool)
-            .await
-            .ok()?;
-        Some(())
+    /// Spec §4: the random session id is the viewer's only proof of participation.
+    pub async fn set_audit_conn_note_by_session(&self, id: &str, session_id: u64, note: &str) -> Option<()> {
+        let res = sqlx::query(
+            "UPDATE audit_conn SET note = $3 WHERE guid = (SELECT guid FROM audit_conn \
+             WHERE remote = $1 AND info::jsonb->>'session_id' = $2 ORDER BY created_at DESC LIMIT 1)",
+        )
+        .bind(id.as_bytes())
+        .bind(session_id.to_string())
+        .bind(note)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| log::error!("set_audit_conn_note_by_session error: {e:?}"))
+        .ok()?;
+        (res.rows_affected() > 0).then_some(())
     }
 
+    /// Owner check for §7/§8: rows without a resolved viewer user are open to any logged-in caller.
     pub async fn find_active_audit_conn(
         &self,
-        peer_id: &str,
+        id: &str,
         session_id: &str,
-        conn_type: &str,
+        conn_type: i16,
+        caller: &[u8],
     ) -> Option<Vec<u8>> {
-        let conn_type_i: i16 = conn_type.parse().unwrap_or(0);
-        let row = sqlx::query(
-            "SELECT guid FROM audit_conn WHERE remote = $1 AND type = $2 AND end_time IS NULL ORDER BY created_at DESC",
+        sqlx::query(
+            "SELECT guid FROM audit_conn WHERE remote = $1 AND type = $2 AND end_time IS NULL \
+             AND info::jsonb->>'session_id' = $3 AND (\"user\" IS NULL OR \"user\" = $4) \
+             ORDER BY created_at DESC LIMIT 1",
         )
-        .bind(peer_id.as_bytes())
-        .bind(conn_type_i)
-        .fetch_all(&self.pool)
+        .bind(id.as_bytes())
+        .bind(conn_type)
+        .bind(session_id)
+        .bind(caller)
+        .fetch_optional(&self.pool)
         .await
-        .ok()?;
+        .map_err(|e| log::error!("find_active_audit_conn error: {e:?}"))
+        .ok()??
+        .try_get("guid")
+        .ok()
+    }
 
-        for r in &row {
-            let guid: Vec<u8> = r.try_get("guid").ok()?;
-            let info_str: String = sqlx::query("SELECT info FROM audit_conn WHERE guid = $1")
-                .bind(&guid)
-                .fetch_one(&self.pool)
-                .await
-                .ok()?
-                .try_get("info")
-                .ok()?;
-            if let Ok(info) = serde_json::from_str::<serde_json::Value>(&info_str) {
-                if info.get("session_id").and_then(|v| v.as_u64()).map(|s| s.to_string()).as_deref() == Some(session_id) {
-                    return Some(guid);
-                }
-            }
-        }
-        None
+    pub async fn set_audit_conn_note_by_guid(&self, guid: &[u8], note: &str, caller: &[u8]) -> Result<bool, sqlx::Error> {
+        let res = sqlx::query("UPDATE audit_conn SET note = $2 WHERE guid = $1 AND (\"user\" IS NULL OR \"user\" = $3)")
+            .bind(guid)
+            .bind(note)
+            .bind(caller)
+            .execute(&self.pool)
+            .await?;
+        Ok(res.rows_affected() > 0)
     }
 
     pub async fn find_audit_conn_by_nonce(&self, nonce: &str) -> Option<Vec<u8>> {
@@ -2811,7 +2820,7 @@ mod tests {
         let guid = Uuid::new_v4();
         let info = r#"{"nonce":"test3","session_id":300}"#;
         db.insert_audit_conn(guid.as_bytes(), Some(0), b"peer3", None, None, info).await;
-        let found = db.find_active_audit_conn("peer3", "300", "0").await;
+        let found = db.find_active_audit_conn("peer3", "300", 0, b"caller").await;
         assert!(found.is_some());
         assert_eq!(found.unwrap(), guid.as_bytes().to_vec());
     });
@@ -2820,7 +2829,7 @@ mod tests {
         let guid = Uuid::new_v4();
         let info = r#"{"nonce":"test_u64","session_id":18446744073709551615}"#;
         db.insert_audit_conn(guid.as_bytes(), Some(0), b"peer_u64", None, None, info).await;
-        let found = db.find_active_audit_conn("peer_u64", "18446744073709551615", "0").await;
+        let found = db.find_active_audit_conn("peer_u64", "18446744073709551615", 0, b"caller").await;
         assert_eq!(found, Some(guid.as_bytes().to_vec()));
     });
 
@@ -2829,8 +2838,17 @@ mod tests {
         let info = r#"{"nonce":"test4","session_id":400}"#;
         db.insert_audit_conn(guid.as_bytes(), Some(0), b"peer4", None, None, info).await;
         db.update_audit_conn_end_time(guid.as_bytes()).await;
-        let found = db.find_active_audit_conn("peer4", "400", "0").await;
+        let found = db.find_active_audit_conn("peer4", "400", 0, b"caller").await;
         assert!(found.is_none());
+    });
+
+    db_test!(find_active_audit_conn_other_user_is_hidden, |db| {
+        let guid = Uuid::new_v4();
+        let info = r#"{"nonce":"test5","session_id":500}"#;
+        db.insert_audit_conn(guid.as_bytes(), Some(0), b"peer5", None, None, info).await;
+        db.set_audit_conn_user(guid.as_bytes(), b"owner").await;
+        assert_eq!(db.find_active_audit_conn("peer5", "500", 0, b"owner").await, Some(guid.as_bytes().to_vec()));
+        assert_eq!(db.find_active_audit_conn("peer5", "500", 0, b"someone_else").await, None);
     });
 
     db_test!(insert_audit_file_basic, |db| {

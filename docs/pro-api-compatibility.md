@@ -26,12 +26,12 @@ Update this file with every API change.
 | GET | /api/oidc/auth-query | [C] `src/hbbs_http/account.rs` | implemented | |
 | POST | /api/logout | [C] `flutter/lib/models/user_model.dart` | implemented | |
 | POST | /api/currentUser | [C] `flutter/lib/models/user_model.dart` | implemented | |
-| POST | /api/audit/conn | [C] `src/server/connection.rs` | partial | connection lifecycle (`new`, `authorized`, `close`) per audit-api-spec.md §3; session-menu note (§4) not stored |
+| POST | /api/audit/conn | [C] `src/server/connection.rs` | implemented | connection lifecycle (`new`, `authorized`, `close`) and session-menu note (§4) per audit-api-spec.md §3-4 |
 | POST | /api/audit/file | [C] `src/server/connection.rs` | implemented | see audit-api-spec.md §5 |
 | POST | /api/audit/alarm | [C] `src/server/connection.rs` | implemented | see audit-api-spec.md §6 |
-| GET | /api/audit/conn/active | [C] `src/ui_session_interface.rs` | partial | route exists but no auth and wrong row filter, always returns "" per audit-api-spec.md §14.1 |
+| GET | /api/audit/conn/active | [C] `src/ui_session_interface.rs` | implemented | requires a bearer token; scoped to the row's own user or an unattributed row, per audit-api-spec.md §7 |
 | POST | /api/audit/ref | [I] hbbs `ControlledContext` | ours | not a Pro endpoint; mints an opaque ref for the bearer's user, consumed by hbbs per audit-api-spec.md §11 |
-| PUT | /api/audit | [C] `flutter/lib/common/widgets/dialog.dart` (end-of-session note) | missing | only legacy `POST /api/audit` exists, which just logs and does nothing |
+| PUT | /api/audit | [C] `flutter/lib/common/widgets/dialog.dart` (end-of-session note) | implemented | sets the note on the GUID's row (owner or unattributed only), per audit-api-spec.md §8 |
 | POST | /api/switch-grant | [C] `src/hbbs_http/sync.rs` | missing | no route |
 | POST | /api/devices/cli | [C] `src/core_main.rs` | missing | no `/api/devices*` route exists |
 | POST | /api/devices/deploy | [C] `src/ui_interface.rs` | missing | no `/api/devices*` route exists |

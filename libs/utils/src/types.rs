@@ -221,6 +221,14 @@ pub struct AuditConnRequest {
     pub two_factor: Option<i32>,
 }
 
+/// `PUT /api/audit` body (spec §8): end-of-session note by GUID.
+#[derive(Deserialize, Debug, JsonSchema)]
+pub struct AuditNoteRequest {
+    pub guid: String,
+    #[serde(default)]
+    pub note: String,
+}
+
 #[derive(Deserialize, Debug, JsonSchema)]
 pub struct AuditFileRequest {
     #[serde(default)]

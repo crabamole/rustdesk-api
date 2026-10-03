@@ -61,6 +61,14 @@ pub struct AddressBookInfo {
     pub address_book: AddressBook,
 }
 
+/// `set_audit_note` failure modes (spec §8).
+#[derive(Debug, PartialEq, Eq)]
+pub enum AuditNoteError {
+    BadGuid,
+    NotFound,
+    Db,
+}
+
 const MAINTENANCE_INTERVAL_IN_SECS: u64 = 60;
 
 fn secs_from_epoch() -> u64 {
@@ -744,6 +752,15 @@ impl ApiState {
                 Some(guid) => self.db.update_audit_conn_end_time(&guid).await,
                 None => Some(()),
             },
+            // Menu note from the viewer (spec §4): no action, uuid, peer or type.
+            "" if request.note.is_some() && request.uuid.is_empty() && request.peer.is_none() && request.conn_type.is_none() => {
+                let id = request.id.split('@').next().unwrap_or_default();
+                let note = request.note.as_deref().unwrap_or_default();
+                if self.db.set_audit_conn_note_by_session(id, request.session_id, note).await.is_none() {
+                    log::debug!("audit_conn: note for unknown session of {id}");
+                }
+                Some(())
+            }
             "" if request.peer.is_some() || request.conn_type.is_some() => {
                 let guid = match self.db.find_open_audit_conn(id, uuid, conn_id).await {
                     Some(guid) => guid,
@@ -829,10 +846,31 @@ impl ApiState {
         id: &str,
         session_id: &str,
         conn_type: &str,
+        caller: &UserId,
     ) -> Option<String> {
-        let guid = self.db.find_active_audit_conn(id, session_id, conn_type).await?;
+        let conn_type_i: i16 = conn_type.parse().ok()?;
+        let guid = self.db.find_active_audit_conn(id, session_id, conn_type_i, caller).await?;
         let uuid = uuid::Uuid::from_slice(&guid).ok()?;
         Some(uuid.to_string())
+    }
+
+    /// Spec §8: the caller sets the note on its own row, or an unattributed one.
+    pub async fn set_audit_note(&self, guid: &str, note: &str, caller: &UserId) -> Result<(), AuditNoteError> {
+        let guid = uuid::Uuid::parse_str(guid).map_err(|_| AuditNoteError::BadGuid)?;
+        match self.db.set_audit_conn_note_by_guid(guid.as_bytes(), note, caller).await {
+            Ok(true) => Ok(()),
+            Ok(false) => Err(AuditNoteError::NotFound),
+            Err(e) => {
+                log::error!("set_audit_note error: {e:?}");
+                Err(AuditNoteError::Db)
+            }
+        }
+    }
+
+    /// The note of a device's most recent conn row. Test-only (integration tests lack a read API yet).
+    #[cfg(any(test, feature = "test-util"))]
+    pub async fn audit_conn_note_for_test(&self, remote: &str) -> Option<String> {
+        self.db.audit_conn_rows(remote).await.last()?.note.clone()
     }
 
     /// Opaque ref hbbs forwards to the controlled device; it identifies `user` without exposing a token.
@@ -1645,6 +1683,69 @@ mod tests {
         state.audit_conn(&new).await.unwrap();
         assert_eq!(state.db.audit_conn_rows("dev2").await.len(), 1);
         assert_eq!(state.db.audit_conn_user("dev2", "u2", 1).await, None);
+    }
+
+    #[tokio::test]
+    async fn audit_menu_note_lands_on_the_session_row() {
+        let state = test_state().await;
+        state.audit_conn(&new_record(5, "n-note")).await.unwrap();
+        // authorized record carries the session id
+        state.audit_conn(&conn_record(
+            r#"{"peer":["v1","Viewer"],"type":0,"id":"dev","uuid":"uuid","conn_id":5,"session_id":18446744073709551615,"nonce":"a-note"}"#,
+        )).await.unwrap();
+        state.audit_conn(&conn_record(r#"{"id":"dev@srv","session_id":18446744073709551615,"note":"hello"}"#)).await.unwrap();
+        assert_eq!(state.db.audit_conn_rows("dev").await[0].note.as_deref(), Some("hello"));
+    }
+
+    #[tokio::test]
+    async fn find_active_audit_conn_is_scoped_to_the_row_owner() {
+        let state = test_state().await;
+        let (owner, _, _) = state.db.get_user_for_oauth2("erin", "erin", Some("erin@example.org")).await.unwrap();
+        let (other, _, _) = state.db.get_user_for_oauth2("frank", "frank", Some("frank@example.org")).await.unwrap();
+        let r = state.mint_audit_conn_ref(&owner).await.unwrap();
+        state.audit_conn(&conn_record(&format!(
+            r#"{{"action":"new","id":"dev4","uuid":"u4","conn_id":9,"session_id":42,"nonce":"n-active","conn_audit_ref":"{r}"}}"#
+        ))).await.unwrap();
+        state.audit_conn(&conn_record(
+            r#"{"peer":["v1","Viewer"],"type":0,"id":"dev4","uuid":"u4","conn_id":9,"session_id":42,"nonce":"a-active"}"#,
+        )).await.unwrap();
+
+        assert!(state.find_active_audit_conn("dev4", "42", "0", &owner).await.is_some());
+        assert_eq!(state.find_active_audit_conn("dev4", "42", "0", &other).await, None);
+
+        // unattributed row: open to any logged-in caller
+        state.audit_conn(&new_record(10, "n-unattrib")).await.unwrap();
+        state.audit_conn(&conn_record(
+            r#"{"peer":["v1","Viewer"],"type":0,"id":"dev1","uuid":"dXVpZA==","conn_id":10,"session_id":0,"nonce":"a-unattrib"}"#,
+        )).await.unwrap();
+        assert!(state.find_active_audit_conn("dev1", "0", "0", &other).await.is_some());
+    }
+
+    #[tokio::test]
+    async fn set_audit_note_enforces_ownership() {
+        let state = test_state().await;
+        let (owner, _, _) = state.db.get_user_for_oauth2("gina", "gina", Some("gina@example.org")).await.unwrap();
+        let (other, _, _) = state.db.get_user_for_oauth2("hank", "hank", Some("hank@example.org")).await.unwrap();
+        let r = state.mint_audit_conn_ref(&owner).await.unwrap();
+        state.audit_conn(&conn_record(&format!(
+            r#"{{"action":"new","id":"dev5","uuid":"u5","conn_id":11,"session_id":1,"nonce":"n-set","conn_audit_ref":"{r}"}}"#
+        ))).await.unwrap();
+        let guid = state.find_active_audit_conn("dev5", "1", "0", &owner).await;
+        assert_eq!(guid, None, "row has no type until authorized");
+        state.audit_conn(&conn_record(
+            r#"{"peer":["v1","Viewer"],"type":0,"id":"dev5","uuid":"u5","conn_id":11,"session_id":1,"nonce":"a-set"}"#,
+        )).await.unwrap();
+        let guid = state.find_active_audit_conn("dev5", "1", "0", &owner).await.unwrap();
+
+        assert_eq!(state.set_audit_note(&guid, "owner note", &owner).await, Ok(()));
+        assert_eq!(state.db.audit_conn_rows("dev5").await[0].note.as_deref(), Some("owner note"));
+
+        assert_eq!(state.set_audit_note(&guid, "nope", &other).await, Err(AuditNoteError::NotFound));
+        assert_eq!(
+            state.set_audit_note("00000000-0000-0000-0000-000000000000", "n", &owner).await,
+            Err(AuditNoteError::NotFound)
+        );
+        assert_eq!(state.set_audit_note("xyz", "n", &owner).await, Err(AuditNoteError::BadGuid));
     }
 
     #[tokio::test]

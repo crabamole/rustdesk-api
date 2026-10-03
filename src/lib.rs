@@ -134,6 +134,7 @@ pub fn api_routes() -> (Vec<rocket::Route>, rocket_okapi::okapi::openapi3::OpenA
         audit,
         audit_conn,
         audit_conn_active,
+        audit_note,
         audit_file,
         audit_alarm,
         audit_ref,
@@ -442,15 +443,35 @@ async fn audit_conn(
 #[get("/api/audit/conn/active?<id>&<session_id>&<conn_type>")]
 async fn audit_conn_active(
     state: &State<ApiState>,
+    user: AuthenticatedUser,
     id: &str,
     session_id: &str,
     conn_type: &str,
 ) -> String {
     log::debug!("audit_conn_active: id={}, session_id={}, conn_type={}", id, session_id, conn_type);
-    let result = state.find_active_audit_conn(id, session_id, conn_type).await;
+    let result = state.find_active_audit_conn(id, session_id, conn_type, &user.info.user_id).await;
     match result {
         Some(guid) => serde_json::to_string(&guid).unwrap_or_default(),
         None => serde_json::to_string("").unwrap_or_default(),
+    }
+}
+
+/// # Set an end-of-session note
+///
+/// Spec §8: the viewer's note for the connection `guid` came from `GET /api/audit/conn/active`.
+#[openapi(tag = "audit")]
+#[put("/api/audit", format = "application/json", data = "<request>")]
+async fn audit_note(
+    state: &State<ApiState>,
+    user: AuthenticatedUser,
+    request: Json<utils::AuditNoteRequest>,
+) -> Result<(), Status> {
+    state.check_maintenance().await;
+    match state.set_audit_note(&request.guid, &request.note, &user.info.user_id).await {
+        Ok(()) => Ok(()),
+        Err(state::AuditNoteError::BadGuid) => Err(Status::BadRequest),
+        Err(state::AuditNoteError::NotFound) => Err(Status::NotFound),
+        Err(state::AuditNoteError::Db) => Err(Status::InternalServerError),
     }
 }
 
@@ -2903,6 +2924,7 @@ mod tests {
     #[rocket::async_test]
     async fn test_audit_conn_active() {
         let client = test_client().await;
+        let token = login_admin(&client).await;
         let resp = client
             .post("/api/audit/conn")
             .header(ContentType::JSON)
@@ -2920,12 +2942,23 @@ mod tests {
 
         let resp = client
             .get("/api/audit/conn/active?id=peer3&session_id=300&conn_type=0")
+            .header(auth_header(&token))
             .dispatch()
             .await;
         assert_eq!(resp.status(), Status::Ok);
         let body = resp.into_string().await.unwrap();
         let guid: String = serde_json::from_str(&body).unwrap();
         assert!(uuid::Uuid::parse_str(&guid).is_ok(), "expected a row GUID, got {body}");
+    }
+
+    #[rocket::async_test]
+    async fn test_audit_conn_active_requires_auth() {
+        let client = test_client().await;
+        let resp = client
+            .get("/api/audit/conn/active?id=peer3&session_id=300&conn_type=0")
+            .dispatch()
+            .await;
+        assert!(resp.status() == Status::Unauthorized || resp.status() == Status::Forbidden);
     }
 
     #[rocket::async_test]
