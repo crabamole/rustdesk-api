@@ -52,6 +52,20 @@ pub(crate) struct AuditConnRow {
     pub info: String,
 }
 
+#[cfg(test)]
+pub(crate) struct AuditFileRow {
+    pub remote: Vec<u8>,
+    pub local: Option<Vec<u8>>,
+    pub user: Option<Vec<u8>>,
+    pub info: String,
+}
+
+#[cfg(test)]
+pub(crate) struct AuditAlarmRow {
+    pub user: Option<Vec<u8>>,
+    pub info: String,
+}
+
 #[cfg(any(test, feature = "test-util"))]
 pub struct DatabaseConnection {
     pool: PgPool,
@@ -1877,10 +1891,11 @@ impl Database {
         path: &str,
         is_file: bool,
         info: &str,
+        user: Option<&[u8]>,
     ) -> Option<()> {
         let is_file_i: i8 = if is_file { 1 } else { 0 };
         sqlx::query(
-            "INSERT INTO audit_file (guid, remote, local, type, path, is_file, info) VALUES ($1, $2, $3, $4, $5, $6, $7)",
+            "INSERT INTO audit_file (guid, remote, local, type, path, is_file, info, \"user\") VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
         )
         .bind(guid)
         .bind(remote)
@@ -1889,9 +1904,68 @@ impl Database {
         .bind(path)
         .bind(is_file_i as i16)
         .bind(info)
+        .bind(user)
         .execute(&self.pool)
         .await
         .ok()?;
+        Some(())
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn audit_file_row_for_test(&self, nonce: &str) -> AuditFileRow {
+        let r = sqlx::query(
+            "SELECT remote, local, \"user\", info FROM audit_file WHERE info::jsonb->>'nonce' = $1 LIMIT 1",
+        )
+        .bind(nonce)
+        .fetch_one(&self.pool)
+        .await
+        .unwrap();
+        AuditFileRow {
+            remote: r.get("remote"),
+            local: r.get("local"),
+            user: r.get("user"),
+            info: r.get("info"),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn audit_alarm_row_for_test(&self, nonce: &str) -> AuditAlarmRow {
+        let r = sqlx::query(
+            "SELECT \"user\", info FROM audit_alarm WHERE info::jsonb->>'nonce' = $1 LIMIT 1",
+        )
+        .bind(nonce)
+        .fetch_one(&self.pool)
+        .await
+        .unwrap();
+        AuditAlarmRow { user: r.get("user"), info: r.get("info") }
+    }
+
+    /// User of a connection's most recent row; file and alarm records carry no ref of their own.
+    pub async fn audit_conn_user(&self, id: &str, uuid: &str, conn_id: i64) -> Option<Vec<u8>> {
+        sqlx::query(
+            "SELECT \"user\" FROM audit_conn WHERE remote = $1 \
+             AND info::jsonb->>'uuid' = $2 AND (info::jsonb->>'conn_id')::bigint = $3 \
+             ORDER BY created_at DESC LIMIT 1",
+        )
+        .bind(id.as_bytes())
+        .bind(uuid)
+        .bind(conn_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| log::error!("audit_conn_user error: {e:?}"))
+        .ok()??
+        .try_get("user")
+        .ok()
+    }
+
+    pub async fn set_audit_conn_user(&self, guid: &[u8], user: &[u8]) -> Option<()> {
+        sqlx::query("UPDATE audit_conn SET \"user\" = $2 WHERE guid = $1")
+            .bind(guid)
+            .bind(user)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| log::error!("set_audit_conn_user error: {e:?}"))
+            .ok()?;
         Some(())
     }
 
@@ -2762,7 +2836,7 @@ mod tests {
     db_test!(insert_audit_file_basic, |db| {
         let guid = Uuid::new_v4();
         let info = r#"{"nonce":"ftest1"}"#;
-        let result = db.insert_audit_file(guid.as_bytes(), b"remote1", Some(b"local1"), 1, "/tmp/f.txt", true, info).await;
+        let result = db.insert_audit_file(guid.as_bytes(), b"remote1", Some(b"local1"), 1, "/tmp/f.txt", true, info, None).await;
         assert!(result.is_some());
     });
 

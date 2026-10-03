@@ -519,7 +519,7 @@ Pro [D].
 
 ## 14. Implementation status (sctgdesk-api-server / sctgdesk-server)
 
-**As of 2026-09-24** — api-server `main` @ `66905bc`, hbbs `master` @ `ae39ef5`; §2.3, §2.4, §3 and §7 rows updated 2026-10-02.
+**As of 2026-09-24** — api-server `main` @ `66905bc`, hbbs `master` @ `ae39ef5`; §2.3, §2.4, §3 and §7 rows updated 2026-10-02; §2.3, §5 and §6 rows updated 2026-10-03.
 Verified by code reading; items marked **(live)** were also probed against a
 running deployment.
 
@@ -530,7 +530,7 @@ Legend: ✅ conforms · ⚠️ partial / deviates · ❌ missing
 | Spec | Status | Finding |
 |---|---|---|
 | §2.3 success = empty 2xx | ✅ | All three endpoints answer an empty body once stored (`/conn` returned the row GUID until 2026-10-02, which made the client retry every `new`). |
-| §2.3 failure → `{"error"}` / 5xx | ⚠️ | `/conn` answers `{"error": ...}` when a record is not stored, so the client retries. `/file`, `/alarm` still answer 2xx empty on DB failure → the record is lost. |
+| §2.3 failure → `{"error"}` / 5xx | ✅ | All three endpoints answer `{"error": ...}` when a record is not stored, so the client retries. |
 | §2.4 nonce dedup | ⚠️ | `find_audit_*_by_nonce` look the nonce up in SQL (`info::jsonb->>'nonce'`); no index, so still a sequential scan inside Postgres. No unique constraint → concurrent duplicates both insert. No nonce release needed (no claim state), no 5-min expiry (harmless). |
 | §2.6 `session_id` as u64 | ✅ | Fixed on `fix/audit-session-id-u64`: request field is `u64` and the active-conn lookup compares as u64. Previously `i64`, so values > i64::MAX (≈ half of all random session ids) got **422 (live)** and the record was dropped. |
 | §3.1 `new` | ✅ | Row with `type` NULL ("Not Logged In"); an older open row with the same connection key is ended first (the client restarted). `ip`, `uuid`, `conn_id`, `session_id` live in the `info` JSON text. `conn_audit_ref` is ignored (hbbs never issues one, §11). |
@@ -539,8 +539,8 @@ Legend: ✅ conforms · ⚠️ partial / deviates · ❌ missing
 | §3.4 unknown shape → 2xx empty | ✅ | |
 | — `login` action branch | — | Removed 2026-10-02; no client sends `action:"login"`. |
 | §4 menu note | ❌ **(live)** | No `action` → discarded as unknown. Live DB: 0/12 rows have a note. |
-| §5 file | ⚠️ | Stored (`remote`=`peer_id`, `local`=`id` — note: **reversed** vs. Pro semantics where remote = controlled device). `info` string double-encoded inside another JSON object. No controller attribution. Not exercised end-to-end (0 live rows). |
-| §6 alarm | ⚠️ | Stored with `typ`, `device`=`id`; `info` double-encoded. No attribution. Not exercised end-to-end (0 live rows). |
+| §5 file | ✅ | Stored with `remote`=`id` (controlled device), `local`=`peer_id` (viewer) — fixed 2026-10-03; was reversed. `info`'s own `info` field is parsed into an object when it is valid JSON. Attributed to the connection's `user` (§11) when known. |
+| §6 alarm | ✅ | Stored with `typ`, `device`=`id`; `info`'s own `info` field parsed into an object. Attributed from `conn_audit_ref` (typ 0, 10) or else the connection's `user` (§11) when known. |
 | §6 alarms 3–5 (account login) | ❌ | `/api/login` generates no alarms. |
 | §7 `GET /api/audit/conn/active` | ⚠️ | Finds the row once `authorized` has stored `type` and `session_id` (2026-10-02). Still **no auth** (answers 200 without a token), and `find_active_audit_conn` does N+1 queries. The end-of-session note itself (§8) is still missing. |
 | §8 `PUT /api/audit` | ❌ **(live)** | 404. Only legacy `POST /api/audit` exists, which just logs. |

@@ -455,27 +455,41 @@ async fn audit_conn_active(
 }
 
 /// Audit file transfer events
+///
+/// Answers an empty body once the record is stored and `{"error": ...}` otherwise; the client
+/// retries on any non-empty body (docs/audit-api-spec.md §2.3).
 #[openapi(tag = "audit")]
 #[post("/api/audit/file", format = "application/json", data = "<request>")]
 async fn audit_file(
     state: &State<ApiState>,
     request: Json<utils::AuditFileRequest>,
-) {
+) -> String {
     log::debug!("audit_file: {:?}", request);
-    state.audit_file(&request).await;
+    let stored = state.audit_file(&request).await;
     state.check_maintenance().await;
+    match stored {
+        Some(()) => String::new(),
+        None => r#"{"error":"audit record not stored"}"#.to_owned(),
+    }
 }
 
 /// Audit alarm events
+///
+/// Answers an empty body once the record is stored and `{"error": ...}` otherwise; the client
+/// retries on any non-empty body (docs/audit-api-spec.md §2.3).
 #[openapi(tag = "audit")]
 #[post("/api/audit/alarm", format = "application/json", data = "<request>")]
 async fn audit_alarm(
     state: &State<ApiState>,
     request: Json<utils::AuditAlarmRequest>,
-) {
+) -> String {
     log::debug!("audit_alarm: {:?}", request);
-    state.audit_alarm(&request).await;
+    let stored = state.audit_alarm(&request).await;
     state.check_maintenance().await;
+    match stored {
+        Some(()) => String::new(),
+        None => r#"{"error":"audit record not stored"}"#.to_owned(),
+    }
 }
 
 /// # Mint a connection audit ref

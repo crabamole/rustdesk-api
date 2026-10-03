@@ -728,7 +728,18 @@ impl ApiState {
                 let guid = uuid::Uuid::new_v4();
                 self.db
                     .insert_audit_conn(guid.as_bytes(), None, id.as_bytes(), None, request.note.as_deref(), &info.to_string())
-                    .await
+                    .await?;
+                if let Some(conn_ref) = request.conn_audit_ref.as_deref().filter(|r| !r.is_empty()) {
+                    match self.resolve_audit_conn_ref(conn_ref).await {
+                        Some(user) => self.db.set_audit_conn_user(guid.as_bytes(), &user).await,
+                        None => {
+                            log::debug!("audit_conn: unknown conn_audit_ref");
+                            Some(())
+                        }
+                    }
+                } else {
+                    Some(())
+                }
             }
             // close carries neither the new record's nonce nor a conn_audit_ref.
             "close" => match self.db.find_open_audit_conn(id, uuid, conn_id).await {
@@ -773,16 +784,18 @@ impl ApiState {
             "conn_id": request.conn_id,
             "nonce": request.nonce,
             "uuid": request.uuid,
-            "info": request.info,
+            "info": audit_info(&request.info),
         });
+        let user = self.db.audit_conn_user(&request.id, &request.uuid, request.conn_id).await;
         self.db.insert_audit_file(
             guid.as_bytes(),
-            request.peer_id.as_bytes(),
-            Some(request.id.as_bytes()),
+            request.id.as_bytes(),
+            Some(request.peer_id.as_bytes()),
             request.file_type,
             &request.path,
             request.is_file,
             &info.to_string(),
+            user.as_deref(),
         ).await
     }
 
@@ -795,14 +808,20 @@ impl ApiState {
             "conn_id": request.conn_id,
             "nonce": request.nonce,
             "uuid": request.uuid,
-            "info": request.info,
-            "conn_audit_ref": request.conn_audit_ref,
+            "info": audit_info(&request.info),
         });
+        let user = match request.conn_audit_ref.as_deref().filter(|r| !r.is_empty()) {
+            Some(conn_ref) => match self.resolve_audit_conn_ref(conn_ref).await {
+                Some(user) => Some(user),
+                None => self.db.audit_conn_user(&request.id, &request.uuid, request.conn_id).await,
+            },
+            None => self.db.audit_conn_user(&request.id, &request.uuid, request.conn_id).await,
+        };
         self.db.insert_audit_alarm(
             guid.as_bytes(),
             request.typ,
             &info.to_string(),
-            None,
+            user.as_deref(),
             Some(request.id.as_bytes()),
         ).await
     }
@@ -828,6 +847,11 @@ impl ApiState {
     pub async fn resolve_audit_conn_ref(&self, conn_ref: &str) -> Option<UserId> {
         self.db.resolve_audit_conn_ref(conn_ref).await
     }
+}
+
+/// The client's `info` is a JSON string; store it as an object so readers need not decode twice.
+fn audit_info(raw: &str) -> serde_json::Value {
+    serde_json::from_str(raw).unwrap_or_else(|_| serde_json::Value::String(raw.to_owned()))
 }
 
 /// How long a started OIDC login stays usable; the RustDesk client stops polling after 3 minutes.
@@ -1602,5 +1626,78 @@ mod tests {
         assert_eq!(r.len(), 32);
         assert_eq!(state.resolve_audit_conn_ref(&r).await, Some(user));
         assert_eq!(state.resolve_audit_conn_ref("unknown").await, None);
+    }
+
+    #[tokio::test]
+    async fn audit_conn_new_with_ref_records_the_viewer_user() {
+        let state = test_state().await;
+        let (user, _, _) = state.db.get_user_for_oauth2("carol", "carol", Some("carol@example.org")).await.unwrap();
+        let r = state.mint_audit_conn_ref(&user).await.unwrap();
+        let new = conn_record(&format!(
+            r#"{{"action":"new","id":"dev1","uuid":"u1","conn_id":7,"nonce":"n-ref","conn_audit_ref":"{r}"}}"#
+        ));
+        state.audit_conn(&new).await.unwrap();
+        assert_eq!(state.db.audit_conn_user("dev1", "u1", 7).await, Some(user));
+    }
+
+    #[tokio::test]
+    async fn audit_conn_new_with_unknown_ref_is_stored_without_user() {
+        let state = test_state().await;
+        let new = conn_record(r#"{"action":"new","id":"dev2","uuid":"u2","conn_id":1,"nonce":"n-unk","conn_audit_ref":"nope"}"#);
+        state.audit_conn(&new).await.unwrap();
+        assert_eq!(state.db.audit_conn_rows("dev2").await.len(), 1);
+        assert_eq!(state.db.audit_conn_user("dev2", "u2", 1).await, None);
+    }
+
+    #[tokio::test]
+    async fn audit_file_is_stored_against_the_device_and_attributed() {
+        let state = test_state().await;
+        let (user, _, _) = state.db.get_user_for_oauth2("dave", "dave", Some("dave@example.org")).await.unwrap();
+        let r = state.mint_audit_conn_ref(&user).await.unwrap();
+        state.audit_conn(&conn_record(&format!(
+            r#"{{"action":"new","id":"dev3","uuid":"u3","conn_id":2,"nonce":"n3","conn_audit_ref":"{r}"}}"#
+        ))).await.unwrap();
+        let file: utils::AuditFileRequest = serde_json::from_str(
+            r#"{"id":"dev3","uuid":"u3","peer_id":"viewer9","conn_id":2,"type":1,"path":"/tmp","is_file":false,
+                "info":"{\"ip\":\"203.0.113.5\",\"name\":\"v\",\"num\":1,\"files\":[[\"a.txt\",3]]}","nonce":"f1"}"#,
+        ).unwrap();
+        state.audit_file(&file).await.unwrap();
+        let row = state.db.audit_file_row_for_test("f1").await;
+        assert_eq!(row.remote, b"dev3".to_vec());
+        assert_eq!(row.local, Some(b"viewer9".to_vec()));
+        assert_eq!(row.user, Some(user));
+        let info: serde_json::Value = serde_json::from_str(&row.info).unwrap();
+        assert_eq!(info["info"]["num"], 1);
+    }
+
+    #[tokio::test]
+    async fn audit_alarm_without_ref_is_attributed_from_the_connection() {
+        let state = test_state().await;
+        let (user, _, _) = state.db.get_user_for_oauth2("erin", "erin", Some("erin@example.org")).await.unwrap();
+        let r = state.mint_audit_conn_ref(&user).await.unwrap();
+        state.audit_conn(&conn_record(&format!(
+            r#"{{"action":"new","id":"dev4","uuid":"u4","conn_id":3,"nonce":"n4","conn_audit_ref":"{r}"}}"#
+        ))).await.unwrap();
+        let alarm: utils::AuditAlarmRequest = serde_json::from_str(
+            r#"{"id":"dev4","uuid":"u4","typ":1,"info":"{\"ip\":\"203.0.113.5\",\"id\":\"1\",\"name\":\"n\"}","conn_id":3,"nonce":"a1"}"#,
+        ).unwrap();
+        state.audit_alarm(&alarm).await.unwrap();
+        let row = state.db.audit_alarm_row_for_test("a1").await;
+        assert_eq!(row.user, Some(user));
+        let info: serde_json::Value = serde_json::from_str(&row.info).unwrap();
+        assert_eq!(info["info"]["id"], "1");
+    }
+
+    #[tokio::test]
+    async fn audit_alarm_with_ref_is_attributed_from_the_ref() {
+        let state = test_state().await;
+        let (user, _, _) = state.db.get_user_for_oauth2("frank", "frank", Some("frank@example.org")).await.unwrap();
+        let r = state.mint_audit_conn_ref(&user).await.unwrap();
+        let alarm: utils::AuditAlarmRequest = serde_json::from_str(&format!(
+            r#"{{"id":"dev5","uuid":"u5","typ":0,"info":"{{\"ip\":\"203.0.113.5\"}}","conn_id":9,"nonce":"a2","conn_audit_ref":"{r}"}}"#
+        )).unwrap();
+        state.audit_alarm(&alarm).await.unwrap();
+        let row = state.db.audit_alarm_row_for_test("a2").await;
+        assert_eq!(row.user, Some(user));
     }
 }

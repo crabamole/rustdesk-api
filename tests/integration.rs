@@ -212,6 +212,26 @@ async fn test_audit() {
 }
 
 #[rocket::async_test]
+async fn test_audit_file_answers_empty_when_stored() {
+    let (client, _dir) = test_client().await;
+    let resp = client.post("/api/audit/file").header(ContentType::JSON)
+        .body(r#"{"id":"d","uuid":"u","peer_id":"p","conn_id":1,"type":0,"path":"","is_file":false,"info":"{}","nonce":"x1"}"#)
+        .dispatch().await;
+    assert_eq!(resp.status(), Status::Ok);
+    assert_eq!(resp.into_string().await.unwrap_or_default(), "");
+}
+
+#[rocket::async_test]
+async fn test_audit_alarm_answers_empty_when_stored() {
+    let (client, _dir) = test_client().await;
+    let resp = client.post("/api/audit/alarm").header(ContentType::JSON)
+        .body(r#"{"id":"d","uuid":"u","typ":1,"info":"{}","conn_id":1,"nonce":"x2"}"#)
+        .dispatch().await;
+    assert_eq!(resp.status(), Status::Ok);
+    assert_eq!(resp.into_string().await.unwrap_or_default(), "");
+}
+
+#[rocket::async_test]
 async fn test_audit_ref_requires_login() {
     let (client, _dir) = test_client().await;
     let resp = client.post("/api/audit/ref").dispatch().await;
