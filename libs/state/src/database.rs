@@ -1916,6 +1916,35 @@ impl Database {
         .ok()?;
         Some(())
     }
+
+    /// Stores a ref minted for `user`; refs a day old are dropped, a connection uses its ref within seconds.
+    pub async fn insert_audit_conn_ref(&self, conn_ref: &str, user: &[u8]) -> Option<()> {
+        sqlx::query("DELETE FROM audit_conn_ref WHERE created_at < now() - interval '1 day'")
+            .execute(&self.pool)
+            .await
+            .map_err(|e| log::error!("insert_audit_conn_ref purge error: {e:?}"))
+            .ok()?;
+        sqlx::query("INSERT INTO audit_conn_ref (ref, \"user\") VALUES ($1, $2)")
+            .bind(conn_ref)
+            .bind(user)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| log::error!("insert_audit_conn_ref error: {e:?}"))
+            .ok()?;
+        Some(())
+    }
+
+    pub async fn resolve_audit_conn_ref(&self, conn_ref: &str) -> Option<Vec<u8>> {
+        sqlx::query("SELECT \"user\" FROM audit_conn_ref WHERE ref = $1")
+            .bind(conn_ref)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|e| log::error!("resolve_audit_conn_ref error: {e:?}"))
+            .ok()??
+            .try_get("user")
+            .map_err(|e| log::error!("resolve_audit_conn_ref decode error: {e:?}"))
+            .ok()
+    }
 }
 
 #[cfg(test)]
@@ -1998,7 +2027,7 @@ mod tests {
                 .fetch_all(&first.pool)
                 .await
                 .unwrap();
-        assert_eq!(applied, vec![(1, true), (2, true), (3, true), (4, true), (5, true)]);
+        assert_eq!(applied, vec![(1, true), (2, true), (3, true), (4, true), (5, true), (6, true)]);
         first.pool.close().await;
 
         // Second start on the same database must not fail or duplicate rows.

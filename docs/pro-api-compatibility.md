@@ -30,6 +30,7 @@ Update this file with every API change.
 | POST | /api/audit/file | [C] `src/server/connection.rs` | implemented | see audit-api-spec.md §5 |
 | POST | /api/audit/alarm | [C] `src/server/connection.rs` | implemented | see audit-api-spec.md §6 |
 | GET | /api/audit/conn/active | [C] `src/ui_session_interface.rs` | partial | route exists but no auth and wrong row filter, always returns "" per audit-api-spec.md §14.1 |
+| POST | /api/audit/ref | [I] hbbs `ControlledContext` | ours | not a Pro endpoint; mints an opaque ref for the bearer's user, consumed by hbbs per audit-api-spec.md §11 |
 | PUT | /api/audit | [C] `flutter/lib/common/widgets/dialog.dart` (end-of-session note) | missing | only legacy `POST /api/audit` exists, which just logs and does nothing |
 | POST | /api/switch-grant | [C] `src/hbbs_http/sync.rs` | missing | no route |
 | POST | /api/devices/cli | [C] `src/core_main.rs` | missing | no `/api/devices*` route exists |

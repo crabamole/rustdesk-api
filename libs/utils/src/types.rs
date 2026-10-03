@@ -261,6 +261,12 @@ pub struct AuditAlarmRequest {
     pub conn_audit_ref: Option<String>,
 }
 
+#[derive(Serialize, Debug, JsonSchema)]
+pub struct AuditRefResponse {
+    #[serde(rename = "ref")]
+    pub conn_ref: String,
+}
+
 // {
 //    peers: [{id: "abcd", username: "", hostname: "", platform: "", alias: "", tags: ["", "", ...]}, ...],
 //    tags: [],

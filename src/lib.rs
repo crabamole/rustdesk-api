@@ -136,6 +136,7 @@ pub fn api_routes() -> (Vec<rocket::Route>, rocket_okapi::okapi::openapi3::OpenA
         audit_conn_active,
         audit_file,
         audit_alarm,
+        audit_ref,
         logout,
         heartbeat,
         sysinfo,
@@ -475,6 +476,25 @@ async fn audit_alarm(
     log::debug!("audit_alarm: {:?}", request);
     state.audit_alarm(&request).await;
     state.check_maintenance().await;
+}
+
+/// # Mint a connection audit ref
+///
+/// Called by hbbs with the viewer's token (audit-api-spec §11). The ref names the caller only,
+/// so any logged-in user may mint one.
+// no body, so no format: Rocket 0.5 404s a POST with a format guard and no Content-Type
+#[openapi(tag = "audit")]
+#[post("/api/audit/ref")]
+async fn audit_ref(
+    state: &State<ApiState>,
+    user: AuthenticatedUser,
+) -> Result<Json<utils::AuditRefResponse>, Status> {
+    state.check_maintenance().await;
+    state
+        .mint_audit_conn_ref(&user.info.user_id)
+        .await
+        .map(|conn_ref| Json(utils::AuditRefResponse { conn_ref }))
+        .ok_or(Status::InternalServerError)
 }
 
 /// # Log the User Out

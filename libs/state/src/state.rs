@@ -817,6 +817,17 @@ impl ApiState {
         let uuid = uuid::Uuid::from_slice(&guid).ok()?;
         Some(uuid.to_string())
     }
+
+    /// Opaque ref hbbs forwards to the controlled device; it identifies `user` without exposing a token.
+    pub async fn mint_audit_conn_ref(&self, user: &UserId) -> Option<String> {
+        let conn_ref = uuid::Uuid::new_v4().simple().to_string();
+        self.db.insert_audit_conn_ref(&conn_ref, user).await?;
+        Some(conn_ref)
+    }
+
+    pub async fn resolve_audit_conn_ref(&self, conn_ref: &str) -> Option<UserId> {
+        self.db.resolve_audit_conn_ref(conn_ref).await
+    }
 }
 
 /// How long a started OIDC login stays usable; the RustDesk client stops polling after 3 minutes.
@@ -1581,5 +1592,15 @@ mod tests {
         let state = test_state().await;
         assert!(state.audit_conn(&conn_record(r#"{"id":"dev1","session_id":1,"note":"hi"}"#)).await.is_some());
         assert!(state.audit_conn(&conn_record(r#"{"action":"bogus","id":"dev1"}"#)).await.is_some());
+    }
+
+    #[tokio::test]
+    async fn audit_conn_ref_resolves_to_its_user() {
+        let state = test_state().await;
+        let (user, _, _) = state.db.get_user_for_oauth2("bob", "bob", Some("bob@example.org")).await.unwrap();
+        let r = state.mint_audit_conn_ref(&user).await.unwrap();
+        assert_eq!(r.len(), 32);
+        assert_eq!(state.resolve_audit_conn_ref(&r).await, Some(user));
+        assert_eq!(state.resolve_audit_conn_ref("unknown").await, None);
     }
 }

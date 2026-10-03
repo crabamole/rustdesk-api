@@ -212,6 +212,29 @@ async fn test_audit() {
 }
 
 #[rocket::async_test]
+async fn test_audit_ref_requires_login() {
+    let (client, _dir) = test_client().await;
+    let resp = client.post("/api/audit/ref").dispatch().await;
+    assert!(resp.status() == Status::Unauthorized || resp.status() == Status::Forbidden);
+}
+
+#[rocket::async_test]
+async fn test_audit_ref_is_minted_for_the_caller() {
+    let (client, _dir) = test_client().await;
+    let state = client.rocket().state::<state::ApiState>().unwrap();
+    // A plain (non-admin) logged-in user: created inactive, then activated and demoted.
+    state.test_oidc_login(&"alice".to_string()).await;
+    state.set_admin("alice@example.org", true).await.unwrap();
+    state.set_admin("alice@example.org", false).await.unwrap();
+    let token = oidc_token(&client, "alice").await;
+    let resp = client.post("/api/audit/ref").header(auth_header(&token)).dispatch().await;
+    assert_eq!(resp.status(), Status::Ok);
+    let body: Value = resp.into_json().await.unwrap();
+    let r = body["ref"].as_str().unwrap().to_string();
+    assert!(state.resolve_audit_conn_ref(&r).await.is_some());
+}
+
+#[rocket::async_test]
 async fn test_users_list() {
     let (client, _dir) = test_client().await;
     let token = login_admin(&client).await;
