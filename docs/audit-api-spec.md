@@ -509,17 +509,24 @@ Pro [D].
 
 1. Pro's exact conn-row matching for `authorized` / `close` (we specify
    `(id, uuid, conn_id)`, most-recent not-closed).
-2. `conn_audit_ref` encoding (signed token vs. lookup id) — ours to choose.
+2. ~~`conn_audit_ref` encoding (signed token vs. lookup id) — ours to choose.~~
+   **Answered:** a stored lookup ref. `POST /api/audit/ref` mints a random
+   32-hex id in `audit_conn_ref (ref, "user", created_at)` for the bearer's
+   own user; refs older than 24 h are purged on next mint.
 3. `pageSize` maximum and sort order of `/api/audits/*`.
 4. Console `typ`/`iop` codes for admin/control role, 2FA, password reset.
-5. Whether §4 notes append or overwrite an existing note (Pro console lets
-   the note be edited; we specify overwrite).
+5. ~~Whether §4 notes append or overwrite an existing note (Pro console lets
+   the note be edited; we specify overwrite).~~
+   **Answered:** overwrite — implemented and matches.
 
 ---
 
 ## 14. Implementation status (sctgdesk-api-server / sctgdesk-server)
 
-**As of 2026-09-24** — api-server `main` @ `66905bc`, hbbs `master` @ `ae39ef5`; §2.3, §2.4, §3 and §7 rows updated 2026-10-02; §2.3, §5 and §6 rows updated 2026-10-03.
+**As of 2026-10-03** — api-server `feat/audit-logging` @ `caec60f19`, hbbs
+`feat/audit-logging` @ `94b9f3f0e`; §2.3, §2.4, §3 and §7 rows updated
+2026-10-02; §2.3, §3.1, §4, §5, §6, §7, §8, §9, §9.3 and §11 rows updated
+2026-10-03 (controller-user attribution, note paths, admin read API).
 Verified by code reading; items marked **(live)** were also probed against a
 running deployment.
 
@@ -533,27 +540,28 @@ Legend: ✅ conforms · ⚠️ partial / deviates · ❌ missing
 | §2.3 failure → `{"error"}` / 5xx | ✅ | All three endpoints answer `{"error": ...}` when a record is not stored, so the client retries. |
 | §2.4 nonce dedup | ⚠️ | `find_audit_*_by_nonce` look the nonce up in SQL (`info::jsonb->>'nonce'`); no index, so still a sequential scan inside Postgres. No unique constraint → concurrent duplicates both insert. No nonce release needed (no claim state), no 5-min expiry (harmless). |
 | §2.6 `session_id` as u64 | ✅ | Fixed on `fix/audit-session-id-u64`: request field is `u64` and the active-conn lookup compares as u64. Previously `i64`, so values > i64::MAX (≈ half of all random session ids) got **422 (live)** and the record was dropped. |
-| §3.1 `new` | ✅ | Row with `type` NULL ("Not Logged In"); an older open row with the same connection key is ended first (the client restarted). `ip`, `uuid`, `conn_id`, `session_id` live in the `info` JSON text. `conn_audit_ref` is ignored (hbbs never issues one, §11). |
+| §3.1 `new` | ✅ | Row with `type` NULL ("Not Logged In"); an older open row with the same connection key is ended first (the client restarted). `ip`, `uuid`, `conn_id`, `session_id` live in the `info` JSON text. `conn_audit_ref` now resolves via `audit_conn_ref` and stores the controller user on the row (§11). |
 | §3.2 `authorized` | ✅ | Matched by connection key (most recent open row; created if the `new` record was lost). Stores `type`, controller id in `local`, and `peer_name`, `primary_auth`, `two_factor`, `session_id` in `info`. |
 | §3.3 `close` | ✅ | Matched by connection key `(id, uuid, conn_id)`, most recent open row (§2.6) → sets `end_time`. Until 2026-10-02 it never matched (224/224 rows on a self-hosted instance had no `end_time`). |
 | §3.4 unknown shape → 2xx empty | ✅ | |
+| — lost `close` on client restart | ⚠️ **(live)** | Observed on the Linux client: it restarts `--server` right after the last connection closes, before the `close` record (§3.3) is sent, so the row stays `active` forever. Proposed fix (not yet implemented): end a device's open rows that are missing from its heartbeat `conns` list (§10). |
 | — `login` action branch | — | Removed 2026-10-02; no client sends `action:"login"`. |
-| §4 menu note | ❌ **(live)** | No `action` → discarded as unknown. Live DB: 0/12 rows have a note. |
-| §5 file | ✅ | Stored with `remote`=`id` (controlled device), `local`=`peer_id` (viewer) — fixed 2026-10-03; was reversed. `info`'s own `info` field is parsed into an object when it is valid JSON. Attributed to the connection's `user` (§11) when known. |
-| §6 alarm | ✅ | Stored with `typ`, `device`=`id`; `info`'s own `info` field parsed into an object. Attributed from `conn_audit_ref` (typ 0, 10) or else the connection's `user` (§11) when known. |
+| §4 menu note | ✅ | Recognised by empty `action`, a `note`, no `peer`/`type`, empty `uuid`. Applied to the most recent row matching `remote = id` (`@server` suffix stripped) and `info.session_id = session_id`. Always answers 2xx empty. |
+| §5 file | ✅ | Stored with `remote`=`id` (controlled device), `local`=`peer_id` (viewer) — migration 0006. `info` is stored as an object. Not-stored (bad connection key) answers `{"error":...}` so the client retries (§2.3). Attributed to the connection row's `user` (by `(id, uuid, conn_id)`) when known. |
+| §6 alarm | ✅ | Stored with `typ`, `device`=`id`; `info` stored as an object. Not-stored answers `{"error":...}`. Attributed from `conn_audit_ref` (typ 0, 10, via `audit_conn_ref`) or else the connection row's `user` (§11) when known. |
 | §6 alarms 3–5 (account login) | ❌ | `/api/login` generates no alarms. |
-| §7 `GET /api/audit/conn/active` | ⚠️ | Finds the row once `authorized` has stored `type` and `session_id` (2026-10-02). Still **no auth** (answers 200 without a token), and `find_active_audit_conn` does N+1 queries. The end-of-session note itself (§8) is still missing. |
-| §8 `PUT /api/audit` | ❌ **(live)** | 404. Only legacy `POST /api/audit` exists, which just logs. |
+| §7 `GET /api/audit/conn/active` | ✅ | Requires a login (Bearer) and returns only the caller's own rows or rows with no attributed user — rows attributed to someone else answer `""`. |
+| §8 `PUT /api/audit` | ✅ | Implemented: owner of the row's `user` (or an unattributed row) may set `note`; overwrites any existing note. 400/404 otherwise. |
 | §10 heartbeat `disconnect` | ❌ **(live)** | Heartbeat returns JSON `{"modified_at": ..., "strategy": {"config_options": {...}}}` (the `strategy` field only when the device's policy changed), used for device policy sync (2026-09-29), not disconnect; `conns` not parsed; no disconnect queue. |
-| §11 `ControlledContext` (hbbs) | ❌ | sctgdesk-server pins `hbb_common` `2985cd8` (2025-11-02), which predates `ControlledContext`; the client repo pins `69cea8d` (2026-07-26). hbbs sends no `conn_audit_ref`, so no controller-user attribution. *(Also means the api-server roadmap's "protos already match" claim is wrong.)* |
+| §11 `ControlledContext` (hbbs) | ✅ | hbbs bumped `hbb_common` to `69cea8d`. A token on `PunchHoleRequest`/`RequestRelay` calls `POST /api/audit/ref` (5 s bound) to mint a ref, forwarded in `ControlledContext` on `PunchHole`/`FetchLocalAddr`/`RequestRelay`; a 404 (older api-server) falls back to `/api/currentUser` without a ref. The controlling-side viewer token is stripped from the forwarded `RequestRelay`. `LOGGED_IN_ONLY=Y` now also applies to relay requests. |
 | §2.2 hbbs raw-TCP API proxy | ❌ | hbbs does not handle `HttpProxyRequest`; the client's fallback path fails (only matters with `USE_RAW_TCP_FOR_API=Y` or during 5xx). |
 
 ### 14.2 Admin / console
 
 | Spec | Status | Finding |
 |---|---|---|
-| §9 `GET /api/audits/{conn,file,alarm,console}` | ❌ **(live)** | 404. No read path at all. |
-| §9.3 console UI (logs pages, disconnect, edit note, CSV export) | ❌ | Webconsole has no audit pages; `webconsole/src/api/apis/todo-api.ts` is a stale generated client for the legacy endpoint only. |
+| §9 `GET /api/audits/{conn,file,alarm,console}` | ✅ | Implemented, `audits.py`-compatible, admin only; `console` kind always answers an empty page (§9.4 not written to). |
+| §9.3 console UI (logs pages, disconnect, edit note, CSV export) | ⚠️ | Webconsole has a new "Audit log" page (conn/file/alarm). Disconnect, edit-note-from-console and CSV export are not implemented. |
 | §9.3 retention | ❌ | No setting, no purge job. |
 | §9.3 visibility / permissions | ❌ | No `audits.view` / `audits.edit` model; nothing to read anyway. |
 | §9.4 console audit (`audit_console`) | ❌ | Table exists in `0001_initial.sql`; nothing writes to it. |
@@ -578,9 +586,11 @@ Legend: ✅ conforms · ⚠️ partial / deviates · ❌ missing
 
 ### 14.5 Summary
 
-Of the 9 client-facing behaviours (§3.1–§8, §10) only **file** and
-**alarm** inserts and the **`new`** insert work, all with deviations. The
-connection lifecycle cannot complete (`authorized`, `close` lost), both note
-paths are lost, the GUID lookup always fails, and there is no read API, UI,
-retention, console audit, or controller attribution. The roadmap's
-"Audit Logging ✅" should read **partial (write path for new/file/alarm only)**.
+All client-facing write paths (§3.1–§8) now work, including both note paths
+(§4, §8), the GUID lookup (§7, now authenticated and scoped to the caller),
+and controller-user attribution end to end (§11, §3.1, §5, §6). The admin
+read API (§9) and a webconsole "Audit log" page (§9.3) are implemented.
+Still open: console Disconnect, CSV export, retention, console (admin
+action) logging, §12.1 write validation, alarms 3–5, hbbs's raw-TCP API
+proxy (§2.2), and rows whose `close` record is lost on client restart (see
+§14.1).
