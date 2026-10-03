@@ -13,28 +13,22 @@
  */
 
  /**
- * One setting the device policy can manage.
+ * `PUT /api/audit` body (spec §8): end-of-session note by GUID.
  *
  * @export
- * @interface PolicyKeyInfo
+ * @interface AuditNoteRequest
  */
-export interface PolicyKeyInfo {
+export interface AuditNoteRequest {
 
     /**
      * @type {string}
-     * @memberof PolicyKeyInfo
+     * @memberof AuditNoteRequest
      */
-    key: string;
+    guid: string;
 
     /**
      * @type {string}
-     * @memberof PolicyKeyInfo
+     * @memberof AuditNoteRequest
      */
-    label: string;
-
-    /**
-     * @type {Array<string>}
-     * @memberof PolicyKeyInfo
-     */
-    values: Array<string>;
+    note?: string;
 }

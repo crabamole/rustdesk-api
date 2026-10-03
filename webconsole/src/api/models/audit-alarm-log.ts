@@ -13,34 +13,46 @@
  */
 
  /**
- * 
+ * `GET /api/audits/alarm` row (audit-api-spec.md §9.2).
  *
  * @export
- * @interface LoginRequest
+ * @interface AuditAlarmLog
  */
-export interface LoginRequest {
+export interface AuditAlarmLog {
 
     /**
      * @type {string}
-     * @memberof LoginRequest
+     * @memberof AuditAlarmLog
      */
-    username: string;
+    guid: string;
+
+    /**
+     * @type {number}
+     * @memberof AuditAlarmLog
+     */
+    typ: number;
 
     /**
      * @type {string}
-     * @memberof LoginRequest
+     * @memberof AuditAlarmLog
      */
-    password: string;
+    device?: string | null;
 
     /**
      * @type {string}
-     * @memberof LoginRequest
+     * @memberof AuditAlarmLog
      */
-    id: string;
+    user?: string | null;
 
     /**
-     * @type {string}
-     * @memberof LoginRequest
+     * @type {any}
+     * @memberof AuditAlarmLog
      */
-    uuid: string;
+    info: any;
+
+    /**
+     * @type {number}
+     * @memberof AuditAlarmLog
+     */
+    created_at: number;
 }

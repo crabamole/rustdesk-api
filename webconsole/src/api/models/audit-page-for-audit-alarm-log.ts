@@ -12,29 +12,24 @@
  * Do not edit the class manually.
  */
 
+import { AuditAlarmLog } from './audit-alarm-log';
  /**
- * One setting the device policy can manage.
+ * 
  *
  * @export
- * @interface PolicyKeyInfo
+ * @interface AuditPageForAuditAlarmLog
  */
-export interface PolicyKeyInfo {
+export interface AuditPageForAuditAlarmLog {
 
     /**
-     * @type {string}
-     * @memberof PolicyKeyInfo
+     * @type {number}
+     * @memberof AuditPageForAuditAlarmLog
      */
-    key: string;
+    total: number;
 
     /**
-     * @type {string}
-     * @memberof PolicyKeyInfo
+     * @type {Array<AuditAlarmLog>}
+     * @memberof AuditPageForAuditAlarmLog
      */
-    label: string;
-
-    /**
-     * @type {Array<string>}
-     * @memberof PolicyKeyInfo
-     */
-    values: Array<string>;
+    data: Array<AuditAlarmLog>;
 }

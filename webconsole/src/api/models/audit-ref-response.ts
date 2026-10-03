@@ -13,28 +13,16 @@
  */
 
  /**
- * One setting the device policy can manage.
+ * 
  *
  * @export
- * @interface PolicyKeyInfo
+ * @interface AuditRefResponse
  */
-export interface PolicyKeyInfo {
+export interface AuditRefResponse {
 
     /**
      * @type {string}
-     * @memberof PolicyKeyInfo
+     * @memberof AuditRefResponse
      */
-    key: string;
-
-    /**
-     * @type {string}
-     * @memberof PolicyKeyInfo
-     */
-    label: string;
-
-    /**
-     * @type {Array<string>}
-     * @memberof PolicyKeyInfo
-     */
-    values: Array<string>;
+    ref: string;
 }

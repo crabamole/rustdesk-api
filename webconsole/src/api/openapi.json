@@ -2,7 +2,7 @@
   "openapi": "3.0.0",
   "info": {
     "title": "rustdesk-api",
-    "version": "3.1.1"
+    "version": "3.2.0"
   },
   "paths": {
     "/{_path}": {
@@ -227,6 +227,37 @@
       }
     },
     "/api/audit": {
+      "put": {
+        "tags": [
+          "audit"
+        ],
+        "summary": "Set an end-of-session note",
+        "description": "Spec §8: the viewer's note for the connection `guid` came from `GET /api/audit/conn/active`.",
+        "operationId": "audit_note",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AuditNoteRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          },
+          "default": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "authorization": []
+          }
+        ]
+      },
       "post": {
         "tags": [
           "audit"
@@ -255,7 +286,7 @@
         "tags": [
           "audit"
         ],
-        "description": "Audit connection events",
+        "description": "Audit connection events\n\nAnswers an empty body once the record is stored and `{\"error\": ...}` otherwise; the client retries on any non-empty body (docs/audit-api-spec.md §2.3).",
         "operationId": "audit_conn",
         "requestBody": {
           "content": {
@@ -325,7 +356,12 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "authorization": []
+          }
+        ]
       }
     },
     "/api/audit/file": {
@@ -333,7 +369,7 @@
         "tags": [
           "audit"
         ],
-        "description": "Audit file transfer events",
+        "description": "Audit file transfer events\n\nAnswers an empty body once the record is stored and `{\"error\": ...}` otherwise; the client retries on any non-empty body (docs/audit-api-spec.md §2.3).",
         "operationId": "audit_file",
         "requestBody": {
           "content": {
@@ -347,7 +383,14 @@
         },
         "responses": {
           "200": {
-            "description": ""
+            "description": "",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
           }
         }
       }
@@ -357,7 +400,7 @@
         "tags": [
           "audit"
         ],
-        "description": "Audit alarm events",
+        "description": "Audit alarm events\n\nAnswers an empty body once the record is stored and `{\"error\": ...}` otherwise; the client retries on any non-empty body (docs/audit-api-spec.md §2.3).",
         "operationId": "audit_alarm",
         "requestBody": {
           "content": {
@@ -371,9 +414,347 @@
         },
         "responses": {
           "200": {
-            "description": ""
+            "description": "",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
           }
         }
+      }
+    },
+    "/api/audit/ref": {
+      "post": {
+        "tags": [
+          "audit"
+        ],
+        "summary": "Mint a connection audit ref",
+        "description": "Called by hbbs with the viewer's token (audit-api-spec §11). The ref names the caller only, so any logged-in user may mint one.",
+        "operationId": "audit_ref",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuditRefResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "authorization": []
+          }
+        ]
+      }
+    },
+    "/api/audits/conn": {
+      "get": {
+        "tags": [
+          "audit"
+        ],
+        "summary": "Connection audit log",
+        "description": "Pro-compatible (`audits.py conn`): newest first; `remote` is an SQL LIKE pattern.",
+        "operationId": "audits_conn",
+        "parameters": [
+          {
+            "name": "current",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "nullable": true
+            }
+          },
+          {
+            "name": "pageSize",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "nullable": true
+            }
+          },
+          {
+            "name": "created_at",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "nullable": true
+            }
+          },
+          {
+            "name": "remote",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "nullable": true
+            }
+          },
+          {
+            "name": "conn_type",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "format": "int16",
+              "nullable": true
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuditPage_for_AuditConnLog"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "authorization_admin": []
+          }
+        ]
+      }
+    },
+    "/api/audits/file": {
+      "get": {
+        "tags": [
+          "audit"
+        ],
+        "summary": "File transfer audit log",
+        "description": "Pro-compatible (`audits.py file`): newest first; `remote` is an SQL LIKE pattern.",
+        "operationId": "audits_file",
+        "parameters": [
+          {
+            "name": "current",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "nullable": true
+            }
+          },
+          {
+            "name": "pageSize",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "nullable": true
+            }
+          },
+          {
+            "name": "created_at",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "nullable": true
+            }
+          },
+          {
+            "name": "remote",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "nullable": true
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuditPage_for_AuditFileLog"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "authorization_admin": []
+          }
+        ]
+      }
+    },
+    "/api/audits/alarm": {
+      "get": {
+        "tags": [
+          "audit"
+        ],
+        "summary": "Security alarm audit log",
+        "description": "Pro-compatible (`audits.py alarm`): newest first; `device` is an SQL LIKE pattern.",
+        "operationId": "audits_alarm",
+        "parameters": [
+          {
+            "name": "current",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "nullable": true
+            }
+          },
+          {
+            "name": "pageSize",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "nullable": true
+            }
+          },
+          {
+            "name": "created_at",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "nullable": true
+            }
+          },
+          {
+            "name": "device",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "nullable": true
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuditPage_for_AuditAlarmLog"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "authorization_admin": []
+          }
+        ]
+      }
+    },
+    "/api/audits/console": {
+      "get": {
+        "tags": [
+          "audit"
+        ],
+        "summary": "Console audit log",
+        "description": "Pro-compatible (`audits.py console`): nothing writes `audit_console` yet, so this always answers an empty page (audit-api-spec.md §9, §14).",
+        "operationId": "audits_console",
+        "parameters": [
+          {
+            "name": "current",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "nullable": true
+            }
+          },
+          {
+            "name": "pageSize",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "nullable": true
+            }
+          },
+          {
+            "name": "created_at",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "nullable": true
+            }
+          },
+          {
+            "name": "operator",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "nullable": true
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuditPage_for_AuditConsoleLog"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "authorization_admin": []
+          }
+        ]
       }
     },
     "/api/logout": {
@@ -2518,6 +2899,50 @@
             "default": null,
             "type": "string",
             "nullable": true
+          },
+          "peer": {
+            "description": "`authorized` record: `[controller id, controller name]`.",
+            "default": null,
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "nullable": true
+          },
+          "type": {
+            "description": "`authorized` record: 0 remote desktop, 1 file transfer, 2 port forward, 3 camera, 4 terminal.",
+            "default": null,
+            "type": "integer",
+            "format": "int16",
+            "nullable": true
+          },
+          "primary_auth": {
+            "default": null,
+            "type": "integer",
+            "format": "int32",
+            "nullable": true
+          },
+          "two_factor": {
+            "default": null,
+            "type": "integer",
+            "format": "int32",
+            "nullable": true
+          }
+        }
+      },
+      "AuditNoteRequest": {
+        "description": "`PUT /api/audit` body (spec §8): end-of-session note by GUID.",
+        "type": "object",
+        "required": [
+          "guid"
+        ],
+        "properties": {
+          "guid": {
+            "type": "string"
+          },
+          "note": {
+            "default": "",
+            "type": "string"
           }
         }
       },
@@ -2597,6 +3022,290 @@
             "default": null,
             "type": "string",
             "nullable": true
+          }
+        }
+      },
+      "AuditRefResponse": {
+        "type": "object",
+        "required": [
+          "ref"
+        ],
+        "properties": {
+          "ref": {
+            "type": "string"
+          }
+        }
+      },
+      "AuditPage_for_AuditConnLog": {
+        "type": "object",
+        "required": [
+          "data",
+          "total"
+        ],
+        "properties": {
+          "total": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AuditConnLog"
+            }
+          }
+        }
+      },
+      "AuditConnLog": {
+        "description": "`GET /api/audits/conn` row (audit-api-spec.md §9.2).",
+        "type": "object",
+        "required": [
+          "active",
+          "created_at",
+          "guid",
+          "remote"
+        ],
+        "properties": {
+          "guid": {
+            "type": "string"
+          },
+          "remote": {
+            "type": "string"
+          },
+          "remote_name": {
+            "type": "string",
+            "nullable": true
+          },
+          "peer_id": {
+            "type": "string",
+            "nullable": true
+          },
+          "peer_name": {
+            "type": "string",
+            "nullable": true
+          },
+          "user": {
+            "type": "string",
+            "nullable": true
+          },
+          "ip": {
+            "type": "string",
+            "nullable": true
+          },
+          "conn_type": {
+            "type": "integer",
+            "format": "int16",
+            "nullable": true
+          },
+          "primary_auth": {
+            "type": "integer",
+            "format": "int32",
+            "nullable": true
+          },
+          "two_factor": {
+            "type": "integer",
+            "format": "int32",
+            "nullable": true
+          },
+          "session_id": {
+            "type": "string",
+            "nullable": true
+          },
+          "conn_id": {
+            "type": "integer",
+            "format": "int64",
+            "nullable": true
+          },
+          "created_at": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "end_time": {
+            "type": "integer",
+            "format": "int64",
+            "nullable": true
+          },
+          "note": {
+            "type": "string",
+            "nullable": true
+          },
+          "active": {
+            "type": "boolean"
+          }
+        }
+      },
+      "AuditPage_for_AuditFileLog": {
+        "type": "object",
+        "required": [
+          "data",
+          "total"
+        ],
+        "properties": {
+          "total": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AuditFileLog"
+            }
+          }
+        }
+      },
+      "AuditFileLog": {
+        "description": "`GET /api/audits/file` row (audit-api-spec.md §9.2).",
+        "type": "object",
+        "required": [
+          "created_at",
+          "guid",
+          "is_file",
+          "path",
+          "remote",
+          "type"
+        ],
+        "properties": {
+          "guid": {
+            "type": "string"
+          },
+          "remote": {
+            "type": "string"
+          },
+          "peer_id": {
+            "type": "string",
+            "nullable": true
+          },
+          "user": {
+            "type": "string",
+            "nullable": true
+          },
+          "type": {
+            "type": "integer",
+            "format": "int16"
+          },
+          "path": {
+            "type": "string"
+          },
+          "is_file": {
+            "type": "boolean"
+          },
+          "num": {
+            "type": "integer",
+            "format": "int64",
+            "nullable": true
+          },
+          "files": {
+            "nullable": true
+          },
+          "ip": {
+            "type": "string",
+            "nullable": true
+          },
+          "created_at": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "AuditPage_for_AuditAlarmLog": {
+        "type": "object",
+        "required": [
+          "data",
+          "total"
+        ],
+        "properties": {
+          "total": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AuditAlarmLog"
+            }
+          }
+        }
+      },
+      "AuditAlarmLog": {
+        "description": "`GET /api/audits/alarm` row (audit-api-spec.md §9.2).",
+        "type": "object",
+        "required": [
+          "created_at",
+          "guid",
+          "info",
+          "typ"
+        ],
+        "properties": {
+          "guid": {
+            "type": "string"
+          },
+          "typ": {
+            "type": "integer",
+            "format": "int16"
+          },
+          "device": {
+            "type": "string",
+            "nullable": true
+          },
+          "user": {
+            "type": "string",
+            "nullable": true
+          },
+          "info": {},
+          "created_at": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "AuditPage_for_AuditConsoleLog": {
+        "type": "object",
+        "required": [
+          "data",
+          "total"
+        ],
+        "properties": {
+          "total": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AuditConsoleLog"
+            }
+          }
+        }
+      },
+      "AuditConsoleLog": {
+        "description": "`GET /api/audits/console` row (audit-api-spec.md §9.2). Nothing writes `audit_console` yet.",
+        "type": "object",
+        "required": [
+          "created_at",
+          "guid",
+          "info",
+          "iop",
+          "typ"
+        ],
+        "properties": {
+          "guid": {
+            "type": "string"
+          },
+          "typ": {
+            "type": "integer",
+            "format": "int16"
+          },
+          "iop": {
+            "type": "integer",
+            "format": "int16"
+          },
+          "operator": {
+            "type": "string",
+            "nullable": true
+          },
+          "info": {},
+          "created_at": {
+            "type": "integer",
+            "format": "int64"
           }
         }
       },

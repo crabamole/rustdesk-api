@@ -12,29 +12,24 @@
  * Do not edit the class manually.
  */
 
+import { AuditConsoleLog } from './audit-console-log';
  /**
- * One setting the device policy can manage.
+ * 
  *
  * @export
- * @interface PolicyKeyInfo
+ * @interface AuditPageForAuditConsoleLog
  */
-export interface PolicyKeyInfo {
+export interface AuditPageForAuditConsoleLog {
 
     /**
-     * @type {string}
-     * @memberof PolicyKeyInfo
+     * @type {number}
+     * @memberof AuditPageForAuditConsoleLog
      */
-    key: string;
+    total: number;
 
     /**
-     * @type {string}
-     * @memberof PolicyKeyInfo
+     * @type {Array<AuditConsoleLog>}
+     * @memberof AuditPageForAuditConsoleLog
      */
-    label: string;
-
-    /**
-     * @type {Array<string>}
-     * @memberof PolicyKeyInfo
-     */
-    values: Array<string>;
+    data: Array<AuditConsoleLog>;
 }

@@ -13,52 +13,46 @@
  */
 
  /**
- * 
+ * `GET /api/audits/console` row (audit-api-spec.md §9.2). Nothing writes `audit_console` yet.
  *
  * @export
- * @interface UserListResponse
+ * @interface AuditConsoleLog
  */
-export interface UserListResponse {
+export interface AuditConsoleLog {
 
     /**
      * @type {string}
-     * @memberof UserListResponse
+     * @memberof AuditConsoleLog
      */
     guid: string;
 
     /**
-     * @type {string}
-     * @memberof UserListResponse
+     * @type {number}
+     * @memberof AuditConsoleLog
      */
-    name: string;
-
-    /**
-     * @type {string}
-     * @memberof UserListResponse
-     */
-    email: string;
-
-    /**
-     * @type {string}
-     * @memberof UserListResponse
-     */
-    note?: string | null;
+    typ: number;
 
     /**
      * @type {number}
-     * @memberof UserListResponse
+     * @memberof AuditConsoleLog
      */
-    status: number;
+    iop: number;
 
     /**
      * @type {string}
-     * @memberof UserListResponse
+     * @memberof AuditConsoleLog
      */
-    group_name: string;
+    operator?: string | null;
 
     /**
-     * @type {boolean}
-     * @memberof UserListResponse
+     * @type {any}
+     * @memberof AuditConsoleLog
      */
-    is_admin: boolean;
+    info: any;
+
+    /**
+     * @type {number}
+     * @memberof AuditConsoleLog
+     */
+    created_at: number;
 }
