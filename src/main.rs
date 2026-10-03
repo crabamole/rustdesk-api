@@ -53,6 +53,10 @@ async fn main() -> Result<(), rocket::Error> {
         Command::Oidc(OidcCommand::Check { file }) => finish(run_oidc_check(&providers_file(file.as_deref())).await),
         Command::Openapi => finish(run_openapi()),
     };
+    if let Err(msg) = rustdesk_api::parse_trusted_proxies(&std::env::var("TRUSTED_PROXIES").unwrap_or_default()) {
+        eprintln!("{msg}");
+        std::process::exit(2);
+    }
     // Login is OIDC-only: refuse to start without a usable provider file.
     if let Err(msg) = oauth2::validate::load_providers(&providers_file(None)) {
         eprintln!("{msg}");
