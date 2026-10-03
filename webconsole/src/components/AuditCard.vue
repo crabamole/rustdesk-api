@@ -131,25 +131,35 @@ function alarmDetails(info: any): string {
     return parts.join(' / ');
 }
 
+// Guards against an older response (slow network, fast typing) overwriting a newer one.
+let requestId = 0;
+let filterTimer: ReturnType<typeof setTimeout> | undefined;
+
 function load(): void {
+    const id = ++requestId;
     message.value = '';
     const pattern = likePattern(deviceFilter.value);
     if (activeTab.value === 'conn') {
         api().auditsConn(current.value, PAGE_SIZE, undefined, pattern, connType.value === '' ? undefined : Number(connType.value))
-            .then((r) => { connRows.value = r.data.data; total.value = r.data.total; })
-            .catch(fail);
+            .then((r) => { if (id === requestId) { connRows.value = r.data.data; total.value = r.data.total; } })
+            .catch((error) => { if (id === requestId) fail(error); });
     } else if (activeTab.value === 'file') {
         api().auditsFile(current.value, PAGE_SIZE, undefined, pattern)
-            .then((r) => { fileRows.value = r.data.data; total.value = r.data.total; })
-            .catch(fail);
+            .then((r) => { if (id === requestId) { fileRows.value = r.data.data; total.value = r.data.total; } })
+            .catch((error) => { if (id === requestId) fail(error); });
     } else {
         api().auditsAlarm(current.value, PAGE_SIZE, undefined, pattern)
-            .then((r) => { alarmRows.value = r.data.data; total.value = r.data.total; })
-            .catch(fail);
+            .then((r) => { if (id === requestId) { alarmRows.value = r.data.data; total.value = r.data.total; } })
+            .catch((error) => { if (id === requestId) fail(error); });
     }
 }
 
-watch([activeTab, deviceFilter, connType], () => { current.value = 1; load(); });
+watch([activeTab, connType], () => { current.value = 1; load(); });
+watch(deviceFilter, () => {
+    current.value = 1;
+    clearTimeout(filterTimer);
+    filterTimer = setTimeout(load, 300);
+});
 watch(current, load);
 onMounted(load);
 </script>
