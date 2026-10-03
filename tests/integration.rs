@@ -1582,3 +1582,167 @@ async fn test_user_delete_unknown_guid_counts_zero() {
     let body: Value = resp.into_json().await.unwrap();
     assert_eq!(body["total"], 0);
 }
+
+/// A plain (non-admin) logged-in user: created inactive, then activated and demoted.
+async fn activated_user_token(client: &Client, name: &str) -> String {
+    let state = client.rocket().state::<state::ApiState>().unwrap();
+    state.test_oidc_login(&name.to_string()).await;
+    state.set_admin(&format!("{name}@example.org"), true).await.unwrap();
+    state.set_admin(&format!("{name}@example.org"), false).await.unwrap();
+    oidc_token(client, name).await
+}
+
+#[rocket::async_test]
+async fn test_audits_conn_lists_newest_first_with_viewer_user() {
+    let (client, _dir) = test_client().await;
+    let admin = login_admin(&client).await;
+    let alice = activated_user_token(&client, "alice").await;
+    let r: Value = client.post("/api/audit/ref").header(auth_header(&alice)).dispatch().await.into_json().await.unwrap();
+    let r = r["ref"].as_str().unwrap();
+    for (n, conn_id) in [("a", 1), ("b", 2)] {
+        client.post("/api/audit/conn").header(ContentType::JSON)
+            .body(format!(r#"{{"action":"new","id":"devx","uuid":"ux","conn_id":{conn_id},"ip":"203.0.113.9","nonce":"{n}","conn_audit_ref":"{r}"}}"#))
+            .dispatch().await;
+    }
+    let resp = client.get("/api/audits/conn?current=1&pageSize=10&remote=%25devx%25").header(auth_header(&admin)).dispatch().await;
+    assert_eq!(resp.status(), Status::Ok);
+    let body: Value = resp.into_json().await.unwrap();
+    assert_eq!(body["total"], 2);
+    assert_eq!(body["data"][0]["conn_id"], 2);
+    assert_eq!(body["data"][0]["user"], "alice");
+    assert_eq!(body["data"][0]["ip"], "203.0.113.9");
+    assert!(body["data"][0].get("conn_type").is_none());
+    assert_eq!(body["data"][0]["active"], true);
+}
+
+#[rocket::async_test]
+async fn test_audits_conn_requires_admin() {
+    let (client, _dir) = test_client().await;
+    let resp = client.get("/api/audits/conn?current=1&pageSize=10").dispatch().await;
+    assert!(resp.status() == Status::Unauthorized || resp.status() == Status::Forbidden);
+
+    let alice = activated_user_token(&client, "alice").await;
+    let resp = client.get("/api/audits/conn?current=1&pageSize=10").header(auth_header(&alice)).dispatch().await;
+    assert!(resp.status() == Status::Unauthorized || resp.status() == Status::Forbidden);
+}
+
+#[rocket::async_test]
+async fn test_audits_conn_pagination_returns_the_older_row_on_page_two() {
+    let (client, _dir) = test_client().await;
+    let admin = login_admin(&client).await;
+    for (n, conn_id) in [("p1", 1), ("p2", 2)] {
+        client.post("/api/audit/conn").header(ContentType::JSON)
+            .body(format!(r#"{{"action":"new","id":"devpage","uuid":"upage","conn_id":{conn_id},"ip":"203.0.113.10","nonce":"{n}"}}"#))
+            .dispatch().await;
+    }
+    let resp = client.get("/api/audits/conn?current=2&pageSize=1&remote=%25devpage%25").header(auth_header(&admin)).dispatch().await;
+    assert_eq!(resp.status(), Status::Ok);
+    let body: Value = resp.into_json().await.unwrap();
+    assert_eq!(body["total"], 2);
+    assert_eq!(body["data"].as_array().unwrap().len(), 1);
+    assert_eq!(body["data"][0]["conn_id"], 1);
+}
+
+#[rocket::async_test]
+async fn test_audits_conn_filters_by_conn_type() {
+    let (client, _dir) = test_client().await;
+    let admin = login_admin(&client).await;
+    client.post("/api/audit/conn").header(ContentType::JSON)
+        .body(r#"{"action":"new","id":"devtype","uuid":"utype","conn_id":1,"ip":"203.0.113.11","nonce":"nt1"}"#)
+        .dispatch().await;
+    client.post("/api/audit/conn").header(ContentType::JSON)
+        .body(r#"{"peer":["v1","Viewer"],"type":0,"id":"devtype","uuid":"utype","conn_id":1,"session_id":1,"nonce":"nt2"}"#)
+        .dispatch().await;
+
+    let resp = client.get("/api/audits/conn?current=1&pageSize=10&remote=%25devtype%25&conn_type=0").header(auth_header(&admin)).dispatch().await;
+    let body: Value = resp.into_json().await.unwrap();
+    assert_eq!(body["total"], 1);
+
+    let resp = client.get("/api/audits/conn?current=1&pageSize=10&remote=%25devtype%25&conn_type=1").header(auth_header(&admin)).dispatch().await;
+    let body: Value = resp.into_json().await.unwrap();
+    assert_eq!(body["total"], 0);
+}
+
+#[rocket::async_test]
+async fn test_audits_conn_future_created_at_finds_nothing() {
+    let (client, _dir) = test_client().await;
+    let admin = login_admin(&client).await;
+    client.post("/api/audit/conn").header(ContentType::JSON)
+        .body(r#"{"action":"new","id":"devfuture","uuid":"ufuture","conn_id":1,"ip":"203.0.113.12","nonce":"nf1"}"#)
+        .dispatch().await;
+
+    let resp = client
+        .get("/api/audits/conn?current=1&pageSize=10&remote=%25devfuture%25&created_at=2099-01-01%2000:00:00.000")
+        .header(auth_header(&admin))
+        .dispatch()
+        .await;
+    assert_eq!(resp.status(), Status::Ok);
+    let body: Value = resp.into_json().await.unwrap();
+    assert_eq!(body["total"], 0);
+}
+
+#[rocket::async_test]
+async fn test_audits_conn_invalid_created_at_is_bad_request() {
+    let (client, _dir) = test_client().await;
+    let admin = login_admin(&client).await;
+    let resp = client
+        .get("/api/audits/conn?current=1&pageSize=10&created_at=not-a-date")
+        .header(auth_header(&admin))
+        .dispatch()
+        .await;
+    assert_eq!(resp.status(), Status::BadRequest);
+}
+
+#[rocket::async_test]
+async fn test_audits_file_shows_remote_peer_num_and_files() {
+    let (client, _dir) = test_client().await;
+    let admin = login_admin(&client).await;
+    let resp = client
+        .post("/api/audit/file")
+        .header(ContentType::JSON)
+        .body(r#"{"id":"devfile","uuid":"ufile","peer_id":"viewerfile","conn_id":1,"type":0,"path":"/tmp","is_file":false,"info":"{\"ip\":\"203.0.113.13\",\"name\":\"alice-laptop\",\"num\":2,\"files\":[[\"a.pdf\",10],[\"b.txt\",5]]}","nonce":"filenonce"}"#)
+        .dispatch()
+        .await;
+    assert_eq!(resp.status(), Status::Ok);
+
+    let resp = client.get("/api/audits/file?current=1&pageSize=10&remote=%25devfile%25").header(auth_header(&admin)).dispatch().await;
+    assert_eq!(resp.status(), Status::Ok);
+    let body: Value = resp.into_json().await.unwrap();
+    assert_eq!(body["total"], 1);
+    assert_eq!(body["data"][0]["remote"], "devfile");
+    assert_eq!(body["data"][0]["peer_id"], "viewerfile");
+    assert_eq!(body["data"][0]["num"], 2);
+    assert_eq!(body["data"][0]["files"][0][0], "a.pdf");
+}
+
+#[rocket::async_test]
+async fn test_audits_alarm_shows_info_as_an_object() {
+    let (client, _dir) = test_client().await;
+    let admin = login_admin(&client).await;
+    let resp = client
+        .post("/api/audit/alarm")
+        .header(ContentType::JSON)
+        .body(r#"{"id":"devalarm","uuid":"ualarm","typ":1,"info":"{\"ip\":\"203.0.113.14\",\"id\":\"ctl1\",\"name\":\"alice\"}","conn_id":1,"nonce":"alarmnonce"}"#)
+        .dispatch()
+        .await;
+    assert_eq!(resp.status(), Status::Ok);
+
+    let resp = client.get("/api/audits/alarm?current=1&pageSize=10&device=%25devalarm%25").header(auth_header(&admin)).dispatch().await;
+    assert_eq!(resp.status(), Status::Ok);
+    let body: Value = resp.into_json().await.unwrap();
+    assert_eq!(body["total"], 1);
+    assert_eq!(body["data"][0]["device"], "devalarm");
+    assert!(body["data"][0]["info"].is_object());
+    assert_eq!(body["data"][0]["info"]["ip"], "203.0.113.14");
+}
+
+#[rocket::async_test]
+async fn test_audits_console_is_always_an_empty_page() {
+    let (client, _dir) = test_client().await;
+    let admin = login_admin(&client).await;
+    let resp = client.get("/api/audits/console?current=1&pageSize=10").header(auth_header(&admin)).dispatch().await;
+    assert_eq!(resp.status(), Status::Ok);
+    let body: Value = resp.into_json().await.unwrap();
+    assert_eq!(body["total"], 0);
+    assert_eq!(body["data"].as_array().unwrap().len(), 0);
+}

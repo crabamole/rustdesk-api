@@ -138,6 +138,10 @@ pub fn api_routes() -> (Vec<rocket::Route>, rocket_okapi::okapi::openapi3::OpenA
         audit_file,
         audit_alarm,
         audit_ref,
+        audits_conn,
+        audits_file,
+        audits_alarm,
+        audits_console,
         logout,
         heartbeat,
         sysinfo,
@@ -530,6 +534,134 @@ async fn audit_ref(
         .await
         .map(|conn_ref| Json(utils::AuditRefResponse { conn_ref }))
         .ok_or(Status::InternalServerError)
+}
+
+/// `created_at` filter format (audit-api-spec.md §9.1): UTC `YYYY-MM-DD HH:MM:SS.000`.
+/// No `chrono` dependency in this crate (only via sqlx's feature), so validate by hand.
+fn is_valid_audit_created_at(s: &str) -> bool {
+    let b = s.as_bytes();
+    let digit = |i: usize| b.get(i).is_some_and(u8::is_ascii_digit);
+    b.len() == 23
+        && (0..4).all(digit) && b[4] == b'-'
+        && (5..7).all(digit) && b[7] == b'-'
+        && (8..10).all(digit) && b[10] == b' '
+        && (11..13).all(digit) && b[13] == b':'
+        && (14..16).all(digit) && b[16] == b':'
+        && (17..19).all(digit) && b[19] == b'.'
+        && (20..23).all(digit)
+}
+
+/// Shared `current`/`pageSize`/`created_at` handling for `GET /api/audits/*` (audit-api-spec.md §9.1).
+fn audit_query(
+    current: Option<i64>,
+    page_size: Option<i64>,
+    created_at: Option<String>,
+    pattern: Option<String>,
+    conn_type: Option<i16>,
+) -> Result<utils::AuditQuery, (Status, String)> {
+    if let Some(t) = &created_at {
+        if !is_valid_audit_created_at(t) {
+            return Err((Status::BadRequest, format!("invalid created_at {t:?}")));
+        }
+    }
+    let limit = page_size.unwrap_or(10).clamp(1, 1000);
+    Ok(utils::AuditQuery {
+        offset: (current.unwrap_or(1).max(1) - 1) * limit,
+        limit,
+        created_at,
+        pattern,
+        conn_type,
+    })
+}
+
+/// # Connection audit log
+///
+/// Pro-compatible (`audits.py conn`): newest first; `remote` is an SQL LIKE pattern.
+#[openapi(tag = "audit")]
+#[allow(non_snake_case)]
+#[get("/api/audits/conn?<current>&<pageSize>&<created_at>&<remote>&<conn_type>")]
+async fn audits_conn(
+    state: &State<ApiState>,
+    _user: AuthenticatedAdmin,
+    current: Option<i64>,
+    pageSize: Option<i64>,
+    created_at: Option<String>,
+    remote: Option<String>,
+    conn_type: Option<i16>,
+) -> Result<Json<utils::AuditPage<utils::AuditConnLog>>, (Status, String)> {
+    state.check_maintenance().await;
+    let q = audit_query(current, pageSize, created_at, remote, conn_type)?;
+    state
+        .list_audit_conns(&q)
+        .await
+        .map(|(total, data)| Json(utils::AuditPage { total, data }))
+        .ok_or((Status::InternalServerError, "cannot read audit log".to_string()))
+}
+
+/// # File transfer audit log
+///
+/// Pro-compatible (`audits.py file`): newest first; `remote` is an SQL LIKE pattern.
+#[openapi(tag = "audit")]
+#[allow(non_snake_case)]
+#[get("/api/audits/file?<current>&<pageSize>&<created_at>&<remote>")]
+async fn audits_file(
+    state: &State<ApiState>,
+    _user: AuthenticatedAdmin,
+    current: Option<i64>,
+    pageSize: Option<i64>,
+    created_at: Option<String>,
+    remote: Option<String>,
+) -> Result<Json<utils::AuditPage<utils::AuditFileLog>>, (Status, String)> {
+    state.check_maintenance().await;
+    let q = audit_query(current, pageSize, created_at, remote, None)?;
+    state
+        .list_audit_files(&q)
+        .await
+        .map(|(total, data)| Json(utils::AuditPage { total, data }))
+        .ok_or((Status::InternalServerError, "cannot read audit log".to_string()))
+}
+
+/// # Security alarm audit log
+///
+/// Pro-compatible (`audits.py alarm`): newest first; `device` is an SQL LIKE pattern.
+#[openapi(tag = "audit")]
+#[allow(non_snake_case)]
+#[get("/api/audits/alarm?<current>&<pageSize>&<created_at>&<device>")]
+async fn audits_alarm(
+    state: &State<ApiState>,
+    _user: AuthenticatedAdmin,
+    current: Option<i64>,
+    pageSize: Option<i64>,
+    created_at: Option<String>,
+    device: Option<String>,
+) -> Result<Json<utils::AuditPage<utils::AuditAlarmLog>>, (Status, String)> {
+    state.check_maintenance().await;
+    let q = audit_query(current, pageSize, created_at, device, None)?;
+    state
+        .list_audit_alarms(&q)
+        .await
+        .map(|(total, data)| Json(utils::AuditPage { total, data }))
+        .ok_or((Status::InternalServerError, "cannot read audit log".to_string()))
+}
+
+/// # Console audit log
+///
+/// Pro-compatible (`audits.py console`): nothing writes `audit_console` yet, so this always
+/// answers an empty page (audit-api-spec.md §9, §14).
+#[openapi(tag = "audit")]
+#[allow(non_snake_case)]
+#[get("/api/audits/console?<current>&<pageSize>&<created_at>&<operator>")]
+async fn audits_console(
+    state: &State<ApiState>,
+    _user: AuthenticatedAdmin,
+    current: Option<i64>,
+    pageSize: Option<i64>,
+    created_at: Option<String>,
+    operator: Option<String>,
+) -> Result<Json<utils::AuditPage<utils::AuditConsoleLog>>, (Status, String)> {
+    state.check_maintenance().await;
+    audit_query(current, pageSize, created_at, operator, None)?;
+    Ok(Json(utils::AuditPage { total: 0, data: Vec::new() }))
 }
 
 /// # Log the User Out

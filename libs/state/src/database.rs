@@ -2028,6 +2028,199 @@ impl Database {
             .map_err(|e| log::error!("resolve_audit_conn_ref decode error: {e:?}"))
             .ok()
     }
+
+    /// Admin read API (audit-api-spec.md §9): newest first, `created_at` filters at/after (UTC).
+    pub async fn list_audit_conns(&self, q: &utils::AuditQuery) -> Option<(i64, Vec<utils::AuditConnLog>)> {
+        const WHERE: &str = "WHERE ($1::text IS NULL OR a.created_at::timestamptz >= ($1::timestamp AT TIME ZONE 'UTC')) \
+             AND ($2::text IS NULL OR convert_from(a.remote, 'UTF8') LIKE $2) \
+             AND ($3::smallint IS NULL OR a.type = $3)";
+
+        let total: i64 = sqlx::query_scalar(&format!("SELECT count(*) FROM audit_conn a {WHERE}"))
+            .bind(&q.created_at)
+            .bind(&q.pattern)
+            .bind(q.conn_type)
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|e| log::error!("list_audit_conns count error: {e:?}"))
+            .ok()?;
+
+        let rows = sqlx::query(&format!(
+            "SELECT a.guid, convert_from(a.remote, 'UTF8') AS remote, \
+               (SELECT COALESCE(NULLIF(p.info, ''), '{{}}')::jsonb->>'hostname' FROM peer p WHERE p.id = convert_from(a.remote, 'UTF8')) AS remote_name, \
+               convert_from(a.local, 'UTF8') AS peer_id, i->>'peer_name' AS peer_name, u.name AS user_name, \
+               i->>'ip' AS ip, a.type, (i->>'primary_auth')::int AS primary_auth, (i->>'two_factor')::int AS two_factor, \
+               i->>'session_id' AS session_id, (i->>'conn_id')::bigint AS conn_id, \
+               extract(epoch FROM a.created_at::timestamptz)::bigint AS created_at, \
+               extract(epoch FROM a.end_time::timestamptz)::bigint AS end_time, a.note \
+             FROM audit_conn a CROSS JOIN LATERAL (SELECT a.info::jsonb AS i) j \
+             LEFT JOIN \"user\" u ON u.guid = a.\"user\" {WHERE} \
+             ORDER BY a.created_at::timestamptz DESC LIMIT $4 OFFSET $5"
+        ))
+        .bind(&q.created_at)
+        .bind(&q.pattern)
+        .bind(q.conn_type)
+        .bind(q.limit)
+        .bind(q.offset)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| log::error!("list_audit_conns query error: {e:?}"))
+        .ok()?;
+
+        let mut data = Vec::with_capacity(rows.len());
+        for row in &rows {
+            data.push(audit_conn_log_from_row(row)?);
+        }
+        Some((total, data))
+    }
+
+    /// Admin read API (audit-api-spec.md §9): file transfer / clipboard-file rows.
+    pub async fn list_audit_files(&self, q: &utils::AuditQuery) -> Option<(i64, Vec<utils::AuditFileLog>)> {
+        const WHERE: &str = "WHERE ($1::text IS NULL OR a.created_at::timestamptz >= ($1::timestamp AT TIME ZONE 'UTC')) \
+             AND ($2::text IS NULL OR convert_from(a.remote, 'UTF8') LIKE $2)";
+        // Rows written before this branch double-encoded info.info as a JSON string; normalise both shapes.
+        const NORMALISE_INFO: &str = "CASE \
+               WHEN jsonb_typeof(j.i->'info') = 'string' AND left(j.i->>'info', 1) = '{' THEN (j.i->>'info')::jsonb \
+               WHEN jsonb_typeof(j.i->'info') = 'string' THEN NULL \
+               ELSE j.i->'info' END";
+
+        let total: i64 = sqlx::query_scalar(&format!("SELECT count(*) FROM audit_file a {WHERE}"))
+            .bind(&q.created_at)
+            .bind(&q.pattern)
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|e| log::error!("list_audit_files count error: {e:?}"))
+            .ok()?;
+
+        let rows = sqlx::query(&format!(
+            "SELECT a.guid, convert_from(a.remote, 'UTF8') AS remote, convert_from(a.local, 'UTF8') AS peer_id, \
+               u.name AS user_name, a.type, a.path, a.is_file, \
+               extract(epoch FROM a.created_at::timestamptz)::bigint AS created_at, \
+               ni.n->>'ip' AS ip, (ni.n->>'num')::bigint AS num, ni.n->'files' AS files \
+             FROM audit_file a CROSS JOIN LATERAL (SELECT a.info::jsonb AS i) j \
+             CROSS JOIN LATERAL (SELECT {NORMALISE_INFO} AS n) ni \
+             LEFT JOIN \"user\" u ON u.guid = a.\"user\" {WHERE} \
+             ORDER BY a.created_at::timestamptz DESC LIMIT $3 OFFSET $4"
+        ))
+        .bind(&q.created_at)
+        .bind(&q.pattern)
+        .bind(q.limit)
+        .bind(q.offset)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| log::error!("list_audit_files query error: {e:?}"))
+        .ok()?;
+
+        let mut data = Vec::with_capacity(rows.len());
+        for row in &rows {
+            data.push(audit_file_log_from_row(row)?);
+        }
+        Some((total, data))
+    }
+
+    /// Admin read API (audit-api-spec.md §9): security alarm rows.
+    pub async fn list_audit_alarms(&self, q: &utils::AuditQuery) -> Option<(i64, Vec<utils::AuditAlarmLog>)> {
+        const WHERE: &str = "WHERE ($1::text IS NULL OR a.created_at::timestamptz >= ($1::timestamp AT TIME ZONE 'UTC')) \
+             AND ($2::text IS NULL OR convert_from(a.device, 'UTF8') LIKE $2)";
+        // Same legacy-string double-encoding as audit_file's info.info.
+        const NORMALISE_INFO: &str = "CASE \
+               WHEN jsonb_typeof(j.i->'info') = 'string' AND left(j.i->>'info', 1) = '{' THEN (j.i->>'info')::jsonb \
+               WHEN jsonb_typeof(j.i->'info') = 'string' THEN 'null'::jsonb \
+               ELSE COALESCE(j.i->'info', 'null'::jsonb) END";
+
+        let total: i64 = sqlx::query_scalar(&format!("SELECT count(*) FROM audit_alarm a {WHERE}"))
+            .bind(&q.created_at)
+            .bind(&q.pattern)
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|e| log::error!("list_audit_alarms count error: {e:?}"))
+            .ok()?;
+
+        let rows = sqlx::query(&format!(
+            "SELECT a.guid, a.type, convert_from(a.device, 'UTF8') AS device, u.name AS user_name, \
+               {NORMALISE_INFO} AS info, \
+               extract(epoch FROM a.created_at::timestamptz)::bigint AS created_at \
+             FROM audit_alarm a CROSS JOIN LATERAL (SELECT a.info::jsonb AS i) j \
+             LEFT JOIN \"user\" u ON u.guid = a.\"user\" {WHERE} \
+             ORDER BY a.created_at::timestamptz DESC LIMIT $3 OFFSET $4"
+        ))
+        .bind(&q.created_at)
+        .bind(&q.pattern)
+        .bind(q.limit)
+        .bind(q.offset)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| log::error!("list_audit_alarms query error: {e:?}"))
+        .ok()?;
+
+        let mut data = Vec::with_capacity(rows.len());
+        for row in &rows {
+            data.push(audit_alarm_log_from_row(row)?);
+        }
+        Some((total, data))
+    }
+}
+
+/// `try_get` one column, logging and returning `None` on a mapping error (database.rs audit reads).
+fn audit_try_get<'r, T: sqlx::Decode<'r, sqlx::Postgres> + sqlx::Type<sqlx::Postgres>>(
+    row: &'r sqlx::postgres::PgRow,
+    column: &'static str,
+) -> Option<T> {
+    row.try_get(column)
+        .map_err(|e| log::error!("audit read: column {column} error: {e:?}"))
+        .ok()
+}
+
+fn audit_conn_log_from_row(row: &sqlx::postgres::PgRow) -> Option<utils::AuditConnLog> {
+    let guid: Vec<u8> = audit_try_get(row, "guid")?;
+    let end_time: Option<i64> = audit_try_get(row, "end_time")?;
+    Some(utils::AuditConnLog {
+        guid: guid_into_uuid(guid)?,
+        remote: audit_try_get(row, "remote")?,
+        remote_name: audit_try_get(row, "remote_name")?,
+        peer_id: audit_try_get(row, "peer_id")?,
+        peer_name: audit_try_get(row, "peer_name")?,
+        user: audit_try_get(row, "user_name")?,
+        ip: audit_try_get(row, "ip")?,
+        conn_type: audit_try_get(row, "type")?,
+        primary_auth: audit_try_get(row, "primary_auth")?,
+        two_factor: audit_try_get(row, "two_factor")?,
+        session_id: audit_try_get(row, "session_id")?,
+        conn_id: audit_try_get(row, "conn_id")?,
+        created_at: audit_try_get(row, "created_at")?,
+        end_time,
+        note: audit_try_get(row, "note")?,
+        active: end_time.is_none(),
+    })
+}
+
+fn audit_file_log_from_row(row: &sqlx::postgres::PgRow) -> Option<utils::AuditFileLog> {
+    let guid: Vec<u8> = audit_try_get(row, "guid")?;
+    let is_file: i16 = audit_try_get(row, "is_file")?;
+    Some(utils::AuditFileLog {
+        guid: guid_into_uuid(guid)?,
+        remote: audit_try_get(row, "remote")?,
+        peer_id: audit_try_get(row, "peer_id")?,
+        user: audit_try_get(row, "user_name")?,
+        direction: audit_try_get(row, "type")?,
+        path: audit_try_get(row, "path")?,
+        is_file: is_file != 0,
+        num: audit_try_get(row, "num")?,
+        files: audit_try_get(row, "files")?,
+        ip: audit_try_get(row, "ip")?,
+        created_at: audit_try_get(row, "created_at")?,
+    })
+}
+
+fn audit_alarm_log_from_row(row: &sqlx::postgres::PgRow) -> Option<utils::AuditAlarmLog> {
+    let guid: Vec<u8> = audit_try_get(row, "guid")?;
+    Some(utils::AuditAlarmLog {
+        guid: guid_into_uuid(guid)?,
+        typ: audit_try_get(row, "type")?,
+        device: audit_try_get(row, "device")?,
+        user: audit_try_get(row, "user_name")?,
+        info: audit_try_get(row, "info")?,
+        created_at: audit_try_get(row, "created_at")?,
+    })
 }
 
 #[cfg(test)]

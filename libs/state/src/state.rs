@@ -883,6 +883,19 @@ impl ApiState {
     pub async fn resolve_audit_conn_ref(&self, conn_ref: &str) -> Option<UserId> {
         self.db.resolve_audit_conn_ref(conn_ref).await
     }
+
+    /// Admin read API (audit-api-spec.md §9).
+    pub async fn list_audit_conns(&self, q: &utils::AuditQuery) -> Option<(i64, Vec<utils::AuditConnLog>)> {
+        self.db.list_audit_conns(q).await
+    }
+
+    pub async fn list_audit_files(&self, q: &utils::AuditQuery) -> Option<(i64, Vec<utils::AuditFileLog>)> {
+        self.db.list_audit_files(q).await
+    }
+
+    pub async fn list_audit_alarms(&self, q: &utils::AuditQuery) -> Option<(i64, Vec<utils::AuditAlarmLog>)> {
+        self.db.list_audit_alarms(q).await
+    }
 }
 
 /// The client's `info` is a JSON string; store it as an object so readers need not decode twice.

@@ -275,6 +275,103 @@ pub struct AuditRefResponse {
     pub conn_ref: String,
 }
 
+/// `GET /api/audits/*` query parameters (audit-api-spec.md §9.1), normalised server-side.
+#[derive(Serialize, Debug, JsonSchema)]
+pub struct AuditQuery {
+    pub offset: i64,
+    pub limit: i64,
+    pub created_at: Option<String>,
+    pub pattern: Option<String>,
+    pub conn_type: Option<i16>,
+}
+
+/// `GET /api/audits/conn` row (audit-api-spec.md §9.2).
+#[derive(Serialize, Debug, JsonSchema)]
+pub struct AuditConnLog {
+    pub guid: String,
+    pub remote: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub remote_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub peer_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub peer_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub user: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ip: Option<String>,
+    // Absent (not null) so `audits.py` prints "Not Logged In" only when this key is missing.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub conn_type: Option<i16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub primary_auth: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub two_factor: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub conn_id: Option<i64>,
+    pub created_at: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub end_time: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+    pub active: bool,
+}
+
+/// `GET /api/audits/file` row (audit-api-spec.md §9.2).
+#[derive(Serialize, Debug, JsonSchema)]
+pub struct AuditFileLog {
+    pub guid: String,
+    pub remote: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub peer_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub user: Option<String>,
+    #[serde(rename = "type")]
+    pub direction: i16,
+    pub path: String,
+    pub is_file: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub num: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub files: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ip: Option<String>,
+    pub created_at: i64,
+}
+
+/// `GET /api/audits/alarm` row (audit-api-spec.md §9.2).
+#[derive(Serialize, Debug, JsonSchema)]
+pub struct AuditAlarmLog {
+    pub guid: String,
+    pub typ: i16,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub device: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub user: Option<String>,
+    pub info: serde_json::Value,
+    pub created_at: i64,
+}
+
+/// `GET /api/audits/console` row (audit-api-spec.md §9.2). Nothing writes `audit_console` yet.
+#[derive(Serialize, Debug, JsonSchema)]
+pub struct AuditConsoleLog {
+    pub guid: String,
+    pub typ: i16,
+    pub iop: i16,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub operator: Option<String>,
+    pub info: serde_json::Value,
+    pub created_at: i64,
+}
+
+#[derive(Serialize, Debug, JsonSchema)]
+pub struct AuditPage<T> {
+    pub total: i64,
+    pub data: Vec<T>,
+}
+
 // {
 //    peers: [{id: "abcd", username: "", hostname: "", platform: "", alias: "", tags: ["", "", ...]}, ...],
 //    tags: [],
