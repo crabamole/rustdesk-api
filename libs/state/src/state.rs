@@ -731,15 +731,13 @@ impl ApiState {
                     .await?;
                 if let Some(conn_ref) = request.conn_audit_ref.as_deref().filter(|r| !r.is_empty()) {
                     match self.resolve_audit_conn_ref(conn_ref).await {
-                        Some(user) => self.db.set_audit_conn_user(guid.as_bytes(), &user).await,
-                        None => {
-                            log::debug!("audit_conn: unknown conn_audit_ref");
-                            Some(())
-                        }
+                        // The row is already stored; a failed attribution update must not make the
+                        // client retry (it would just hit find_audit_conn_by_nonce and never retry this).
+                        Some(user) => { self.db.set_audit_conn_user(guid.as_bytes(), &user).await; }
+                        None => log::debug!("audit_conn: unknown conn_audit_ref"),
                     }
-                } else {
-                    Some(())
                 }
+                Some(())
             }
             // close carries neither the new record's nonce nor a conn_audit_ref.
             "close" => match self.db.find_open_audit_conn(id, uuid, conn_id).await {
