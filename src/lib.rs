@@ -566,7 +566,7 @@ fn audit_query(
     }
     let limit = page_size.unwrap_or(10).clamp(1, 1000);
     Ok(utils::AuditQuery {
-        offset: (current.unwrap_or(1).max(1) - 1) * limit,
+        offset: current.unwrap_or(1).max(1).saturating_sub(1).saturating_mul(limit),
         limit,
         created_at,
         pattern,
@@ -2856,6 +2856,13 @@ mod tests {
     fn client_ip_falls_back_to_the_peer() {
         assert_eq!(client_ip(&headers(&[]), Some("192.0.2.9:4000".parse().unwrap()), Some(&[])).as_deref(), Some("192.0.2.9"));
         assert_eq!(client_ip(&headers(&[("x-real-ip", "not an ip")]), Some("192.0.2.9:4000".parse().unwrap()), Some(&[])).as_deref(), Some("192.0.2.9"));
+    }
+
+    #[test]
+    fn audit_query_offset_saturates_instead_of_overflowing() {
+        let q = audit_query(Some(i64::MAX), None, None, None, None).unwrap();
+        assert_eq!(q.offset, i64::MAX);
+        assert_eq!(q.limit, 10);
     }
 
     #[test]
