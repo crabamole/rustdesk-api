@@ -333,51 +333,38 @@ impl Database {
     }
 
     pub async fn update_systeminfo(&self, systeminfo: utils::SystemInfo) -> Option<()> {
-        let mut systeminfo = systeminfo;
-        // Peers are keyed by the base64-decoded uuid; without one there is
-        // nothing to update.
+        // Peers are identified by the (id, uuid) pair reported in this upload;
+        // without both there is no single row to patch.
+        let id = systeminfo.id.clone()?;
         let uuid = systeminfo.uuid.clone()?;
-        let uuid_decoded = BASE64_STANDARD.decode(uuid).ok();
-        if let Some(uuid_decoded) = uuid_decoded {
-            log::debug!(
-                "uuid_decoded: {:?} {:?}",
-                uuid_decoded,
-                String::from_utf8(uuid_decoded.clone())
-            );
-            let res = sqlx::query(
-                "SELECT info FROM peer WHERE uuid = $1",
-            )
-            .bind(&uuid_decoded)
-            .fetch_one(&self.pool)
-            .await;
-            if res.is_err() {
-                log::debug!("peer select error: {:?}", res.as_ref().err());
-                return None;
-            } else {
-                let res = res.unwrap();
-                let info_str: String = res.try_get::<String, _>("info").unwrap_or_default();
-                let old_systeminfo: utils::SystemInfo =
-                    rocket::serde::json::from_str(&info_str).unwrap();
-                systeminfo.ip = old_systeminfo.ip.clone();
-            }
-            let systeminfo_string = rocket::serde::json::to_string(&systeminfo).unwrap();
-            log::debug!("systeminfo_string: {:?}", systeminfo_string);
-            let res = sqlx::query(
-                "UPDATE peer SET info = $1 WHERE uuid = $2",
-            )
-            .bind(&systeminfo_string)
-            .bind(&uuid_decoded)
-            .execute(&self.pool)
-            .await
-            .ok()?
-            .rows_affected();
-            if res == 0 {
-                return None;
-            } else {
-                return Some(());
-            }
+        let uuid_decoded = BASE64_STANDARD.decode(uuid).ok()?;
+
+        // hbbs owns `ip`; drop it and any absent (null) field so the merge
+        // below cannot erase what hbbs or a prior upload already stored.
+        let mut patch = serde_json::to_value(&systeminfo).ok()?;
+        if let serde_json::Value::Object(map) = &mut patch {
+            map.remove("ip");
+            map.retain(|_, v| !v.is_null());
         }
-        None
+
+        let res = sqlx::query(
+            "UPDATE peer \
+             SET info = (COALESCE(NULLIF(info, ''), '{}')::jsonb || $1::jsonb)::text \
+             WHERE id = $2 AND uuid = $3",
+        )
+        .bind(&patch)
+        .bind(&id)
+        .bind(&uuid_decoded)
+        .execute(&self.pool)
+        .await
+        .ok()?
+        .rows_affected();
+
+        if res == 0 {
+            None
+        } else {
+            Some(())
+        }
     }
 
     pub async fn update_heartbeat(&self, heartbeat: utils::HeartbeatRequest) -> Option<()> {
@@ -2808,4 +2795,148 @@ mod tests {
         let (_, u) = db.find_user_by_name("admin").await;
         u.unwrap().0
     }
+
+    async fn insert_peer_with_uuid_info(db: &Database, id: &str, uuid_bytes: &[u8], info: &str) {
+        sqlx::query("INSERT INTO peer (guid, id, uuid, pk, info) VALUES ($1, $2, $3, $4, $5)")
+            .bind(Uuid::new_v4().as_bytes().to_vec())
+            .bind(id)
+            .bind(uuid_bytes.to_vec())
+            .bind(vec![0u8; 32])
+            .bind(info)
+            .execute(&db.pool)
+            .await
+            .unwrap();
+    }
+
+    async fn peer_info(db: &Database, id: &str) -> serde_json::Value {
+        let info_str: String = sqlx::query("SELECT info FROM peer WHERE id = $1")
+            .bind(id)
+            .fetch_one(&db.pool)
+            .await
+            .unwrap()
+            .try_get("info")
+            .unwrap();
+        serde_json::from_str(&info_str).unwrap()
+    }
+
+    db_test!(update_systeminfo_touches_only_the_reporting_device, |db| {
+        let machine_uuid = b"machine-1";
+        insert_peer_with_uuid_info(
+            &db,
+            "dev-old",
+            machine_uuid,
+            r#"{"ip":"172.18.0.1","hostname":"old"}"#,
+        )
+        .await;
+        insert_peer_with_uuid_info(&db, "dev-new", machine_uuid, r#"{"ip":"203.0.113.5"}"#).await;
+
+        let systeminfo = utils::SystemInfo {
+            cpu: None,
+            hostname: Some("ws-1".to_string()),
+            id: Some("dev-new".to_string()),
+            memory: None,
+            os: Some("Linux".to_string()),
+            username: None,
+            uuid: Some(BASE64_STANDARD.encode(machine_uuid)),
+            version: None,
+            ip: None,
+        };
+        let result = db.update_systeminfo(systeminfo).await;
+        assert!(result.is_some());
+
+        let new_info = peer_info(&db, "dev-new").await;
+        assert_eq!(new_info["ip"], "203.0.113.5");
+        assert_eq!(new_info["hostname"], "ws-1");
+        assert_eq!(new_info["os"], "Linux");
+
+        let old_info = peer_info(&db, "dev-old").await;
+        assert_eq!(old_info["ip"], "172.18.0.1");
+        assert_eq!(old_info["hostname"], "old");
+    });
+
+    db_test!(update_systeminfo_never_writes_ip, |db| {
+        let machine_uuid = b"machine-1";
+        insert_peer_with_uuid_info(&db, "dev-1", machine_uuid, r#"{"ip":"203.0.113.5"}"#).await;
+
+        let systeminfo = utils::SystemInfo {
+            cpu: None,
+            hostname: Some("ws-1".to_string()),
+            id: Some("dev-1".to_string()),
+            memory: None,
+            os: None,
+            username: None,
+            uuid: Some(BASE64_STANDARD.encode(machine_uuid)),
+            version: None,
+            ip: Some("10.0.0.9".to_string()),
+        };
+        let result = db.update_systeminfo(systeminfo).await;
+        assert!(result.is_some());
+
+        let info = peer_info(&db, "dev-1").await;
+        assert_eq!(info["ip"], "203.0.113.5");
+    });
+
+    db_test!(update_systeminfo_keeps_fields_the_upload_lacks, |db| {
+        let machine_uuid = b"machine-1";
+        insert_peer_with_uuid_info(
+            &db,
+            "dev-1",
+            machine_uuid,
+            r#"{"cpu":"x","hostname":"ws-1"}"#,
+        )
+        .await;
+
+        let systeminfo = utils::SystemInfo {
+            cpu: None,
+            hostname: Some("ws-2".to_string()),
+            id: Some("dev-1".to_string()),
+            memory: None,
+            os: None,
+            username: None,
+            uuid: Some(BASE64_STANDARD.encode(machine_uuid)),
+            version: None,
+            ip: None,
+        };
+        let result = db.update_systeminfo(systeminfo).await;
+        assert!(result.is_some());
+
+        let info = peer_info(&db, "dev-1").await;
+        assert_eq!(info["cpu"], "x");
+        assert_eq!(info["hostname"], "ws-2");
+    });
+
+    db_test!(update_systeminfo_requires_matching_id_and_uuid, |db| {
+        let machine_uuid = b"machine-1";
+        insert_peer_with_uuid_info(&db, "dev-1", machine_uuid, r#"{"hostname":"old"}"#).await;
+
+        let systeminfo = utils::SystemInfo {
+            cpu: None,
+            hostname: Some("ws-2".to_string()),
+            id: Some("dev-1".to_string()),
+            memory: None,
+            os: None,
+            username: None,
+            uuid: Some(BASE64_STANDARD.encode(b"machine-2")),
+            version: None,
+            ip: None,
+        };
+        let result = db.update_systeminfo(systeminfo).await;
+        assert!(result.is_none());
+        let info = peer_info(&db, "dev-1").await;
+        assert_eq!(info["hostname"], "old");
+
+        let systeminfo_no_id = utils::SystemInfo {
+            cpu: None,
+            hostname: Some("ws-3".to_string()),
+            id: None,
+            memory: None,
+            os: None,
+            username: None,
+            uuid: Some(BASE64_STANDARD.encode(machine_uuid)),
+            version: None,
+            ip: None,
+        };
+        let result = db.update_systeminfo(systeminfo_no_id).await;
+        assert!(result.is_none());
+    });
 }
