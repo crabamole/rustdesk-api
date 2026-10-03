@@ -1746,3 +1746,53 @@ async fn test_audits_console_is_always_an_empty_page() {
     assert_eq!(body["total"], 0);
     assert_eq!(body["data"].as_array().unwrap().len(), 0);
 }
+
+/// `POST /api/audit/{file,alarm}` are unauthenticated; a non-JSON `info` string starting with
+/// `{` must not 500 every page of `GET /api/audits/{file,alarm}` (fix round 1).
+#[rocket::async_test]
+async fn test_audits_file_and_alarm_survive_an_unparsable_info_string() {
+    let (client, _dir) = test_client().await;
+    let admin = login_admin(&client).await;
+
+    let resp = client
+        .post("/api/audit/file")
+        .header(ContentType::JSON)
+        .body(r#"{"id":"devbad","uuid":"ubad","peer_id":"viewerbad","conn_id":1,"type":0,"path":"/tmp","is_file":false,"info":"{x","nonce":"badfilenonce"}"#)
+        .dispatch()
+        .await;
+    assert_eq!(resp.status(), Status::Ok);
+    let resp = client
+        .post("/api/audit/file")
+        .header(ContentType::JSON)
+        .body(r#"{"id":"devbad","uuid":"ubad","peer_id":"viewerbad","conn_id":2,"type":0,"path":"/tmp","is_file":false,"info":"{\"ip\":\"203.0.113.15\",\"name\":\"ok\",\"num\":1,\"files\":[]}","nonce":"goodfilenonce"}"#)
+        .dispatch()
+        .await;
+    assert_eq!(resp.status(), Status::Ok);
+
+    let resp = client.get("/api/audits/file?current=1&pageSize=10&remote=%25devbad%25").header(auth_header(&admin)).dispatch().await;
+    assert_eq!(resp.status(), Status::Ok);
+    let body: Value = resp.into_json().await.unwrap();
+    assert_eq!(body["total"], 2);
+    assert!(body["data"].as_array().unwrap().iter().any(|r| r["ip"] == "203.0.113.15"));
+
+    let resp = client
+        .post("/api/audit/alarm")
+        .header(ContentType::JSON)
+        .body(r#"{"id":"devbadalarm","uuid":"ubadalarm","typ":1,"info":"{x","conn_id":1,"nonce":"badalarmnonce"}"#)
+        .dispatch()
+        .await;
+    assert_eq!(resp.status(), Status::Ok);
+    let resp = client
+        .post("/api/audit/alarm")
+        .header(ContentType::JSON)
+        .body(r#"{"id":"devbadalarm","uuid":"ubadalarm","typ":1,"info":"{\"ip\":\"203.0.113.16\",\"id\":\"ctl1\",\"name\":\"ok\"}","conn_id":2,"nonce":"goodalarmnonce"}"#)
+        .dispatch()
+        .await;
+    assert_eq!(resp.status(), Status::Ok);
+
+    let resp = client.get("/api/audits/alarm?current=1&pageSize=10&device=%25devbadalarm%25").header(auth_header(&admin)).dispatch().await;
+    assert_eq!(resp.status(), Status::Ok);
+    let body: Value = resp.into_json().await.unwrap();
+    assert_eq!(body["total"], 2);
+    assert!(body["data"].as_array().unwrap().iter().any(|r| r["info"]["ip"] == "203.0.113.16"));
+}

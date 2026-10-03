@@ -2074,14 +2074,14 @@ impl Database {
     }
 
     /// Admin read API (audit-api-spec.md §9): file transfer / clipboard-file rows.
+    ///
+    /// `info.info` is read as plain jsonb (`j.i->'info'`, never cast from text) because a
+    /// client-controlled `POST /api/audit/file` can store a non-JSON string there (§12.1 is
+    /// unauthenticated); casting that string to jsonb in SQL would 500 every page. Parsing
+    /// happens in Rust instead, in `audit_file_log_from_row`.
     pub async fn list_audit_files(&self, q: &utils::AuditQuery) -> Option<(i64, Vec<utils::AuditFileLog>)> {
         const WHERE: &str = "WHERE ($1::text IS NULL OR a.created_at::timestamptz >= ($1::timestamp AT TIME ZONE 'UTC')) \
              AND ($2::text IS NULL OR convert_from(a.remote, 'UTF8') LIKE $2)";
-        // Rows written before this branch double-encoded info.info as a JSON string; normalise both shapes.
-        const NORMALISE_INFO: &str = "CASE \
-               WHEN jsonb_typeof(j.i->'info') = 'string' AND left(j.i->>'info', 1) = '{' THEN (j.i->>'info')::jsonb \
-               WHEN jsonb_typeof(j.i->'info') = 'string' THEN NULL \
-               ELSE j.i->'info' END";
 
         let total: i64 = sqlx::query_scalar(&format!("SELECT count(*) FROM audit_file a {WHERE}"))
             .bind(&q.created_at)
@@ -2095,9 +2095,8 @@ impl Database {
             "SELECT a.guid, convert_from(a.remote, 'UTF8') AS remote, convert_from(a.local, 'UTF8') AS peer_id, \
                u.name AS user_name, a.type, a.path, a.is_file, \
                extract(epoch FROM a.created_at::timestamptz)::bigint AS created_at, \
-               ni.n->>'ip' AS ip, (ni.n->>'num')::bigint AS num, ni.n->'files' AS files \
+               j.i->'info' AS raw_info \
              FROM audit_file a CROSS JOIN LATERAL (SELECT a.info::jsonb AS i) j \
-             CROSS JOIN LATERAL (SELECT {NORMALISE_INFO} AS n) ni \
              LEFT JOIN \"user\" u ON u.guid = a.\"user\" {WHERE} \
              ORDER BY a.created_at::timestamptz DESC LIMIT $3 OFFSET $4"
         ))
@@ -2118,14 +2117,12 @@ impl Database {
     }
 
     /// Admin read API (audit-api-spec.md §9): security alarm rows.
+    ///
+    /// Same reasoning as `list_audit_files`: `info.info` is read as plain jsonb and parsed in
+    /// Rust (`audit_alarm_log_from_row`), never cast from text in SQL.
     pub async fn list_audit_alarms(&self, q: &utils::AuditQuery) -> Option<(i64, Vec<utils::AuditAlarmLog>)> {
         const WHERE: &str = "WHERE ($1::text IS NULL OR a.created_at::timestamptz >= ($1::timestamp AT TIME ZONE 'UTC')) \
              AND ($2::text IS NULL OR convert_from(a.device, 'UTF8') LIKE $2)";
-        // Same legacy-string double-encoding as audit_file's info.info.
-        const NORMALISE_INFO: &str = "CASE \
-               WHEN jsonb_typeof(j.i->'info') = 'string' AND left(j.i->>'info', 1) = '{' THEN (j.i->>'info')::jsonb \
-               WHEN jsonb_typeof(j.i->'info') = 'string' THEN 'null'::jsonb \
-               ELSE COALESCE(j.i->'info', 'null'::jsonb) END";
 
         let total: i64 = sqlx::query_scalar(&format!("SELECT count(*) FROM audit_alarm a {WHERE}"))
             .bind(&q.created_at)
@@ -2137,7 +2134,7 @@ impl Database {
 
         let rows = sqlx::query(&format!(
             "SELECT a.guid, a.type, convert_from(a.device, 'UTF8') AS device, u.name AS user_name, \
-               {NORMALISE_INFO} AS info, \
+               j.i->'info' AS raw_info, \
                extract(epoch FROM a.created_at::timestamptz)::bigint AS created_at \
              FROM audit_alarm a CROSS JOIN LATERAL (SELECT a.info::jsonb AS i) j \
              LEFT JOIN \"user\" u ON u.guid = a.\"user\" {WHERE} \
@@ -2157,6 +2154,19 @@ impl Database {
             data.push(audit_alarm_log_from_row(row)?);
         }
         Some((total, data))
+    }
+}
+
+/// Rows written before this branch double-encoded `info.info` as a JSON string, and an
+/// unauthenticated client can store an arbitrary non-JSON string there (§12.1). Parse a JSON
+/// string's content when it is itself valid JSON; otherwise keep it as the plain string value.
+fn normalise_audit_info(raw: Option<serde_json::Value>) -> serde_json::Value {
+    match raw {
+        Some(serde_json::Value::String(s)) => {
+            serde_json::from_str(&s).unwrap_or(serde_json::Value::String(s))
+        }
+        Some(v) => v,
+        None => serde_json::Value::Null,
     }
 }
 
@@ -2196,6 +2206,8 @@ fn audit_conn_log_from_row(row: &sqlx::postgres::PgRow) -> Option<utils::AuditCo
 fn audit_file_log_from_row(row: &sqlx::postgres::PgRow) -> Option<utils::AuditFileLog> {
     let guid: Vec<u8> = audit_try_get(row, "guid")?;
     let is_file: i16 = audit_try_get(row, "is_file")?;
+    let raw_info: Option<serde_json::Value> = audit_try_get(row, "raw_info")?;
+    let info = normalise_audit_info(raw_info);
     Some(utils::AuditFileLog {
         guid: guid_into_uuid(guid)?,
         remote: audit_try_get(row, "remote")?,
@@ -2204,21 +2216,22 @@ fn audit_file_log_from_row(row: &sqlx::postgres::PgRow) -> Option<utils::AuditFi
         direction: audit_try_get(row, "type")?,
         path: audit_try_get(row, "path")?,
         is_file: is_file != 0,
-        num: audit_try_get(row, "num")?,
-        files: audit_try_get(row, "files")?,
-        ip: audit_try_get(row, "ip")?,
+        num: info.get("num").and_then(serde_json::Value::as_i64),
+        files: info.get("files").cloned(),
+        ip: info.get("ip").and_then(serde_json::Value::as_str).map(str::to_owned),
         created_at: audit_try_get(row, "created_at")?,
     })
 }
 
 fn audit_alarm_log_from_row(row: &sqlx::postgres::PgRow) -> Option<utils::AuditAlarmLog> {
     let guid: Vec<u8> = audit_try_get(row, "guid")?;
+    let raw_info: Option<serde_json::Value> = audit_try_get(row, "raw_info")?;
     Some(utils::AuditAlarmLog {
         guid: guid_into_uuid(guid)?,
         typ: audit_try_get(row, "type")?,
         device: audit_try_get(row, "device")?,
         user: audit_try_get(row, "user_name")?,
-        info: audit_try_get(row, "info")?,
+        info: normalise_audit_info(raw_info),
         created_at: audit_try_get(row, "created_at")?,
     })
 }
