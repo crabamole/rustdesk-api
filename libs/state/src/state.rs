@@ -753,6 +753,12 @@ impl ApiState {
                 None => Some(()),
             },
             // Menu note from the viewer (spec §4): no action, uuid, peer or type.
+            // session_id 0 is the "new" row's default, not a real session; applying the note
+            // there would overwrite the device's latest not-yet-authorized row.
+            "" if request.note.is_some() && request.uuid.is_empty() && request.peer.is_none() && request.conn_type.is_none() && request.session_id == 0 => {
+                log::debug!("audit_conn: menu note without a session_id");
+                Some(())
+            }
             "" if request.note.is_some() && request.uuid.is_empty() && request.peer.is_none() && request.conn_type.is_none() => {
                 let id = request.id.split('@').next().unwrap_or_default();
                 let note = request.note.as_deref().unwrap_or_default();
@@ -1658,6 +1664,24 @@ mod tests {
         assert_eq!(rows[0].conn_type, Some(0));
         state.audit_conn(&close_record("dev1", "dXVpZA==", 5, "c")).await.unwrap();
         assert!(state.db.audit_conn_rows("dev1").await[0].end_time.is_some());
+    }
+
+    #[tokio::test]
+    async fn audit_menu_note_without_session_id_is_ignored() {
+        let state = test_state().await;
+        state.audit_conn(&new_record(5, "n-note2")).await.unwrap();
+
+        // session_id 0 is the "new" row's own default, not a real session; applying the
+        // note here would hit that not-yet-authorized row instead of the intended one.
+        state.audit_conn(&conn_record(r#"{"id":"dev1","session_id":0,"note":"hi"}"#)).await.unwrap();
+        assert_eq!(state.db.audit_conn_rows("dev1").await[0].note, None);
+
+        // authorized record carries the real session id
+        state.audit_conn(&conn_record(
+            r#"{"peer":["v1","Viewer"],"type":0,"id":"dev1","uuid":"dXVpZA==","conn_id":5,"session_id":18446744073709551615,"nonce":"a-note2"}"#,
+        )).await.unwrap();
+        state.audit_conn(&conn_record(r#"{"id":"dev1","session_id":18446744073709551615,"note":"hello"}"#)).await.unwrap();
+        assert_eq!(state.db.audit_conn_rows("dev1").await[0].note.as_deref(), Some("hello"));
     }
 
     #[tokio::test]
