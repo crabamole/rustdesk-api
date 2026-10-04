@@ -2050,6 +2050,7 @@ impl Database {
     }
 
     /// Records a native client's OIDC login: the machine, its user, and the login time.
+    /// Last login wins: an existing row moves to whoever signed in on the machine most recently.
     pub async fn upsert_viewer_device(&self, id: &str, uuid: &str, hostname: &str, os: &str, user: &[u8]) -> Option<()> {
         sqlx::query(
             "INSERT INTO viewer_device (id, uuid, hostname, os, \"user\") VALUES ($1, $2, $3, $4, $5) \
@@ -2066,6 +2067,19 @@ impl Database {
         .map_err(|e| log::error!("upsert_viewer_device error: {e:?}"))
         .ok()?;
         Some(())
+    }
+
+    #[cfg(any(test, feature = "test-util"))]
+    pub async fn test_age_viewer_device(&self, id: &str, secs: i64) {
+        sqlx::query(
+            "UPDATE viewer_device SET first_seen = first_seen - make_interval(secs => $2), \
+             last_login = last_login - make_interval(secs => $2), last_seen = last_seen - make_interval(secs => $2) WHERE id = $1",
+        )
+        .bind(id)
+        .bind(secs as f64)
+        .execute(&self.pool)
+        .await
+        .unwrap();
     }
 
     /// Bumps `last_seen` of a machine `user` logged in on; returns whether a row matched.
@@ -3363,12 +3377,7 @@ mod tests {
     }
 
     async fn age_viewer(db: &Database, id: &str, secs: i64) {
-        sqlx::query("UPDATE viewer_device SET first_seen = first_seen - make_interval(secs => $2), last_login = last_login - make_interval(secs => $2), last_seen = last_seen - make_interval(secs => $2) WHERE id = $1")
-            .bind(id)
-            .bind(secs as f64)
-            .execute(&db.pool)
-            .await
-            .unwrap();
+        db.test_age_viewer_device(id, secs).await;
     }
 
     db_test!(viewer_login_inserts_then_updates, |db| {

@@ -70,6 +70,7 @@ pub enum AuditNoteError {
 }
 
 const MAINTENANCE_INTERVAL_IN_SECS: u64 = 60;
+const VIEWER_FIELD_MAX_CHARS: usize = 255;
 
 fn secs_from_epoch() -> u64 {
     SystemTime::now()
@@ -514,9 +515,17 @@ impl ApiState {
         if login.device_type != "client" || login.id.is_empty() || login.uuid.is_empty() {
             return;
         }
+        // Both come unchecked from the client's login request.
+        let bounded = |s: &str| s.chars().take(VIEWER_FIELD_MAX_CHARS).collect::<String>();
         self.db
-            .upsert_viewer_device(&login.id, &login.uuid, &login.device_name, &login.device_os, user_id)
+            .upsert_viewer_device(&login.id, &login.uuid, &bounded(&login.device_name), &bounded(&login.device_os), user_id)
             .await;
+    }
+
+    /// Makes a recorded viewer machine `secs` older (all its times). Test-only.
+    #[cfg(any(test, feature = "test-util"))]
+    pub async fn test_age_viewer_device(&self, id: &str, secs: i64) {
+        self.db.test_age_viewer_device(id, secs).await;
     }
 
     /// Bumps `last_seen` of a viewer machine already recorded for this user.
@@ -1896,5 +1905,22 @@ mod tests {
         state.audit_alarm(&alarm).await.unwrap();
         let row = state.db.audit_alarm_row_for_test("a2").await;
         assert_eq!(row.user, Some(user));
+    }
+
+    #[tokio::test]
+    async fn viewer_login_bounds_hostname_and_os() {
+        let state = test_state().await;
+        let (user, _, _) = state.db.get_user_for_oauth2("admin", "admin", None).await.unwrap();
+        let login = OidcState {
+            id: "601".into(),
+            uuid: "u".into(),
+            device_type: "client".into(),
+            device_name: "h".repeat(300),
+            device_os: "é".repeat(300),
+            ..Default::default()
+        };
+        state.record_viewer_login(&login, &user).await;
+        let row = &state.list_viewer_devices(0, 10).await.unwrap().1[0];
+        assert_eq!((row.hostname.chars().count(), row.os.chars().count()), (255, 255));
     }
 }

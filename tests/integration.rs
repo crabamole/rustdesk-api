@@ -1831,19 +1831,31 @@ async fn test_native_oidc_login_lists_the_machine_as_a_viewer() {
     assert_eq!((row["os"].as_str(), row["user"].as_str()), (Some("windows"), Some("alice")));
     assert!(row["last_seen"].as_i64().unwrap() >= row["last_login"].as_i64().unwrap());
 
-    // currentUser refreshes a known machine and never adds one.
-    let uuid = base64::Engine::encode(&base64::prelude::BASE64_STANDARD, "device-uuid");
-    for id in ["123456789", "987654321"] {
-        let resp = client
-            .post("/api/currentUser")
-            .header(ContentType::JSON)
-            .header(auth_header(&alice))
-            .body(format!(r#"{{"id":"{id}","uuid":"{uuid}"}}"#))
-            .dispatch()
-            .await;
-        assert_eq!(resp.status(), Status::Ok);
-    }
+    // currentUser refreshes a known machine (uuid arrives base64) and never adds one.
+    let state = client.rocket().state::<state::ApiState>().unwrap();
+    state.test_age_viewer_device("123456789", 3600).await;
+    let last_seen = || async { viewers(&client, &admin).await["data"][0]["last_seen"].as_i64().unwrap() };
+    let aged = last_seen().await;
+    let current_user = |id: &'static str, raw_uuid: &'static str| {
+        let (client, alice) = (&client, alice.clone());
+        async move {
+            let uuid = base64::Engine::encode(&base64::prelude::BASE64_STANDARD, raw_uuid);
+            let resp = client
+                .post("/api/currentUser")
+                .header(ContentType::JSON)
+                .header(auth_header(&alice))
+                .body(format!(r#"{{"id":"{id}","uuid":"{uuid}"}}"#))
+                .dispatch()
+                .await;
+            assert_eq!(resp.status(), Status::Ok);
+        }
+    };
+    current_user("123456789", "other-uuid").await;
+    current_user("987654321", "device-uuid").await;
+    assert_eq!(last_seen().await, aged, "a non-matching id or uuid moved last_seen");
     assert_eq!(viewers(&client, &admin).await["total"], 1);
+    current_user("123456789", "device-uuid").await;
+    assert!(last_seen().await >= aged + 3600, "matching id+uuid did not refresh last_seen");
 }
 
 #[rocket::async_test]
