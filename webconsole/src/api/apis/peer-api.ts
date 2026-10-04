@@ -23,6 +23,7 @@ import { HeartbeatResponse } from '../models';
 import { PeersCountResponse } from '../models';
 import { PeersResponse } from '../models';
 import { SystemInfo } from '../models';
+import { ViewerList } from '../models';
 /**
  * PeerApi - axios parameter creator
  * @export
@@ -250,6 +251,59 @@ export const PeerApiAxiosParamCreator = function (configuration?: Configuration)
                 options: localVarRequestOptions,
             };
         },
+        /**
+         * Admin-only. Machines whose native client logged in through OIDC but never registered with hbbs (IDs in the peer list are left out), most recently seen first. Times are Unix seconds.  GET /api/viewers?current=1&pageSize=10
+         * @summary List viewer machines
+         * @param {number} [current] 
+         * @param {number} [page_size] 
+         * @param {*} [options] Override http request option.
+         * @throws {RequiredError}
+         */
+        viewers: async (current?: number, page_size?: number, options: AxiosRequestConfig = {}): Promise<RequestArgs> => {
+            const localVarPath = `/api/viewers`;
+            // use dummy base URL string because the URL constructor only accepts absolute URLs.
+            const localVarUrlObj = new URL(localVarPath, 'https://example.com');
+            let baseOptions;
+            if (configuration) {
+                baseOptions = configuration.baseOptions;
+            }
+            const localVarRequestOptions :AxiosRequestConfig = { method: 'GET', ...baseOptions, ...options};
+            const localVarHeaderParameter = {} as any;
+            const localVarQueryParameter = {} as any;
+
+            // authentication authorization_admin required
+            // http bearer authentication required
+            if (configuration && configuration.accessToken) {
+                const accessToken = typeof configuration.accessToken === 'function'
+                    ? await configuration.accessToken()
+                    : await configuration.accessToken;
+                localVarHeaderParameter["Authorization"] = "Bearer " + accessToken;
+            }
+
+            if (current !== undefined) {
+                localVarQueryParameter['current'] = current;
+            }
+
+            if (page_size !== undefined) {
+                localVarQueryParameter['pageSize'] = page_size;
+            }
+
+            const query = new URLSearchParams(localVarUrlObj.search);
+            for (const key in localVarQueryParameter) {
+                query.set(key, localVarQueryParameter[key]);
+            }
+            for (const key in options.params) {
+                query.set(key, options.params[key]);
+            }
+            localVarUrlObj.search = (new URLSearchParams(query)).toString();
+            let headersFromBaseOptions = baseOptions && baseOptions.headers ? baseOptions.headers : {};
+            localVarRequestOptions.headers = {...localVarHeaderParameter, ...headersFromBaseOptions, ...options.headers};
+
+            return {
+                url: localVarUrlObj.pathname + localVarUrlObj.search + localVarUrlObj.hash,
+                options: localVarRequestOptions,
+            };
+        },
     }
 };
 
@@ -327,6 +381,21 @@ export const PeerApiFp = function(configuration?: Configuration) {
                 return axios.request(axiosRequestArgs);
             };
         },
+        /**
+         * Admin-only. Machines whose native client logged in through OIDC but never registered with hbbs (IDs in the peer list are left out), most recently seen first. Times are Unix seconds.  GET /api/viewers?current=1&pageSize=10
+         * @summary List viewer machines
+         * @param {number} [current] 
+         * @param {number} [page_size] 
+         * @param {*} [options] Override http request option.
+         * @throws {RequiredError}
+         */
+        async viewers(current?: number, page_size?: number, options?: AxiosRequestConfig): Promise<(axios?: AxiosInstance, basePath?: string) => Promise<AxiosResponse<ViewerList>>> {
+            const localVarAxiosArgs = await PeerApiAxiosParamCreator(configuration).viewers(current, page_size, options);
+            return (axios: AxiosInstance = globalAxios, basePath: string = BASE_PATH) => {
+                const axiosRequestArgs :AxiosRequestConfig = {...localVarAxiosArgs.options, url: basePath + localVarAxiosArgs.url};
+                return axios.request(axiosRequestArgs);
+            };
+        },
     }
 };
 
@@ -383,6 +452,17 @@ export const PeerApiFactory = function (configuration?: Configuration, basePath?
          */
         async sysinfo(body: SystemInfo, options?: AxiosRequestConfig): Promise<AxiosResponse<string>> {
             return PeerApiFp(configuration).sysinfo(body, options).then((request) => request(axios, basePath));
+        },
+        /**
+         * Admin-only. Machines whose native client logged in through OIDC but never registered with hbbs (IDs in the peer list are left out), most recently seen first. Times are Unix seconds.  GET /api/viewers?current=1&pageSize=10
+         * @summary List viewer machines
+         * @param {number} [current] 
+         * @param {number} [page_size] 
+         * @param {*} [options] Override http request option.
+         * @throws {RequiredError}
+         */
+        async viewers(current?: number, page_size?: number, options?: AxiosRequestConfig): Promise<AxiosResponse<ViewerList>> {
+            return PeerApiFp(configuration).viewers(current, page_size, options).then((request) => request(axios, basePath));
         },
     };
 };
@@ -446,5 +526,17 @@ export class PeerApi extends BaseAPI {
      */
     public async sysinfo(body: SystemInfo, options?: AxiosRequestConfig) : Promise<AxiosResponse<string>> {
         return PeerApiFp(this.configuration).sysinfo(body, options).then((request) => request(this.axios, this.basePath));
+    }
+    /**
+     * Admin-only. Machines whose native client logged in through OIDC but never registered with hbbs (IDs in the peer list are left out), most recently seen first. Times are Unix seconds.  GET /api/viewers?current=1&pageSize=10
+     * @summary List viewer machines
+     * @param {number} [current] 
+     * @param {number} [page_size] 
+     * @param {*} [options] Override http request option.
+     * @throws {RequiredError}
+     * @memberof PeerApi
+     */
+    public async viewers(current?: number, page_size?: number, options?: AxiosRequestConfig) : Promise<AxiosResponse<ViewerList>> {
+        return PeerApiFp(this.configuration).viewers(current, page_size, options).then((request) => request(this.axios, this.basePath));
     }
 }

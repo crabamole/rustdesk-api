@@ -2049,6 +2049,75 @@ impl Database {
             .ok()
     }
 
+    /// Records a native client's OIDC login: the machine, its user, and the login time.
+    pub async fn upsert_viewer_device(&self, id: &str, uuid: &str, hostname: &str, os: &str, user: &[u8]) -> Option<()> {
+        sqlx::query(
+            "INSERT INTO viewer_device (id, uuid, hostname, os, \"user\") VALUES ($1, $2, $3, $4, $5) \
+             ON CONFLICT (id, uuid) DO UPDATE SET hostname = EXCLUDED.hostname, os = EXCLUDED.os, \
+             \"user\" = EXCLUDED.\"user\", last_login = now(), last_seen = now()",
+        )
+        .bind(id)
+        .bind(uuid)
+        .bind(hostname)
+        .bind(os)
+        .bind(user)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| log::error!("upsert_viewer_device error: {e:?}"))
+        .ok()?;
+        Some(())
+    }
+
+    /// Bumps `last_seen` of a machine `user` logged in on; returns whether a row matched.
+    pub async fn touch_viewer_device(&self, id: &str, uuid: &str, user: &[u8]) -> Option<bool> {
+        let res = sqlx::query("UPDATE viewer_device SET last_seen = now() WHERE id = $1 AND uuid = $2 AND \"user\" = $3")
+            .bind(id)
+            .bind(uuid)
+            .bind(user)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| log::error!("touch_viewer_device error: {e:?}"))
+            .ok()?;
+        Some(res.rows_affected() > 0)
+    }
+
+    /// Viewer machines, most recently seen first; IDs that registered with hbbs are devices, not viewers.
+    pub async fn list_viewer_devices(&self, offset: i64, limit: i64) -> Option<(i64, Vec<utils::ViewerDevice>)> {
+        const WHERE: &str = "WHERE NOT EXISTS (SELECT 1 FROM peer p WHERE p.id = v.id)";
+        let total: i64 = sqlx::query_scalar(&format!("SELECT count(*) FROM viewer_device v {WHERE}"))
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|e| log::error!("list_viewer_devices count error: {e:?}"))
+            .ok()?;
+        let rows = sqlx::query(&format!(
+            "SELECT v.id, v.hostname, v.os, u.name AS user_name, \
+               extract(epoch FROM v.first_seen)::bigint AS first_seen, \
+               extract(epoch FROM v.last_login)::bigint AS last_login, \
+               extract(epoch FROM v.last_seen)::bigint AS last_seen \
+             FROM viewer_device v LEFT JOIN \"user\" u ON u.guid = v.\"user\" {WHERE} \
+             ORDER BY v.last_seen DESC, v.id, v.uuid LIMIT $1 OFFSET $2"
+        ))
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| log::error!("list_viewer_devices query error: {e:?}"))
+        .ok()?;
+        let mut data = Vec::with_capacity(rows.len());
+        for row in &rows {
+            data.push(utils::ViewerDevice {
+                id: row.try_get("id").ok()?,
+                hostname: row.try_get("hostname").ok()?,
+                os: row.try_get("os").ok()?,
+                user: row.try_get("user_name").ok()?,
+                first_seen: row.try_get("first_seen").ok()?,
+                last_login: row.try_get("last_login").ok()?,
+                last_seen: row.try_get("last_seen").ok()?,
+            });
+        }
+        Some((total, data))
+    }
+
     /// Admin read API (audit-api-spec.md §9): newest first, `created_at` filters at/after (UTC).
     pub async fn list_audit_conns(&self, q: &utils::AuditQuery) -> Option<(i64, Vec<utils::AuditConnLog>)> {
         const WHERE: &str = "WHERE ($1::text IS NULL OR a.created_at::timestamptz >= ($1::timestamp AT TIME ZONE 'UTC')) \
@@ -2336,7 +2405,7 @@ mod tests {
                 .fetch_all(&first.pool)
                 .await
                 .unwrap();
-        assert_eq!(applied, vec![(1, true), (2, true), (3, true), (4, true), (5, true), (6, true)]);
+        assert_eq!(applied, vec![(1, true), (2, true), (3, true), (4, true), (5, true), (6, true), (7, true)]);
         first.pool.close().await;
 
         // Second start on the same database must not fail or duplicate rows.
@@ -3287,5 +3356,64 @@ mod tests {
         };
         let result = db.update_systeminfo(systeminfo_no_id).await;
         assert!(result.is_none());
+    });
+
+    async fn admin_id(db: &Database) -> Vec<u8> {
+        db.get_user_for_oauth2("admin", "admin", None).await.unwrap().0
+    }
+
+    async fn age_viewer(db: &Database, id: &str, secs: i64) {
+        sqlx::query("UPDATE viewer_device SET first_seen = first_seen - make_interval(secs => $2), last_login = last_login - make_interval(secs => $2), last_seen = last_seen - make_interval(secs => $2) WHERE id = $1")
+            .bind(id)
+            .bind(secs as f64)
+            .execute(&db.pool)
+            .await
+            .unwrap();
+    }
+
+    db_test!(viewer_login_inserts_then_updates, |db| {
+        let user = admin_id(&db).await;
+        db.upsert_viewer_device("111", "u1", "pc-old", "linux", &user).await.unwrap();
+        age_viewer(&db, "111", 3600).await;
+        db.upsert_viewer_device("111", "u1", "pc-new", "windows", &user).await.unwrap();
+        let (total, rows) = db.list_viewer_devices(0, 10).await.unwrap();
+        assert_eq!(total, 1);
+        assert_eq!((rows[0].hostname.as_str(), rows[0].os.as_str()), ("pc-new", "windows"));
+        assert_eq!(rows[0].user.as_deref(), Some("admin"));
+        assert!(rows[0].first_seen < rows[0].last_login);
+        assert_eq!(rows[0].last_login, rows[0].last_seen);
+    });
+
+    db_test!(viewer_touch_updates_only_existing_rows_of_the_user, |db| {
+        let user = admin_id(&db).await;
+        assert_eq!(db.touch_viewer_device("222", "u2", &user).await, Some(false));
+        assert_eq!(db.list_viewer_devices(0, 10).await.unwrap().0, 0);
+        db.upsert_viewer_device("222", "u2", "pc", "linux", &user).await.unwrap();
+        age_viewer(&db, "222", 3600).await;
+        assert_eq!(db.touch_viewer_device("222", "u2", b"someone-else").await, Some(false));
+        assert_eq!(db.touch_viewer_device("222", "u2", &user).await, Some(true));
+        let rows = db.list_viewer_devices(0, 10).await.unwrap().1;
+        assert!(rows[0].last_seen > rows[0].last_login);
+    });
+
+    db_test!(viewer_list_skips_registered_peers_and_pages, |db| {
+        let user = admin_id(&db).await;
+        for id in ["301", "302", "303"] {
+            db.upsert_viewer_device(id, "u", id, "linux", &user).await.unwrap();
+        }
+        age_viewer(&db, "301", 60).await;
+        insert_peer_with_os(&db, "303", "linux").await;
+        let (total, rows) = db.list_viewer_devices(0, 1).await.unwrap();
+        assert_eq!((total, rows.len(), rows[0].id.as_str()), (2, 1, "302"));
+        let rows = db.list_viewer_devices(1, 1).await.unwrap().1;
+        assert_eq!(rows[0].id, "301");
+    });
+
+    db_test!(viewer_rows_go_with_their_user, |db| {
+        let (user, _, _) = db.get_user_for_oauth2("bob", "bob", None).await.unwrap();
+        db.upsert_viewer_device("401", "u", "pc", "linux", &user).await.unwrap();
+        let guid = guid_into_uuid(user).unwrap();
+        db.delete_user(&guid).await.unwrap();
+        assert_eq!(db.list_viewer_devices(0, 10).await.unwrap().0, 0);
     });
 }

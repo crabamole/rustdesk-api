@@ -496,13 +496,36 @@ impl ApiState {
                 return None;
             }
             let token = self
-                .get_access_token(uuid_vec, &username, db_user_info.admin)
+                .get_access_token(uuid_vec.clone(), &username, db_user_info.admin)
                 .await;
             // User has completed the authorization flow
-            oidc_sessions.remove(&uuid_code);
+            let login = oidc_sessions.remove(&uuid_code);
+            drop(oidc_sessions);
+            if let Some(login) = login {
+                self.record_viewer_login(&login, &uuid_vec).await;
+            }
             return Some((token, username, db_user_info));
         }
         None
+    }
+
+    /// Remembers the machine of a native client login so viewers that never register are listed.
+    async fn record_viewer_login(&self, login: &OidcState, user_id: &[u8]) {
+        if login.device_type != "client" || login.id.is_empty() || login.uuid.is_empty() {
+            return;
+        }
+        self.db
+            .upsert_viewer_device(&login.id, &login.uuid, &login.device_name, &login.device_os, user_id)
+            .await;
+    }
+
+    /// Bumps `last_seen` of a viewer machine already recorded for this user.
+    pub async fn touch_viewer_device(&self, id: &str, uuid: &str, user_id: &[u8]) -> Option<bool> {
+        self.db.touch_viewer_device(id, uuid, user_id).await
+    }
+
+    pub async fn list_viewer_devices(&self, offset: i64, limit: i64) -> Option<(i64, Vec<utils::ViewerDevice>)> {
+        self.db.list_viewer_devices(offset, limit).await
     }
 
     /// Get the users's personal address book guid

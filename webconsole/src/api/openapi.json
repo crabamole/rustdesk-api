@@ -1472,6 +1472,63 @@
         ]
       }
     },
+    "/api/viewers": {
+      "get": {
+        "tags": [
+          "peer"
+        ],
+        "summary": "List viewer machines",
+        "description": "Admin-only. Machines whose native client logged in through OIDC but never registered with hbbs (IDs in the peer list are left out), most recently seen first. Times are Unix seconds.\n\nGET /api/viewers?current=1&pageSize=10",
+        "operationId": "viewers",
+        "parameters": [
+          {
+            "name": "current",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "nullable": true
+            }
+          },
+          {
+            "name": "pageSize",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "nullable": true
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ViewerList"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "authorization_admin": []
+          }
+        ]
+      }
+    },
     "/api/strategies": {
       "get": {
         "tags": [
@@ -3379,6 +3436,15 @@
             "type": "integer",
             "format": "uint32",
             "minimum": 0.0
+          },
+          "conns": {
+            "description": "Live connection ids; absent when the device has none.",
+            "default": [],
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "format": "int64"
+            }
           }
         }
       },
@@ -3850,6 +3916,64 @@
             "type": "integer",
             "format": "uint32",
             "minimum": 0.0
+          }
+        }
+      },
+      "ViewerList": {
+        "type": "object",
+        "required": [
+          "data",
+          "total"
+        ],
+        "properties": {
+          "total": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ViewerDevice"
+            }
+          }
+        }
+      },
+      "ViewerDevice": {
+        "description": "`GET /api/viewers` row: a machine known only from its users' logins. Times are Unix seconds.",
+        "type": "object",
+        "required": [
+          "first_seen",
+          "hostname",
+          "id",
+          "last_login",
+          "last_seen",
+          "os"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "hostname": {
+            "type": "string"
+          },
+          "os": {
+            "type": "string"
+          },
+          "user": {
+            "type": "string",
+            "nullable": true
+          },
+          "first_seen": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "last_login": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "last_seen": {
+            "type": "integer",
+            "format": "int64"
           }
         }
       },

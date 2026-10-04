@@ -372,6 +372,25 @@ pub struct AuditPage<T> {
     pub data: Vec<T>,
 }
 
+/// `GET /api/viewers` row: a machine known only from its users' logins. Times are Unix seconds.
+#[derive(Serialize, Debug, JsonSchema)]
+pub struct ViewerDevice {
+    pub id: String,
+    pub hostname: String,
+    pub os: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub user: Option<String>,
+    pub first_seen: i64,
+    pub last_login: i64,
+    pub last_seen: i64,
+}
+
+#[derive(Serialize, Debug, JsonSchema)]
+pub struct ViewerList {
+    pub total: i64,
+    pub data: Vec<ViewerDevice>,
+}
+
 // {
 //    peers: [{id: "abcd", username: "", hostname: "", platform: "", alias: "", tags: ["", "", ...]}, ...],
 //    tags: [],
@@ -761,6 +780,8 @@ pub struct OidcState {
     pub device_name: String,
     pub device_os: String,
     pub requester_ip: Option<String>,
+    /// `client` for native RustDesk clients, other values for browsers.
+    pub device_type: String,
 }
 impl Default for OidcState {
     fn default() -> Self {
@@ -783,6 +804,7 @@ impl Default for OidcState {
             device_name: String::new(),
             device_os: String::new(),
             requester_ip: None,
+            device_type: String::new(),
         }
     }
 }

@@ -23,9 +23,9 @@ Update this file with every API change.
 | POST | /api/login | [C] `flutter/lib/models/user_model.dart` | implemented | password login intentionally disabled, always 401; use OIDC |
 | GET | /api/login-options | [C] `src/hbbs_http/account.rs`, `flutter/lib/models/user_model.dart` | implemented | |
 | POST | /api/oidc/auth | [C] `src/hbbs_http/account.rs` | implemented | |
-| GET | /api/oidc/auth-query | [C] `src/hbbs_http/account.rs` | implemented | |
+| GET | /api/oidc/auth-query | [C] `src/hbbs_http/account.rs` | implemented | completing a native client login records the machine for `GET /api/viewers` |
 | POST | /api/logout | [C] `flutter/lib/models/user_model.dart` | implemented | |
-| POST | /api/currentUser | [C] `flutter/lib/models/user_model.dart` | implemented | |
+| POST | /api/currentUser | [C] `flutter/lib/models/user_model.dart` | implemented | also refreshes the last-seen time of a machine recorded by a login |
 | POST | /api/audit/conn | [C] `src/server/connection.rs` | implemented | connection lifecycle (`new`, `authorized`, `close`) and session-menu note (§4) per audit-api-spec.md §3-4 |
 | POST | /api/audit/file | [C] `src/server/connection.rs` | implemented | see audit-api-spec.md §5 |
 | POST | /api/audit/alarm | [C] `src/server/connection.rs` | implemented | see audit-api-spec.md §6 |
@@ -164,6 +164,7 @@ Update this file with every API change.
 | GET | /api/user-list | admin-only paginated user list with email/name filters (separate from client-facing `GET /api/users`) |
 | GET | /api/peers/count/{platform} | peer count by platform |
 | GET | /api/peers/cpus | cpu count per peer |
+| GET | /api/viewers | admin-only paginated list of machines whose native client logged in through OIDC but never registered with hbbs |
 | GET | /api/oidc/settings | stub; always 401; TODO in source |
 | PUT | /api/oidc/settings | stub; always 401; TODO in source |
 | GET | /api/software/version/server | server version |

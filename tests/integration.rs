@@ -1808,3 +1808,71 @@ async fn test_audits_file_and_alarm_survive_an_unparsable_info_string() {
     assert_eq!(body["total"], 2);
     assert!(body["data"].as_array().unwrap().iter().any(|r| r["info"]["ip"] == "203.0.113.16"));
 }
+
+async fn viewers(client: &Client, token: &str) -> Value {
+    let resp = client.get("/api/viewers?current=1&pageSize=10").header(auth_header(token)).dispatch().await;
+    assert_eq!(resp.status(), Status::Ok);
+    resp.into_json().await.unwrap()
+}
+
+#[rocket::async_test]
+async fn test_native_oidc_login_lists_the_machine_as_a_viewer() {
+    let client = untracked_client().await;
+    let (code, cookie) = start_login(&client, "MY-LAPTOP", None).await;
+    use_stub_idp(&client, &code, "alice").await;
+    callback(&client, &code, cookie.as_deref()).await;
+    let alice = poll(&client, &code).await["access_token"].as_str().unwrap().to_string();
+    let admin = login_admin(&client).await;
+
+    let body = viewers(&client, &admin).await;
+    assert_eq!(body["total"], 1, "{body}");
+    let row = &body["data"][0];
+    assert_eq!((row["id"].as_str(), row["hostname"].as_str()), (Some("123456789"), Some("MY-LAPTOP")));
+    assert_eq!((row["os"].as_str(), row["user"].as_str()), (Some("windows"), Some("alice")));
+    assert!(row["last_seen"].as_i64().unwrap() >= row["last_login"].as_i64().unwrap());
+
+    // currentUser refreshes a known machine and never adds one.
+    let uuid = base64::Engine::encode(&base64::prelude::BASE64_STANDARD, "device-uuid");
+    for id in ["123456789", "987654321"] {
+        let resp = client
+            .post("/api/currentUser")
+            .header(ContentType::JSON)
+            .header(auth_header(&alice))
+            .body(format!(r#"{{"id":"{id}","uuid":"{uuid}"}}"#))
+            .dispatch()
+            .await;
+        assert_eq!(resp.status(), Status::Ok);
+    }
+    assert_eq!(viewers(&client, &admin).await["total"], 1);
+}
+
+#[rocket::async_test]
+async fn test_browser_oidc_login_is_not_a_viewer() {
+    let client = untracked_client().await;
+    let uuid = base64::Engine::encode(&base64::prelude::BASE64_STANDARD, "browser-uuid");
+    let resp = client
+        .post("/api/oidc/auth")
+        .header(ContentType::JSON)
+        .header(Header::new("Host", "rustdesk.example.com"))
+        .body(format!(r#"{{"op":"dex","id":"555","uuid":"{uuid}","deviceInfo":{{"name":"Netscape","os":"Linux","type":"oidc"}}}}"#))
+        .dispatch()
+        .await;
+    let cookie = resp.headers().get_one("Set-Cookie").map(str::to_string);
+    let code = resp.into_json::<Value>().await.unwrap()["code"].as_str().unwrap().to_string();
+    use_stub_idp(&client, &code, "alice").await;
+    callback(&client, &code, cookie.as_deref()).await;
+    assert!(poll(&client, &code).await["access_token"].is_string());
+    let admin = login_admin(&client).await;
+    assert_eq!(viewers(&client, &admin).await["total"], 0);
+}
+
+#[rocket::async_test]
+async fn test_viewers_requires_admin() {
+    let (client, _dir) = test_client().await;
+    let resp = client.get("/api/viewers?current=1&pageSize=10").dispatch().await;
+    assert!(resp.status() == Status::Unauthorized || resp.status() == Status::Forbidden);
+
+    let alice = activated_user_token(&client, "alice").await;
+    let resp = client.get("/api/viewers").header(auth_header(&alice)).dispatch().await;
+    assert!(resp.status() == Status::Unauthorized || resp.status() == Status::Forbidden);
+}

@@ -115,6 +115,7 @@ This website use:
       </div>
       <div v-if="isCurrentPage('Devices')" class="mx-auto max-w-7xl py-6 sm:px-6 lg:px-8">
         <DevicesCard />
+        <ViewersCard />
       </div>
       <div v-if="isCurrentPage('Users')" class="mx-auto max-w-7xl py-6 sm:px-6 lg:px-8">
         <UsersCard />
@@ -145,6 +146,7 @@ import { generateAvatar } from '@/utilities/avatar'
 import { useUserStore } from '@/stores/sctgDeskStore';
 import { LoginApi } from '@/api';
 import DevicesCard from '@/components/DevicesCard.vue';
+import ViewersCard from '@/components/ViewersCard.vue';
 import UsersCard from '@/components/UsersCard.vue';
 import DashboardCard from '@/components/DashboardCard.vue';
 import MainFooter from '@/footers/mainfooter.vue';

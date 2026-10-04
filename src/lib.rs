@@ -159,6 +159,7 @@ pub fn api_routes() -> (Vec<rocket::Route>, rocket_okapi::okapi::openapi3::OpenA
         peers,
         peers_count,
         peers_cpus,
+        viewers,
         strategies,
         strategy_get,
         strategy_update,
@@ -402,6 +403,10 @@ async fn current_user(
         .get_current_user_name(&user.info)
         .await
         .ok_or(Err(status::Unauthorized::<()>(()))));
+    // Clients send their uuid base64-encoded; logins store it decoded.
+    if let Some(uuid) = BASE64_STANDARD.decode(&request.uuid).ok().and_then(|b| String::from_utf8(b).ok()) {
+        state.touch_viewer_device(&request.id, &uuid, &user.info.user_id).await;
+    }
 
     let reply = CurrentUserResponse {
         error: false,
@@ -1059,6 +1064,31 @@ async fn peers(
     }))
 }
 
+/// # List viewer machines
+///
+/// Admin-only. Machines whose native client logged in through OIDC but never registered with
+/// hbbs (IDs in the peer list are left out), most recently seen first. Times are Unix seconds.
+///
+/// GET /api/viewers?current=1&pageSize=10
+#[openapi(tag = "peer")]
+#[allow(non_snake_case)]
+#[get("/api/viewers?<current>&<pageSize>", format = "application/json")]
+async fn viewers(
+    state: &State<ApiState>,
+    _user: AuthenticatedAdmin,
+    current: Option<i64>,
+    pageSize: Option<i64>,
+) -> Result<Json<utils::ViewerList>, (Status, String)> {
+    state.check_maintenance().await;
+    let limit = pageSize.unwrap_or(10).clamp(1, 1000);
+    let offset = current.unwrap_or(1).max(1).saturating_sub(1).saturating_mul(limit);
+    state
+        .list_viewer_devices(offset, limit)
+        .await
+        .map(|(total, data)| Json(utils::ViewerList { total, data }))
+        .ok_or((Status::InternalServerError, "cannot read viewers".to_string()))
+}
+
 /// # Count Peers per platform
 ///
 /// This function is an API endpoint that retrieves the count of peers per platform.
@@ -1299,6 +1329,7 @@ async fn oidc_auth(
                 browser_key: Some(set_oidc_browser_cookie(cookies, host.starts_with("https://"))),
                 device_name: request.device_info.name.clone(),
                 device_os: request.device_info.os.clone(),
+                device_type: request.device_info.r#type.clone(),
                 requester_ip: client_ip(&headers, remote, trusted_proxies()),
                 ..Default::default()
             },

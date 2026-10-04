@@ -68,3 +68,5 @@ export * from './user-info';
 export * from './user-list';
 export * from './user-list-response';
 export * from './users-response';
+export * from './viewer-device';
+export * from './viewer-list';
