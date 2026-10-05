@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1
-FROM rust:1.98-bookworm AS builder
+FROM rust:1.98.0-bookworm AS builder
 
 RUN apt-get update && apt-get install -y nodejs npm && rm -rf /var/lib/apt/lists/*
 
