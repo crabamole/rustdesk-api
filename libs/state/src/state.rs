@@ -512,7 +512,8 @@ impl ApiState {
 
     /// Remembers the machine of a native client login so viewers that never register are listed.
     async fn record_viewer_login(&self, login: &OidcState, user_id: &[u8]) {
-        if login.device_type != "client" || login.id.is_empty() || login.uuid.is_empty() {
+        let id_ok = (1..=32).contains(&login.id.len()) && login.id.bytes().all(|b| b.is_ascii_alphanumeric());
+        if login.device_type != "client" || !id_ok || login.uuid.is_empty() || login.uuid.chars().count() > VIEWER_FIELD_MAX_CHARS {
             return;
         }
         // Both come unchecked from the client's login request.
@@ -1922,5 +1923,20 @@ mod tests {
         state.record_viewer_login(&login, &user).await;
         let row = &state.list_viewer_devices(0, 10).await.unwrap().1[0];
         assert_eq!((row.hostname.chars().count(), row.os.chars().count()), (255, 255));
+    }
+
+    #[tokio::test]
+    async fn viewer_login_skips_oversized_or_malformed_ids() {
+        let state = test_state().await;
+        let (user, _, _) = state.db.get_user_for_oauth2("admin", "admin", None).await.unwrap();
+        let bad = [("7".repeat(33), "u".to_string()), ("12 34".into(), "u".into()), ("702".into(), "u".repeat(256))];
+        for (id, uuid) in bad {
+            let login = OidcState { id, uuid, device_type: "client".into(), ..Default::default() };
+            state.record_viewer_login(&login, &user).await;
+        }
+        assert_eq!(state.list_viewer_devices(0, 10).await.unwrap().0, 0);
+        let ok = OidcState { id: "7".repeat(32), uuid: "u".repeat(255), device_type: "client".into(), ..Default::default() };
+        state.record_viewer_login(&ok, &user).await;
+        assert_eq!(state.list_viewer_devices(0, 10).await.unwrap().0, 1);
     }
 }
