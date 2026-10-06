@@ -28,6 +28,10 @@ export function alarmLabel(t: number): string {
     return ALARMS[t] ?? `Unknown (${t})`;
 }
 
+export function machineLabel(hostname?: string | null, os?: string | null): string {
+    return hostname ? (os ? `${hostname} (${os})` : hostname) : '';
+}
+
 export function fileDirectionLabel(t: number): string {
     return t === 1 ? 'Upload to device' : 'Download from device';
 }

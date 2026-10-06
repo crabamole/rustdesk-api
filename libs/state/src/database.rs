@@ -2069,6 +2069,18 @@ impl Database {
         Some(())
     }
 
+    pub async fn viewer_machine(&self, id: &str, user: &[u8]) -> Option<(String, String)> {
+        sqlx::query_as(
+            "SELECT hostname, os FROM viewer_device WHERE id = $1 AND \"user\" = $2 ORDER BY last_login DESC LIMIT 1",
+        )
+        .bind(id)
+        .bind(user)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| log::error!("viewer_machine error: {e:?}"))
+        .ok()?
+    }
+
     #[cfg(any(test, feature = "test-util"))]
     pub async fn test_age_viewer_device(&self, id: &str, secs: i64) {
         sqlx::query(
@@ -2150,7 +2162,8 @@ impl Database {
         let rows = sqlx::query(&format!(
             "SELECT a.guid, convert_from(a.remote, 'UTF8') AS remote, \
                (SELECT COALESCE(NULLIF(p.info, ''), '{{}}')::jsonb->>'hostname' FROM peer p WHERE p.id = convert_from(a.remote, 'UTF8')) AS remote_name, \
-               convert_from(a.local, 'UTF8') AS peer_id, i->>'peer_name' AS peer_name, u.name AS user_name, \
+               convert_from(a.local, 'UTF8') AS peer_id, i->>'peer_name' AS peer_name, \
+               i->>'peer_hostname' AS peer_hostname, i->>'peer_os' AS peer_os, u.name AS user_name, \
                i->>'ip' AS ip, a.type, (i->>'primary_auth')::int AS primary_auth, (i->>'two_factor')::int AS two_factor, \
                i->>'session_id' AS session_id, (i->>'conn_id')::bigint AS conn_id, \
                extract(epoch FROM a.created_at::timestamptz)::bigint AS created_at, \
@@ -2292,6 +2305,8 @@ fn audit_conn_log_from_row(row: &sqlx::postgres::PgRow) -> Option<utils::AuditCo
         remote_name: audit_try_get(row, "remote_name")?,
         peer_id: audit_try_get(row, "peer_id")?,
         peer_name: audit_try_get(row, "peer_name")?,
+        peer_hostname: audit_try_get(row, "peer_hostname")?,
+        peer_os: audit_try_get(row, "peer_os")?,
         user: audit_try_get(row, "user_name")?,
         ip: audit_try_get(row, "ip")?,
         conn_type: audit_try_get(row, "type")?,

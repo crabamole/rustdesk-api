@@ -140,7 +140,7 @@ Update this file with every API change.
 
 | Method | Path | Source | Status | Notes |
 |---|---|---|---|---|
-| GET | /api/audits/conn | [S] `audits.py` | implemented | admin-only; newest first; `remote`/`conn_type` filters, per audit-api-spec.md §9 |
+| GET | /api/audits/conn | [S] `audits.py` | implemented | admin-only; newest first; `remote`/`conn_type` filters, per audit-api-spec.md §9; rows also carry the viewer machine (`peer_hostname`, `peer_os`) |
 | GET | /api/audits/file | [S] `audits.py` | implemented | admin-only; newest first; `remote` filter, per audit-api-spec.md §9 |
 | GET | /api/audits/alarm | [S] `audits.py` | implemented | admin-only; newest first; `device` filter, per audit-api-spec.md §9 |
 | GET | /api/audits/console | [S] `audits.py` | partial | admin-only; always answers an empty page — nothing writes `audit_console` yet, per audit-api-spec.md §9/§14.2 |

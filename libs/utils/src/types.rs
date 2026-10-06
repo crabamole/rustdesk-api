@@ -296,6 +296,11 @@ pub struct AuditConnLog {
     pub peer_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub peer_name: Option<String>,
+    /// Viewer machine from the session user's latest login on that viewer ID (self-reported).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub peer_hostname: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub peer_os: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub user: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]

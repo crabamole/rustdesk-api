@@ -414,12 +414,13 @@ specified; we define them to cover the Pro console columns [D]:
 
 | Kind | Fields (ours) |
 |---|---|
-| conn | `guid`, `remote` (controlled id), `remote_name`*, `peer_id`, `peer_name`, `user` (controller user, if attributed), `ip`, `conn_type`, `primary_auth`, `two_factor`, `session_id` (string), `conn_id`, `created_at`, `end_time`, `note`, `active` (bool) |
+| conn | `guid`, `remote` (controlled id), `remote_name`*, `peer_id`, `peer_name`, `peer_hostname`†, `peer_os`†, `user` (controller user, if attributed), `ip`, `conn_type`, `primary_auth`, `two_factor`, `session_id` (string), `conn_id`, `created_at`, `end_time`, `note`, `active` (bool) |
 | file | `guid`, `remote`, `peer_id`, `user`, `type` (direction), `path`, `is_file`, `num`, `files`, `ip`, `created_at` |
 | alarm | `guid`, `typ`, `device`, `user`, `info` (object), `created_at` |
 | console | `guid`, `typ`, `iop`, `operator`, `info` (object), `created_at` |
 
 \* `remote_name` looked up from the peer table.
+† The viewer machine, copied into the row when `authorized` arrives: the hostname and OS from the latest native login of the row's `user` on that viewer ID (`viewer_device`). Absent for unattributed rows, web viewers and stock clients that never logged in. Self-reported by the viewer at login.
 
 ### 9.3 Related Pro features [D] (not wire-specified)
 
@@ -541,7 +542,7 @@ Legend: ✅ conforms · ⚠️ partial / deviates · ❌ missing
 | §2.4 nonce dedup | ⚠️ | `find_audit_*_by_nonce` look the nonce up in SQL (`info::jsonb->>'nonce'`); no index, so still a sequential scan inside Postgres. No unique constraint → concurrent duplicates both insert. No nonce release needed (no claim state), no 5-min expiry (harmless). |
 | §2.6 `session_id` as u64 | ✅ | Fixed on `fix/audit-session-id-u64`: request field is `u64` and the active-conn lookup compares as u64. Previously `i64`, so values > i64::MAX (≈ half of all random session ids) got **422 (live)** and the record was dropped. |
 | §3.1 `new` | ✅ | Row with `type` NULL ("Not Logged In"); an older open row with the same connection key is ended first (the client restarted). `ip`, `uuid`, `conn_id`, `session_id` live in the `info` JSON text. `conn_audit_ref` now resolves via `audit_conn_ref` and stores the controller user on the row (§11). |
-| §3.2 `authorized` | ✅ | Matched by connection key (most recent open row; created if the `new` record was lost). Stores `type`, controller id in `local`, and `peer_name`, `primary_auth`, `two_factor`, `session_id` in `info`. |
+| §3.2 `authorized` | ✅ | Matched by connection key (most recent open row; created if the `new` record was lost). Stores `type`, controller id in `local`, and `peer_name`, `primary_auth`, `two_factor`, `session_id` in `info`, plus `peer_hostname`/`peer_os` when the row's user logged in natively from that viewer ID. |
 | §3.3 `close` | ✅ | Matched by connection key `(id, uuid, conn_id)`, most recent open row (§2.6) → sets `end_time`. Until 2026-10-02 it never matched (224/224 rows on a self-hosted instance had no `end_time`). |
 | §3.4 unknown shape → 2xx empty | ✅ | |
 | — lost `close` on client restart | ✅ | The Linux client restarts `--server` right after the last connection closes, before the `close` record (§3.3) is sent. A heartbeat now ends the device's open rows (same `id` and `uuid`) whose `conn_id` is not in its `conns` list, once they are 30 s old (younger rows may postdate the heartbeat's snapshot). |

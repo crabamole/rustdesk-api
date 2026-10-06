@@ -36,6 +36,7 @@ This website use:
                             <td class="py-2 px-3">{{ row.active ? 'Active' : formatTime(row.end_time) }}</td>
                             <td class="py-2 px-3">{{ row.remote_name || row.remote }}</td>
                             <td class="py-2 px-3">{{ row.peer_name }} {{ row.peer_id ? `(${row.peer_id})` : '' }}</td>
+                            <td class="py-2 px-3" data-testid="audit-viewer-machine">{{ machineLabel(row.peer_hostname, row.peer_os) }}</td>
                             <td class="py-2 px-3">{{ row.user }}</td>
                             <td class="py-2 px-3">{{ row.ip }}</td>
                             <td class="py-2 px-3">{{ connTypeLabel(row.conn_type) }}</td>
@@ -80,7 +81,7 @@ This website use:
 import { computed, onMounted, ref, watch } from 'vue';
 import { AuditApi, AuditAlarmLog, AuditConnLog, AuditFileLog } from '@/api';
 import { useUserStore } from '@/stores/sctgDeskStore';
-import { CONN_TYPES, alarmLabel, authLabel, connTypeLabel, fileDirectionLabel, formatTime, likePattern } from '@/utilities/audit';
+import { CONN_TYPES, alarmLabel, authLabel, connTypeLabel, fileDirectionLabel, formatTime, likePattern, machineLabel } from '@/utilities/audit';
 
 const PAGE_SIZE = 20;
 const TABS = [
@@ -102,7 +103,7 @@ const message = ref('');
 const pageCount = computed(() => Math.max(1, Math.ceil(total.value / PAGE_SIZE)));
 
 const columns = computed(() => {
-    if (activeTab.value === 'conn') return ['Start', 'End', 'Device', 'Viewer', 'User', 'Address', 'Type', 'Authentication', 'Note'];
+    if (activeTab.value === 'conn') return ['Start', 'End', 'Device', 'Viewer', 'Viewer machine', 'User', 'Address', 'Type', 'Authentication', 'Note'];
     if (activeTab.value === 'file') return ['Time', 'Device', 'Viewer', 'User', 'Direction', 'Path', 'Files', 'Address'];
     return ['Time', 'Device', 'User', 'Type', 'Details'];
 });

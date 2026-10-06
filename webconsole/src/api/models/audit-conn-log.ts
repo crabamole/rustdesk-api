@@ -51,6 +51,19 @@ export interface AuditConnLog {
     peer_name?: string | null;
 
     /**
+     * Viewer machine from the session user's latest login on that viewer ID (self-reported).
+     * @type {string}
+     * @memberof AuditConnLog
+     */
+    peer_hostname?: string | null;
+
+    /**
+     * @type {string}
+     * @memberof AuditConnLog
+     */
+    peer_os?: string | null;
+
+    /**
      * @type {string}
      * @memberof AuditConnLog
      */

@@ -1809,6 +1809,32 @@ async fn test_audits_file_and_alarm_survive_an_unparsable_info_string() {
     assert!(body["data"].as_array().unwrap().iter().any(|r| r["info"]["ip"] == "203.0.113.16"));
 }
 
+#[rocket::async_test]
+async fn test_audits_conn_shows_the_viewer_machine_from_its_login() {
+    let client = untracked_client().await;
+    let (code, cookie) = start_login(&client, "MY-LAPTOP", None).await;
+    use_stub_idp(&client, &code, "alice").await;
+    callback(&client, &code, cookie.as_deref()).await;
+    let alice = poll(&client, &code).await["access_token"].as_str().unwrap().to_string();
+    let admin = login_admin(&client).await;
+
+    let r: Value = client.post("/api/audit/ref").header(auth_header(&alice)).dispatch().await.into_json().await.unwrap();
+    let r = r["ref"].as_str().unwrap();
+    for body in [
+        format!(r#"{{"action":"new","id":"devvm","uuid":"uvm","conn_id":1,"ip":"203.0.113.20","nonce":"vm-n","conn_audit_ref":"{r}"}}"#),
+        r#"{"peer":["123456789","Alice"],"type":0,"id":"devvm","uuid":"uvm","conn_id":1,"session_id":5,"nonce":"vm-a"}"#.to_string(),
+    ] {
+        let resp = client.post("/api/audit/conn").header(ContentType::JSON).body(body).dispatch().await;
+        assert_eq!(resp.status(), Status::Ok);
+    }
+
+    let resp = client.get("/api/audits/conn?current=1&pageSize=10&remote=%25devvm%25").header(auth_header(&admin)).dispatch().await;
+    let body: Value = resp.into_json().await.unwrap();
+    let row = &body["data"][0];
+    assert_eq!((row["peer_hostname"].as_str(), row["peer_os"].as_str()), (Some("MY-LAPTOP"), Some("windows")), "{body}");
+    assert_eq!(row["ip"], "203.0.113.20");
+}
+
 async fn viewers(client: &Client, token: &str) -> Value {
     let resp = client.get("/api/viewers?current=1&pageSize=10").header(auth_header(token)).dispatch().await;
     assert_eq!(resp.status(), Status::Ok);
