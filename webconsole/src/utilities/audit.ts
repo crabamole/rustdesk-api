@@ -28,8 +28,10 @@ export function alarmLabel(t: number): string {
     return ALARMS[t] ?? `Unknown (${t})`;
 }
 
-export function machineLabel(hostname?: string | null, os?: string | null): string {
-    return hostname ? (os ? `${hostname} (${os})` : hostname) : '';
+export function machineLabel(hostname?: string | null, os?: string | null, loginIp?: string | null): string {
+    if (!hostname) return '';
+    const machine = os ? `${hostname} (${os})` : hostname;
+    return loginIp ? `${machine}, logged in from ${loginIp}` : machine;
 }
 
 export function fileDirectionLabel(t: number): string {

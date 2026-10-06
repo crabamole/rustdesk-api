@@ -39,6 +39,14 @@ export interface ViewerDevice {
     os: string;
 
     /**
+     * Client address of the latest login, resolved through trusted proxies.
+     *
+     * @type {string}
+     * @memberof ViewerDevice
+     */
+    login_ip: string;
+
+    /**
      * @type {string}
      * @memberof ViewerDevice
      */

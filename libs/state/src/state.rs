@@ -519,7 +519,14 @@ impl ApiState {
         // Both come unchecked from the client's login request.
         let bounded = |s: &str| s.chars().take(VIEWER_FIELD_MAX_CHARS).collect::<String>();
         self.db
-            .upsert_viewer_device(&login.id, &login.uuid, &bounded(&login.device_name), &bounded(&login.device_os), user_id)
+            .upsert_viewer_device(
+                &login.id,
+                &login.uuid,
+                &bounded(&login.device_name),
+                &bounded(&login.device_os),
+                login.requester_ip.as_deref().unwrap_or_default(),
+                user_id,
+            )
             .await;
     }
 
@@ -823,9 +830,10 @@ impl ApiState {
                     "two_factor": request.two_factor,
                 });
                 // Copied, not joined at read time: the record keeps the machine as it was during the session.
-                if let Some((hostname, os)) = self.viewer_machine(id, uuid, conn_id, peer.first()).await {
+                if let Some((hostname, os, login_ip)) = self.viewer_machine(id, uuid, conn_id, peer.first()).await {
                     patch["peer_hostname"] = hostname.into();
                     patch["peer_os"] = os.into();
+                    patch["peer_login_ip"] = login_ip.into();
                 }
                 self.db
                     .set_audit_conn_authorized(&guid, request.conn_type, peer.first().map(String::as_str), &patch.to_string())
@@ -839,9 +847,9 @@ impl ApiState {
     }
 
     /// The viewer's machine from its latest login, when the session's user logged in from that viewer ID.
-    async fn viewer_machine(&self, id: &str, uuid: &str, conn_id: i64, viewer: Option<&String>) -> Option<(String, String)> {
+    async fn viewer_machine(&self, id: &str, uuid: &str, conn_id: i64, viewer: Option<&String>) -> Option<(String, String, String)> {
         let user = self.db.audit_conn_user(id, uuid, conn_id).await?;
-        self.db.viewer_machine(viewer?, &user).await.filter(|(hostname, _)| !hostname.is_empty())
+        self.db.viewer_machine(viewer?, &user).await.filter(|(hostname, _, _)| !hostname.is_empty())
     }
 
     pub async fn audit_file(&self, request: &utils::AuditFileRequest) -> Option<()> {
@@ -1799,7 +1807,7 @@ mod tests {
     async fn session_from_viewer(state: &ApiState, name: &str, viewer: &str, host: Option<&str>, conn_id: i64) -> Vec<u8> {
         let (user, _, _) = state.db.get_user_for_oauth2(name, name, Some(&format!("{name}@example.org"))).await.unwrap();
         if let Some(host) = host {
-            state.db.upsert_viewer_device(viewer, "vu", host, "Windows", &user).await.unwrap();
+            state.db.upsert_viewer_device(viewer, "vu", host, "Windows", "198.51.100.7", &user).await.unwrap();
         }
         let r = state.mint_audit_conn_ref(&user).await.unwrap();
         state.audit_conn(&conn_record(&format!(
@@ -1825,6 +1833,7 @@ mod tests {
         let info = conn_info(&state.db.audit_conn_rows("dev1").await, 1);
         assert_eq!(info["peer_hostname"], "LAPTOP-FIN-042");
         assert_eq!(info["peer_os"], "Windows");
+        assert_eq!(info["peer_login_ip"], "198.51.100.7");
         assert_eq!(info["ip"], "10.0.0.1", "the network address is kept");
     }
 
@@ -1832,7 +1841,7 @@ mod tests {
     async fn audit_conn_viewer_machine_needs_a_login_by_the_same_user() {
         let state = test_state().await;
         let (other, _, _) = state.db.get_user_for_oauth2("mallory", "mallory", Some("mallory@example.org")).await.unwrap();
-        state.db.upsert_viewer_device("111222333", "vu", "OTHER-PC", "Linux", &other).await.unwrap();
+        state.db.upsert_viewer_device("111222333", "vu", "OTHER-PC", "Linux", "", &other).await.unwrap();
         session_from_viewer(&state, "bob", "111222333", None, 2).await;
         let info = conn_info(&state.db.audit_conn_rows("dev1").await, 2);
         assert!(info.get("peer_hostname").is_none(), "{info}");
@@ -1840,10 +1849,21 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn viewer_login_with_another_users_id_and_uuid_does_not_take_the_row_over() {
+        let state = test_state().await;
+        let (victim, _, _) = state.db.get_user_for_oauth2("erin", "erin", Some("erin@example.org")).await.unwrap();
+        let (other, _, _) = state.db.get_user_for_oauth2("frank", "frank", Some("frank@example.org")).await.unwrap();
+        state.db.upsert_viewer_device("555666777", "vu", "ERIN-PC", "Windows", "", &victim).await.unwrap();
+        state.db.upsert_viewer_device("555666777", "vu", "FAKE", "Linux", "", &other).await.unwrap();
+        assert_eq!(state.db.viewer_machine("555666777", &victim).await.map(|m| m.0), Some("ERIN-PC".to_string()));
+        assert_eq!(state.db.viewer_machine("555666777", &other).await.map(|m| m.0), Some("FAKE".to_string()));
+    }
+
+    #[tokio::test]
     async fn audit_conn_without_user_records_no_viewer_machine() {
         let state = test_state().await;
         let (user, _, _) = state.db.get_user_for_oauth2("dave", "dave", Some("dave@example.org")).await.unwrap();
-        state.db.upsert_viewer_device("987654321", "vu", "DAVE-PC", "macOS", &user).await.unwrap();
+        state.db.upsert_viewer_device("987654321", "vu", "DAVE-PC", "macOS", "", &user).await.unwrap();
         state.audit_conn(&new_record(3, "n-nouser")).await.unwrap();
         state.audit_conn(&conn_record(
             r#"{"peer":["987654321","Dave"],"type":0,"id":"dev1","uuid":"dXVpZA==","conn_id":3,"session_id":1,"nonce":"a-nouser"}"#,

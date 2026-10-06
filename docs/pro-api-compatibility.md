@@ -140,7 +140,7 @@ Update this file with every API change.
 
 | Method | Path | Source | Status | Notes |
 |---|---|---|---|---|
-| GET | /api/audits/conn | [S] `audits.py` | implemented | admin-only; newest first; `remote`/`conn_type` filters, per audit-api-spec.md §9; rows also carry the viewer machine (`peer_hostname`, `peer_os`) |
+| GET | /api/audits/conn | [S] `audits.py` | implemented | admin-only; newest first; `remote`/`conn_type` filters, per audit-api-spec.md §9; rows also carry the viewer machine (`peer_hostname`, `peer_os`, `peer_login_ip`) |
 | GET | /api/audits/file | [S] `audits.py` | implemented | admin-only; newest first; `remote` filter, per audit-api-spec.md §9 |
 | GET | /api/audits/alarm | [S] `audits.py` | implemented | admin-only; newest first; `device` filter, per audit-api-spec.md §9 |
 | GET | /api/audits/console | [S] `audits.py` | partial | admin-only; always answers an empty page — nothing writes `audit_console` yet, per audit-api-spec.md §9/§14.2 |
@@ -164,7 +164,7 @@ Update this file with every API change.
 | GET | /api/user-list | admin-only paginated user list with email/name filters (separate from client-facing `GET /api/users`) |
 | GET | /api/peers/count/{platform} | peer count by platform |
 | GET | /api/peers/cpus | cpu count per peer |
-| GET | /api/viewers | admin-only paginated list of machines whose native client logged in through OIDC but never registered with hbbs |
+| GET | /api/viewers | admin-only paginated list of machines whose native client logged in through OIDC but never registered with hbbs; one row per machine and user, with the latest login address (`login_ip`) |
 | GET | /api/oidc/settings | stub; always 401; TODO in source |
 | PUT | /api/oidc/settings | stub; always 401; TODO in source |
 | GET | /api/software/version/server | server version |

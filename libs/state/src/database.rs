@@ -2051,16 +2051,17 @@ impl Database {
 
     /// Records a native client's OIDC login: the machine, its user, and the login time.
     /// Last login wins: an existing row moves to whoever signed in on the machine most recently.
-    pub async fn upsert_viewer_device(&self, id: &str, uuid: &str, hostname: &str, os: &str, user: &[u8]) -> Option<()> {
+    pub async fn upsert_viewer_device(&self, id: &str, uuid: &str, hostname: &str, os: &str, login_ip: &str, user: &[u8]) -> Option<()> {
         sqlx::query(
-            "INSERT INTO viewer_device (id, uuid, hostname, os, \"user\") VALUES ($1, $2, $3, $4, $5) \
-             ON CONFLICT (id, uuid) DO UPDATE SET hostname = EXCLUDED.hostname, os = EXCLUDED.os, \
-             \"user\" = EXCLUDED.\"user\", last_login = now(), last_seen = now()",
+            "INSERT INTO viewer_device (id, uuid, hostname, os, login_ip, \"user\") VALUES ($1, $2, $3, $4, $5, $6) \
+             ON CONFLICT (id, uuid, \"user\") DO UPDATE SET hostname = EXCLUDED.hostname, os = EXCLUDED.os, \
+             login_ip = EXCLUDED.login_ip, last_login = now(), last_seen = now()",
         )
         .bind(id)
         .bind(uuid)
         .bind(hostname)
         .bind(os)
+        .bind(login_ip)
         .bind(user)
         .execute(&self.pool)
         .await
@@ -2069,9 +2070,9 @@ impl Database {
         Some(())
     }
 
-    pub async fn viewer_machine(&self, id: &str, user: &[u8]) -> Option<(String, String)> {
+    pub async fn viewer_machine(&self, id: &str, user: &[u8]) -> Option<(String, String, String)> {
         sqlx::query_as(
-            "SELECT hostname, os FROM viewer_device WHERE id = $1 AND \"user\" = $2 ORDER BY last_login DESC LIMIT 1",
+            "SELECT hostname, os, login_ip FROM viewer_device WHERE id = $1 AND \"user\" = $2 ORDER BY last_login DESC LIMIT 1",
         )
         .bind(id)
         .bind(user)
@@ -2116,12 +2117,12 @@ impl Database {
             .map_err(|e| log::error!("list_viewer_devices count error: {e:?}"))
             .ok()?;
         let rows = sqlx::query(&format!(
-            "SELECT v.id, v.hostname, v.os, u.name AS user_name, \
+            "SELECT v.id, v.hostname, v.os, v.login_ip, u.name AS user_name, \
                extract(epoch FROM v.first_seen)::bigint AS first_seen, \
                extract(epoch FROM v.last_login)::bigint AS last_login, \
                extract(epoch FROM v.last_seen)::bigint AS last_seen \
              FROM viewer_device v LEFT JOIN \"user\" u ON u.guid = v.\"user\" {WHERE} \
-             ORDER BY v.last_seen DESC, v.id, v.uuid LIMIT $1 OFFSET $2"
+             ORDER BY v.last_seen DESC, v.id, v.uuid, v.\"user\" LIMIT $1 OFFSET $2"
         ))
         .bind(limit)
         .bind(offset)
@@ -2135,6 +2136,7 @@ impl Database {
                 id: row.try_get("id").ok()?,
                 hostname: row.try_get("hostname").ok()?,
                 os: row.try_get("os").ok()?,
+                login_ip: row.try_get("login_ip").ok()?,
                 user: row.try_get("user_name").ok()?,
                 first_seen: row.try_get("first_seen").ok()?,
                 last_login: row.try_get("last_login").ok()?,
@@ -2163,7 +2165,7 @@ impl Database {
             "SELECT a.guid, convert_from(a.remote, 'UTF8') AS remote, \
                (SELECT COALESCE(NULLIF(p.info, ''), '{{}}')::jsonb->>'hostname' FROM peer p WHERE p.id = convert_from(a.remote, 'UTF8')) AS remote_name, \
                convert_from(a.local, 'UTF8') AS peer_id, i->>'peer_name' AS peer_name, \
-               i->>'peer_hostname' AS peer_hostname, i->>'peer_os' AS peer_os, u.name AS user_name, \
+               i->>'peer_hostname' AS peer_hostname, i->>'peer_os' AS peer_os, i->>'peer_login_ip' AS peer_login_ip, u.name AS user_name, \
                i->>'ip' AS ip, a.type, (i->>'primary_auth')::int AS primary_auth, (i->>'two_factor')::int AS two_factor, \
                i->>'session_id' AS session_id, (i->>'conn_id')::bigint AS conn_id, \
                extract(epoch FROM a.created_at::timestamptz)::bigint AS created_at, \
@@ -2307,6 +2309,7 @@ fn audit_conn_log_from_row(row: &sqlx::postgres::PgRow) -> Option<utils::AuditCo
         peer_name: audit_try_get(row, "peer_name")?,
         peer_hostname: audit_try_get(row, "peer_hostname")?,
         peer_os: audit_try_get(row, "peer_os")?,
+        peer_login_ip: audit_try_get(row, "peer_login_ip")?,
         user: audit_try_get(row, "user_name")?,
         ip: audit_try_get(row, "ip")?,
         conn_type: audit_try_get(row, "type")?,
@@ -2434,7 +2437,7 @@ mod tests {
                 .fetch_all(&first.pool)
                 .await
                 .unwrap();
-        assert_eq!(applied, vec![(1, true), (2, true), (3, true), (4, true), (5, true), (6, true), (7, true)]);
+        assert_eq!(applied, vec![(1, true), (2, true), (3, true), (4, true), (5, true), (6, true), (7, true), (8, true)]);
         first.pool.close().await;
 
         // Second start on the same database must not fail or duplicate rows.
@@ -3397,12 +3400,12 @@ mod tests {
 
     db_test!(viewer_login_inserts_then_updates, |db| {
         let user = admin_id(&db).await;
-        db.upsert_viewer_device("111", "u1", "pc-old", "linux", &user).await.unwrap();
+        db.upsert_viewer_device("111", "u1", "pc-old", "linux", "192.0.2.1", &user).await.unwrap();
         age_viewer(&db, "111", 3600).await;
-        db.upsert_viewer_device("111", "u1", "pc-new", "windows", &user).await.unwrap();
+        db.upsert_viewer_device("111", "u1", "pc-new", "windows", "192.0.2.2", &user).await.unwrap();
         let (total, rows) = db.list_viewer_devices(0, 10).await.unwrap();
         assert_eq!(total, 1);
-        assert_eq!((rows[0].hostname.as_str(), rows[0].os.as_str()), ("pc-new", "windows"));
+        assert_eq!((rows[0].hostname.as_str(), rows[0].os.as_str(), rows[0].login_ip.as_str()), ("pc-new", "windows", "192.0.2.2"));
         assert_eq!(rows[0].user.as_deref(), Some("admin"));
         assert!(rows[0].first_seen < rows[0].last_login);
         assert_eq!(rows[0].last_login, rows[0].last_seen);
@@ -3412,7 +3415,7 @@ mod tests {
         let user = admin_id(&db).await;
         assert_eq!(db.touch_viewer_device("222", "u2", &user).await, Some(false));
         assert_eq!(db.list_viewer_devices(0, 10).await.unwrap().0, 0);
-        db.upsert_viewer_device("222", "u2", "pc", "linux", &user).await.unwrap();
+        db.upsert_viewer_device("222", "u2", "pc", "linux", "", &user).await.unwrap();
         age_viewer(&db, "222", 3600).await;
         assert_eq!(db.touch_viewer_device("222", "u2", b"someone-else").await, Some(false));
         assert_eq!(db.touch_viewer_device("222", "u2", &user).await, Some(true));
@@ -3423,7 +3426,7 @@ mod tests {
     db_test!(viewer_list_skips_registered_peers_and_pages, |db| {
         let user = admin_id(&db).await;
         for id in ["301", "302", "303"] {
-            db.upsert_viewer_device(id, "u", id, "linux", &user).await.unwrap();
+            db.upsert_viewer_device(id, "u", id, "linux", "", &user).await.unwrap();
         }
         age_viewer(&db, "301", 60).await;
         insert_peer_with_os(&db, "303", "linux").await;
@@ -3435,7 +3438,7 @@ mod tests {
 
     db_test!(viewer_rows_go_with_their_user, |db| {
         let (user, _, _) = db.get_user_for_oauth2("bob", "bob", None).await.unwrap();
-        db.upsert_viewer_device("401", "u", "pc", "linux", &user).await.unwrap();
+        db.upsert_viewer_device("401", "u", "pc", "linux", "", &user).await.unwrap();
         let guid = guid_into_uuid(user).unwrap();
         db.delete_user(&guid).await.unwrap();
         assert_eq!(db.list_viewer_devices(0, 10).await.unwrap().0, 0);

@@ -301,6 +301,9 @@ pub struct AuditConnLog {
     pub peer_hostname: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub peer_os: Option<String>,
+    /// Client address of that login; the session's own address is `ip`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub peer_login_ip: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub user: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -383,6 +386,8 @@ pub struct ViewerDevice {
     pub id: String,
     pub hostname: String,
     pub os: String,
+    /// Client address of the latest login, resolved through trusted proxies.
+    pub login_ip: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub user: Option<String>,
     pub first_seen: i64,

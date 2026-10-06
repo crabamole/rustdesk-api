@@ -2,7 +2,7 @@
   "openapi": "3.0.0",
   "info": {
     "title": "rustdesk-api",
-    "version": "3.2.0"
+    "version": "3.3.0"
   },
   "paths": {
     "/{_path}": {
@@ -3140,6 +3140,20 @@
             "type": "string",
             "nullable": true
           },
+          "peer_hostname": {
+            "description": "Viewer machine from the session user's latest login on that viewer ID (self-reported).",
+            "type": "string",
+            "nullable": true
+          },
+          "peer_os": {
+            "type": "string",
+            "nullable": true
+          },
+          "peer_login_ip": {
+            "description": "Client address of that login; the session's own address is `ip`.",
+            "type": "string",
+            "nullable": true
+          },
           "user": {
             "type": "string",
             "nullable": true
@@ -3947,6 +3961,7 @@
           "id",
           "last_login",
           "last_seen",
+          "login_ip",
           "os"
         ],
         "properties": {
@@ -3957,6 +3972,10 @@
             "type": "string"
           },
           "os": {
+            "type": "string"
+          },
+          "login_ip": {
+            "description": "Client address of the latest login, resolved through trusted proxies.",
             "type": "string"
           },
           "user": {

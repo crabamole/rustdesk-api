@@ -1276,6 +1276,7 @@ async fn start_login(client: &Client, device_name: &str, redirect_uri: Option<&s
         .header(ContentType::JSON)
         .header(Header::new("Host", "rustdesk.example.com"))
         .header(Header::new("X-Forwarded-Proto", "https"))
+        .header(Header::new("X-Real-IP", "198.51.100.20"))
         .body(format!(r#"{{"op":"dex","id":"123456789","uuid":"{uuid}","deviceInfo":{{"name":"{device_name}","os":"windows","type":"client"}}{redirect}}}"#))
         .dispatch()
         .await;
@@ -1832,6 +1833,7 @@ async fn test_audits_conn_shows_the_viewer_machine_from_its_login() {
     let body: Value = resp.into_json().await.unwrap();
     let row = &body["data"][0];
     assert_eq!((row["peer_hostname"].as_str(), row["peer_os"].as_str()), (Some("MY-LAPTOP"), Some("windows")), "{body}");
+    assert_eq!(row["peer_login_ip"], "198.51.100.20");
     assert_eq!(row["ip"], "203.0.113.20");
 }
 
@@ -1854,6 +1856,7 @@ async fn test_native_oidc_login_lists_the_machine_as_a_viewer() {
     assert_eq!(body["total"], 1, "{body}");
     let row = &body["data"][0];
     assert_eq!((row["id"].as_str(), row["hostname"].as_str()), (Some("123456789"), Some("MY-LAPTOP")));
+    assert_eq!(row["login_ip"], "198.51.100.20");
     assert_eq!((row["os"].as_str(), row["user"].as_str()), (Some("windows"), Some("alice")));
     assert!(row["last_seen"].as_i64().unwrap() >= row["last_login"].as_i64().unwrap());
 

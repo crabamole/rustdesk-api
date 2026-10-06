@@ -64,6 +64,13 @@ export interface AuditConnLog {
     peer_os?: string | null;
 
     /**
+     * Client address of that login; the session's own address is `ip`.
+     * @type {string}
+     * @memberof AuditConnLog
+     */
+    peer_login_ip?: string | null;
+
+    /**
      * @type {string}
      * @memberof AuditConnLog
      */

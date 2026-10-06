@@ -12,7 +12,7 @@ Machines whose RustDesk client logged in but never registered: they can connect 
         <table class="w-full table-auto">
           <thead>
             <tr class="text-center bg-slate-500">
-              <th v-for="h in ['Hostname', 'Id', 'Os', 'User', 'Last seen']" :key="h"
+              <th v-for="h in ['Hostname', 'Id', 'Os', 'User', 'Login address', 'Last seen']" :key="h"
                 class="py-3 px-3 text-base font-medium text-white">{{ h }}</th>
             </tr>
           </thead>
@@ -22,10 +22,11 @@ Machines whose RustDesk client logged in but never registered: they can connect 
               <td class="border-b border-[#E8E8E8] py-3 px-2">{{ v.id }}</td>
               <td class="border-b border-[#E8E8E8] py-3 px-2">{{ v.os }}</td>
               <td class="border-b border-[#E8E8E8] py-3 px-2">{{ v.user }}</td>
+              <td class="border-b border-[#E8E8E8] py-3 px-2">{{ v.login_ip }}</td>
               <td class="border-b border-[#E8E8E8] py-3 px-2">{{ formatTime(v.last_seen) }}</td>
             </tr>
             <tr v-if="viewers.length === 0">
-              <td colspan="5" class="py-3 px-2 text-center text-gray-500">No viewers</td>
+              <td colspan="6" class="py-3 px-2 text-center text-gray-500">No viewers</td>
             </tr>
           </tbody>
         </table>
