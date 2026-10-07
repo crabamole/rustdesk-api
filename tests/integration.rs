@@ -1206,6 +1206,26 @@ impl oauth2::oauth_provider::OAuthProvider for StubIdp {
     }
 }
 
+/// An IdP that rejects every code.
+struct FailingIdp;
+
+impl oauth2::oauth_provider::OAuthProvider for FailingIdp {
+    fn get_redirect_url(&self, _callback_url: &str, login: &oauth2::pkce::ProviderLogin) -> String {
+        format!("https://idp.example.com/authorize?state={}", login.state)
+    }
+    fn exchange_code(
+        &self,
+        _code: &str,
+        _callback_url: &str,
+        _login: &oauth2::pkce::ProviderLogin,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<oauth2::oauth_provider::OAuthResponse, oauth2::errors::Oauth2Error>> + Send + Sync>> {
+        Box::pin(async { Err(oauth2::errors::Oauth2Error::DecodeIdTokenError) })
+    }
+    fn get_provider_type(&self) -> oauth2::Provider {
+        oauth2::Provider::Dex
+    }
+}
+
 /// A client that sends only the cookies a test passes, so two "browsers" can share one server.
 async fn untracked_client() -> Client {
     let db_url = state::testing::fresh_database_url().await;
@@ -1225,14 +1245,14 @@ async fn public_url_client(public_url: &str) -> Client {
 }
 
 /// POSTs /api/oidc/auth with the given Host; returns the response body.
-async fn oidc_auth_as(client: &Client, host: &str, redirect_uri: Option<&str>) -> Value {
+async fn oidc_auth_as(client: &Client, host: &str, return_to: &str) -> Value {
     let uuid = base64::Engine::encode(&base64::prelude::BASE64_STANDARD, "device-uuid");
-    let redirect = redirect_uri.map(|r| format!(r#","redirectUri":"{r}""#)).unwrap_or_default();
+    let challenge = oauth2::pkce::s256_challenge(VERIFIER);
     client
         .post("/api/oidc/auth")
         .header(ContentType::JSON)
         .header(Header::new("Host", host.to_string()))
-        .body(format!(r#"{{"op":"dex","id":"123456789","uuid":"{uuid}","deviceInfo":{{"name":"d","os":"windows","type":"client"}}{redirect}}}"#))
+        .body(format!(r#"{{"op":"dex","id":"123456789","uuid":"{uuid}","deviceInfo":{{"name":"d","os":"windows","type":"client"}},"returnTo":"{return_to}","codeChallenge":"{challenge}"}}"#))
         .dispatch()
         .await
         .into_json()
@@ -1248,43 +1268,48 @@ fn idp_redirect_uri(body: &Value) -> String {
 #[rocket::async_test]
 async fn test_oidc_callback_url_keeps_host_port() {
     let client = untracked_client().await;
-    let body = oidc_auth_as(&client, "rustdesk.example.com:30080", None).await;
+    let body = oidc_auth_as(&client, "rustdesk.example.com:30080", LOOPBACK).await;
     assert_eq!(idp_redirect_uri(&body), "http://rustdesk.example.com:30080/api/oidc/callback");
 }
 
 #[rocket::async_test]
 async fn test_oidc_callback_url_uses_public_url() {
     let client = public_url_client("https://rustdesk.example.com:8443").await;
-    let body = oidc_auth_as(&client, "internal-proxy", None).await;
+    let body = oidc_auth_as(&client, "internal-proxy", LOOPBACK).await;
     assert_eq!(idp_redirect_uri(&body), "https://rustdesk.example.com:8443/api/oidc/callback");
 }
 
 #[rocket::async_test]
-async fn test_oidc_redirect_uri_checked_against_public_url() {
+async fn test_oidc_return_to_checked_against_public_url() {
     let client = public_url_client("https://rustdesk.example.com:8443").await;
-    let ok = oidc_auth_as(&client, "internal-proxy", Some("https://rustdesk.example.com:8443/ui/login")).await;
+    let ok = oidc_auth_as(&client, "internal-proxy", "https://rustdesk.example.com:8443/ui/login").await;
     assert!(!ok["code"].as_str().unwrap().contains("ERROR"), "{ok}");
-    let refused = oidc_auth_as(&client, "internal-proxy", Some("http://internal-proxy/ui/login")).await;
-    assert_eq!(refused["code"], "REDIRECT_URI_ERROR");
+    let refused = oidc_auth_as(&client, "internal-proxy", "http://internal-proxy/ui/login").await;
+    assert_eq!(refused["code"], "RETURN_TO_ERROR");
 }
 
-/// Starts an OIDC login as a client would; returns (code, Set-Cookie header if any).
-async fn start_login(client: &Client, device_name: &str, redirect_uri: Option<&str>) -> (String, Option<String>) {
+const VERIFIER: &str = "Verifier0123456789Verifier0123456789Verifier0123456789";
+const LOOPBACK: &str = "http://127.0.0.1:48123/";
+
+async fn start_login(client: &Client, device_name: &str, return_to: &str) -> String {
+    start_login_as(client, device_name, "client", return_to).await
+}
+
+/// Starts an OIDC login as a client of `device_type` would; returns the login code.
+async fn start_login_as(client: &Client, device_name: &str, device_type: &str, return_to: &str) -> String {
     let uuid = base64::Engine::encode(&base64::prelude::BASE64_STANDARD, "device-uuid");
-    let redirect = redirect_uri.map(|r| format!(r#","redirectUri":"{r}""#)).unwrap_or_default();
+    let challenge = oauth2::pkce::s256_challenge(VERIFIER);
     let resp = client
         .post("/api/oidc/auth")
         .header(ContentType::JSON)
         .header(Header::new("Host", "rustdesk.example.com"))
         .header(Header::new("X-Forwarded-Proto", "https"))
         .header(Header::new("X-Real-IP", "198.51.100.20"))
-        .body(format!(r#"{{"op":"dex","id":"123456789","uuid":"{uuid}","deviceInfo":{{"name":"{device_name}","os":"windows","type":"client"}}{redirect}}}"#))
+        .body(format!(r#"{{"op":"dex","id":"123456789","uuid":"{uuid}","deviceInfo":{{"name":"{device_name}","os":"windows","type":"{device_type}"}},"returnTo":"{return_to}","codeChallenge":"{challenge}"}}"#))
         .dispatch()
         .await;
-    let cookie = resp.headers().get_one("Set-Cookie").map(str::to_string);
     let body: Value = resp.into_json().await.unwrap();
-    let code = body["code"].as_str().unwrap().to_string();
-    (code, cookie)
+    body["code"].as_str().unwrap().to_string()
 }
 
 async fn use_stub_idp(client: &Client, code: &str, sub: &str) {
@@ -1295,132 +1320,62 @@ async fn use_stub_idp(client: &Client, code: &str, sub: &str) {
     state.set_admin(&format!("{sub}@example.org"), true).await.unwrap();
 }
 
-/// The IdP redirecting the browser back; `cookie` is what that browser holds.
-async fn callback(client: &Client, code: &str, cookie: Option<&str>) -> String {
-    let mut req = client.get(format!("/api/oidc/callback?code=idp-code&state={code}"));
-    if let Some(c) = cookie {
-        req = req.cookie(rocket::http::Cookie::parse(c.to_string()).unwrap().into_owned());
-    }
-    let resp = req.dispatch().await;
-    match resp.headers().get_one("Location") {
-        Some(loc) => format!("REDIRECT {loc}"),
-        None => resp.into_string().await.unwrap_or_default(),
-    }
+/// The IdP redirecting the browser back; returns the Location header.
+async fn callback(client: &Client, code: &str) -> String {
+    let resp = client.get(format!("/api/oidc/callback?code=idp-code&state={code}")).dispatch().await;
+    resp.headers().get_one("Location").unwrap_or_default().to_string()
 }
 
-async fn poll(client: &Client, code: &str) -> Value {
-    let resp = client.get(format!("/api/oidc/auth-query?code={code}&id=123456789&uuid=x")).dispatch().await;
-    resp.into_json().await.unwrap()
+fn result_of(location: &str) -> String {
+    let url = url::Url::parse(location).unwrap();
+    url.query_pairs().find(|(k, _)| k == "result").map(|(_, v)| v.into_owned()).expect("result in the return URL")
 }
 
-fn confirm_token(page: &str) -> String {
-    let at = page.find(r#"name="token" value=""#).expect("confirmation page has a token") + r#"name="token" value=""#.len();
-    page[at..at + page[at..].find('"').unwrap()].to_string()
-}
-
-async fn confirm(client: &Client, code: &str, token: &str, approve: bool) -> String {
+async fn redeem(client: &Client, result: &str, verifier: &str) -> (Status, Value) {
+    let uuid = base64::Engine::encode(&base64::prelude::BASE64_STANDARD, "device-uuid");
     let resp = client
-        .post("/api/oidc/confirm")
-        .header(ContentType::Form)
-        .body(format!("state={code}&token={token}&approve={approve}"))
+        .post("/api/oidc/token")
+        .header(ContentType::JSON)
+        .body(format!(r#"{{"result":"{result}","codeVerifier":"{verifier}","id":"123456789","uuid":"{uuid}"}}"#))
         .dispatch()
         .await;
-    resp.into_string().await.unwrap_or_default()
+    let status = resp.status();
+    (status, resp.into_json().await.unwrap_or(Value::Null))
 }
 
-#[rocket::async_test]
-async fn test_oidc_login_sets_a_browser_cookie() {
-    let client = untracked_client().await;
-    let (_, cookie) = start_login(&client, "PC", None).await;
-    let cookie = cookie.expect("login start sets a cookie");
-    for attr in ["HttpOnly", "SameSite=Lax", "Path=/api/oidc", "Secure"] {
-        assert!(cookie.contains(attr), "{attr} missing in {cookie}");
-    }
-}
-
-#[rocket::async_test]
-async fn test_oidc_login_in_the_starting_browser_needs_no_confirmation() {
-    let client = untracked_client().await;
-    let (code, cookie) = start_login(&client, "PC", None).await;
-    use_stub_idp(&client, &code, "alice").await;
-    let page = callback(&client, &code, cookie.as_deref()).await;
-    assert!(page.contains("Login successful"), "{page}");
-    let r = poll(&client, &code).await;
-    assert!(r["access_token"].is_string(), "{r}");
-}
-
-#[rocket::async_test]
-async fn test_oidc_forwarded_login_link_does_not_log_the_attacker_in() {
-    let client = untracked_client().await;
-    let (code, _attacker_cookie) = start_login(&client, "ATTACKER-PC", None).await;
-    use_stub_idp(&client, &code, "victim").await;
-    // The victim's browser never saw the attacker's cookie.
-    let page = callback(&client, &code, None).await;
-    assert!(page.contains("ATTACKER-PC") && page.contains("Approve"), "{page}");
-    assert!(poll(&client, &code).await.is_null(), "token handed out without confirmation");
-    // Knowing the code is not enough to approve.
-    confirm(&client, &code, "guessed", true).await;
-    assert!(poll(&client, &code).await.is_null(), "approved with a wrong token");
-}
-
-#[rocket::async_test]
-async fn test_oidc_native_login_is_approved_on_the_confirmation_page() {
-    let client = untracked_client().await;
-    let (code, _) = start_login(&client, "MY-LAPTOP", None).await;
-    use_stub_idp(&client, &code, "alice").await;
-    let page = callback(&client, &code, None).await;
-    let result = confirm(&client, &code, &confirm_token(&page), true).await;
-    assert!(result.contains("Login successful"), "{result}");
-    assert!(poll(&client, &code).await["access_token"].is_string());
-}
-
-#[rocket::async_test]
-async fn test_oidc_denied_login_is_dropped() {
-    let client = untracked_client().await;
-    let (code, _) = start_login(&client, "UNKNOWN-PC", None).await;
-    use_stub_idp(&client, &code, "alice").await;
-    let page = callback(&client, &code, None).await;
-    confirm(&client, &code, &confirm_token(&page), false).await;
-    assert!(poll(&client, &code).await.is_null());
-    let token = confirm_token(&page);
-    let again = confirm(&client, &code, &token, true).await;
-    assert!(!again.contains("Login successful"), "{again}");
-    assert!(poll(&client, &code).await.is_null());
-}
-
-#[rocket::async_test]
-async fn test_oidc_confirmation_page_escapes_the_device_name() {
-    let client = untracked_client().await;
-    let (code, _) = start_login(&client, "<script>x</script>", None).await;
-    use_stub_idp(&client, &code, "alice").await;
-    let page = callback(&client, &code, None).await;
-    assert!(!page.contains("<script>x"), "{page}");
-    assert!(page.contains("&lt;script&gt;x"), "{page}");
+/// Full login of `sub` from a native client on `device_name`; returns the bearer token.
+async fn native_login(client: &Client, device_name: &str, sub: &str) -> String {
+    let code = start_login(client, device_name, LOOPBACK).await;
+    use_stub_idp(client, &code, sub).await;
+    let (status, body) = redeem(client, &result_of(&callback(client, &code).await), VERIFIER).await;
+    assert_eq!(status, Status::Ok, "{body}");
+    body["access_token"].as_str().unwrap().to_string()
 }
 
 #[rocket::async_test]
 async fn test_oidc_pending_logins_expire() {
     let client = untracked_client().await;
-    let (code, cookie) = start_login(&client, "PC", None).await;
+    let code = start_login(&client, "PC", LOOPBACK).await;
     use_stub_idp(&client, &code, "alice").await;
     let state = client.rocket().state::<state::ApiState>().unwrap();
     assert!(state.test_age_oidc_session(&code, 3600).await);
-    let page = callback(&client, &code, cookie.as_deref()).await;
+    let resp = client.get(format!("/api/oidc/callback?code=idp-code&state={code}")).dispatch().await;
+    assert!(resp.headers().get_one("Location").is_none());
+    let page = resp.into_string().await.unwrap_or_default();
     assert!(page.contains("Login failed"), "{page}");
-    assert!(poll(&client, &code).await.is_null());
 }
 
 #[rocket::async_test]
-async fn test_oidc_redirect_uri_must_be_on_this_server() {
+async fn test_oidc_return_to_must_be_on_this_server() {
     let client = untracked_client().await;
-    let (code, _) = start_login(&client, "PC", Some("https://evil.example.com/steal")).await;
-    assert!(code.is_empty() || code.contains("ERROR"), "foreign redirect accepted: {code}");
+    let code = start_login(&client, "PC", "https://evil.example.com/steal").await;
+    assert!(code.is_empty() || code.contains("ERROR"), "foreign returnTo accepted: {code}");
 
-    let (code, cookie) = start_login(&client, "PC", Some("https://rustdesk.example.com/ui/login")).await;
+    let code = start_login(&client, "PC", "https://rustdesk.example.com/ui/login").await;
     assert!(!code.is_empty() && !code.contains("ERROR"), "{code}");
     use_stub_idp(&client, &code, "alice").await;
-    let page = callback(&client, &code, cookie.as_deref()).await;
-    assert!(page.starts_with("REDIRECT https://rustdesk.example.com/ui/login?oidc_code="), "{page}");
+    let location = callback(&client, &code).await;
+    assert!(location.starts_with("https://rustdesk.example.com/ui/login?result="), "{location}");
 }
 
 #[rocket::async_test]
@@ -1450,15 +1405,103 @@ async fn test_oidc_callback_invalid_session() {
 }
 
 #[rocket::async_test]
-async fn test_oidc_state_invalid_session() {
-    let (client, _dir) = test_client().await;
-    let resp = client
-        .get("/api/oidc/auth-query?code=fake&id=fake&uuid=fake")
-        .dispatch()
-        .await;
-    assert_eq!(resp.status(), Status::Ok);
+async fn test_oidc_native_login_returns_a_one_time_result_to_the_loopback() {
+    let client = untracked_client().await;
+    let code = start_login(&client, "MY-LAPTOP", LOOPBACK).await;
+    use_stub_idp(&client, &code, "alice").await;
+    let location = callback(&client, &code).await;
+    assert!(location.starts_with(&format!("{LOOPBACK}?result=")), "{location}");
+    assert!(location.contains(&format!("code={code}")));
+    let result = result_of(&location);
+    let (status, body) = redeem(&client, &result, VERIFIER).await;
+    assert_eq!(status, Status::Ok, "{body}");
+    assert_eq!(body["type"], "access_token");
+    assert_eq!(body["user"]["name"], "alice");
+    let (again, _) = redeem(&client, &result, VERIFIER).await;
+    assert_eq!(again, Status::BadRequest, "a result works once");
+}
+
+#[rocket::async_test]
+async fn test_oidc_result_needs_the_starters_verifier() {
+    let client = untracked_client().await;
+    let code = start_login(&client, "MY-LAPTOP", LOOPBACK).await;
+    use_stub_idp(&client, &code, "alice").await;
+    let result = result_of(&callback(&client, &code).await);
+    let (status, _) = redeem(&client, &result, "Other0123456789Other0123456789Other0123456789xx").await;
+    assert_eq!(status, Status::BadRequest);
+    let (status, _) = redeem(&client, &result, VERIFIER).await;
+    assert_eq!(status, Status::BadRequest, "a failed redemption burns the result");
+}
+
+#[rocket::async_test]
+async fn test_oidc_result_is_bound_to_the_starting_id() {
+    let client = untracked_client().await;
+    let code = start_login(&client, "MY-LAPTOP", LOOPBACK).await;
+    use_stub_idp(&client, &code, "alice").await;
+    let result = result_of(&callback(&client, &code).await);
+    let resp = client.post("/api/oidc/token").header(ContentType::JSON)
+        .body(format!(r#"{{"result":"{result}","codeVerifier":"{VERIFIER}","id":"999","uuid":"x"}}"#)).dispatch().await;
+    assert_eq!(resp.status(), Status::BadRequest);
+}
+
+#[rocket::async_test]
+async fn test_oidc_result_expires() {
+    let client = untracked_client().await;
+    let code = start_login(&client, "MY-LAPTOP", LOOPBACK).await;
+    use_stub_idp(&client, &code, "alice").await;
+    let result = result_of(&callback(&client, &code).await);
+    let state = client.rocket().state::<state::ApiState>().unwrap();
+    assert!(state.test_age_oidc_session(&code, state::OIDC_RESULT_TTL_SECS + 1).await);
+    let (status, _) = redeem(&client, &result, VERIFIER).await;
+    assert_eq!(status, Status::BadRequest);
+}
+
+#[rocket::async_test]
+async fn test_oidc_return_to_must_be_a_loopback_or_this_server() {
+    let client = untracked_client().await;
+    let challenge = oauth2::pkce::s256_challenge(VERIFIER);
+    for bad in ["http://evil.example.com/", "https://127.0.0.1:48123/", "http://127.0.0.1/", "http://127.0.0.1:48123/x", "http://localhost:48123/", ""] {
+        let resp = client.post("/api/oidc/auth").header(ContentType::JSON)
+            .header(Header::new("Host", "rustdesk.example.com")).header(Header::new("X-Forwarded-Proto", "https"))
+            .body(format!(r#"{{"op":"dex","id":"1","uuid":"eA==","deviceInfo":{{"name":"n","os":"o","type":"client"}},"returnTo":"{bad}","codeChallenge":"{challenge}"}}"#))
+            .dispatch().await;
+        let body: Value = resp.into_json().await.unwrap();
+        assert_eq!(body["code"], "RETURN_TO_ERROR", "{bad}");
+    }
+    for ok in ["http://[::1]:48123/", "https://rustdesk.example.com/ui/login", "/oidc-callback.html"] {
+        let code = start_login(&client, "n", ok).await;
+        assert!(!code.is_empty() && code != "RETURN_TO_ERROR", "{ok}");
+    }
+}
+
+#[rocket::async_test]
+async fn test_oidc_auth_requires_an_s256_challenge() {
+    let client = untracked_client().await;
+    let resp = client.post("/api/oidc/auth").header(ContentType::JSON)
+        .header(Header::new("Host", "rustdesk.example.com")).header(Header::new("X-Forwarded-Proto", "https"))
+        .body(format!(r#"{{"op":"dex","id":"1","uuid":"eA==","deviceInfo":{{"name":"n","os":"o","type":"client"}},"returnTo":"{LOOPBACK}","codeChallenge":"short"}}"#))
+        .dispatch().await;
     let body: Value = resp.into_json().await.unwrap();
-    assert!(body.is_null());
+    assert_eq!(body["code"], "CODE_CHALLENGE_ERROR");
+}
+
+#[rocket::async_test]
+async fn test_oidc_polling_and_confirmation_endpoints_are_gone() {
+    let client = untracked_client().await;
+    let resp = client.get("/api/oidc/auth-query?code=x&id=1&uuid=x").dispatch().await;
+    assert_eq!(resp.status(), Status::NotFound);
+    let resp = client.post("/api/oidc/confirm").header(ContentType::Form).body("state=x&token=y&approve=true").dispatch().await;
+    assert_eq!(resp.status(), Status::NotFound);
+}
+
+#[rocket::async_test]
+async fn test_oidc_failed_login_returns_an_error_to_the_starter() {
+    let client = untracked_client().await;
+    let code = start_login(&client, "MY-LAPTOP", LOOPBACK).await;
+    let state = client.rocket().state::<state::ApiState>().unwrap();
+    assert!(state.test_set_oidc_provider(&code, std::sync::Arc::new(FailingIdp)).await);
+    let location = callback(&client, &code).await;
+    assert_eq!(location, format!("{LOOPBACK}?error=login_failed"));
 }
 
 #[test]
@@ -1814,10 +1857,7 @@ async fn test_audits_file_and_alarm_survive_an_unparsable_info_string() {
 #[rocket::async_test]
 async fn test_audits_conn_shows_the_viewer_machine_from_its_login() {
     let client = untracked_client().await;
-    let (code, cookie) = start_login(&client, "MY-LAPTOP", None).await;
-    use_stub_idp(&client, &code, "alice").await;
-    callback(&client, &code, cookie.as_deref()).await;
-    let alice = poll(&client, &code).await["access_token"].as_str().unwrap().to_string();
+    let alice = native_login(&client, "MY-LAPTOP", "alice").await;
     let admin = login_admin(&client).await;
 
     let r: Value = client.post("/api/audit/ref").header(auth_header(&alice)).dispatch().await.into_json().await.unwrap();
@@ -1847,10 +1887,7 @@ async fn viewers(client: &Client, token: &str) -> Value {
 #[rocket::async_test]
 async fn test_native_oidc_login_lists_the_machine_as_a_viewer() {
     let client = untracked_client().await;
-    let (code, cookie) = start_login(&client, "MY-LAPTOP", None).await;
-    use_stub_idp(&client, &code, "alice").await;
-    callback(&client, &code, cookie.as_deref()).await;
-    let alice = poll(&client, &code).await["access_token"].as_str().unwrap().to_string();
+    let alice = native_login(&client, "MY-LAPTOP", "alice").await;
     let admin = login_admin(&client).await;
 
     let body = viewers(&client, &admin).await;
@@ -1891,19 +1928,11 @@ async fn test_native_oidc_login_lists_the_machine_as_a_viewer() {
 #[rocket::async_test]
 async fn test_browser_oidc_login_is_not_a_viewer() {
     let client = untracked_client().await;
-    let uuid = base64::Engine::encode(&base64::prelude::BASE64_STANDARD, "browser-uuid");
-    let resp = client
-        .post("/api/oidc/auth")
-        .header(ContentType::JSON)
-        .header(Header::new("Host", "rustdesk.example.com"))
-        .body(format!(r#"{{"op":"dex","id":"555","uuid":"{uuid}","deviceInfo":{{"name":"Netscape","os":"Linux","type":"oidc"}}}}"#))
-        .dispatch()
-        .await;
-    let cookie = resp.headers().get_one("Set-Cookie").map(str::to_string);
-    let code = resp.into_json::<Value>().await.unwrap()["code"].as_str().unwrap().to_string();
+    let code = start_login_as(&client, "Netscape", "browser", "/ui/login").await;
     use_stub_idp(&client, &code, "alice").await;
-    callback(&client, &code, cookie.as_deref()).await;
-    assert!(poll(&client, &code).await["access_token"].is_string());
+    let location = callback(&client, &code).await;
+    let (status, body) = redeem(&client, &result_of(&format!("https://rustdesk.example.com{location}")), VERIFIER).await;
+    assert_eq!(status, Status::Ok, "{body}");
     let admin = login_admin(&client).await;
     assert_eq!(viewers(&client, &admin).await["total"], 0);
 }

@@ -29,8 +29,7 @@ use oauth2::oauth_provider::OAuthProvider;
 use oauth2::oauth_provider::OAuthProviderFactory;
 use rocket::fairing::{Fairing, Info, Kind};
 use rocket::form::validate::Len;
-use rocket::http::{ContentType, Cookie, CookieJar, Header, SameSite, Status};
-use rocket::form::{Form, FromForm};
+use rocket::http::{ContentType, Header, Status};
 use rocket::response::{Redirect, Responder};
 use rocket::{async_trait, delete, options, put, routes, uri};
 use rocket::{Request, Response};
@@ -165,7 +164,7 @@ pub fn api_routes() -> (Vec<rocket::Route>, rocket_okapi::okapi::openapi3::OpenA
         strategy_update,
         strategy_repush,
         oidc_auth,
-        oidc_state,
+        oidc_token,
         oidc_add,
         oidc_get,
         ab_peer_add,
@@ -213,7 +212,6 @@ pub async fn build_rocket_with_db(figment: Figment, db_path: &str) -> Rocket<Bui
             favicon,
             webconsole_vue,
             oidc_callback,
-            oidc_confirm,
         ])
         .manage(state)
         .manage(PublicUrl(public_url));
@@ -1221,6 +1219,10 @@ async fn login_options(
 /// ## Parameters
 ///
 /// - `request`: The request data, which includes the chosen OAuth2 provider and a UUID.  <br> For testing you can generate a valid uuid field with the following command: `uuidgen | base64`
+/// - `returnTo`: where the callback sends the one-time result: a loopback `http://127.0.0.1:<port>/`
+///   (or `[::1]`) of a native client, or a URL on this server. Otherwise the code is `RETURN_TO_ERROR`.
+/// - `codeChallenge`: the S256 PKCE challenge (43 base64url characters) whose verifier redeems
+///   the result at `POST /api/oidc/token`. Otherwise the code is `CODE_CHALLENGE_ERROR`.
 ///
 /// ## Returns
 ///
@@ -1236,14 +1238,15 @@ async fn login_options(
 /// POST /api/oidc/auth
 /// {
 ///     "op": "github",
-///     "uuid": "generated_uuid_base64_encoded"
+///     "uuid": "generated_uuid_base64_encoded",
+///     "returnTo": "http://127.0.0.1:48123/",
+///     "codeChallenge": "base64url_sha256_of_the_verifier"
 /// }
 #[openapi(tag = "login")]
 #[post("/api/oidc/auth", format = "application/json", data = "<request>")]
 async fn oidc_auth(
     state: &State<ApiState>,
     public_url: &State<PublicUrl>,
-    cookies: &CookieJar<'_>,
     request: ExtendedJson<OidcAuthRequest>,
 ) -> Json<OidcAuthUrl> {
     log::debug!("oidc_auth: {:?}", request);
@@ -1263,14 +1266,12 @@ async fn oidc_auth(
     let uuid_decoded = uuid_decoded.unwrap();
     let uuid_client = String::from_utf8(uuid_decoded).unwrap();
     let host = public_url.0.clone().unwrap_or_else(|| get_host(headers.clone()));
-    if let Some(uri) = &request.redirect_uri {
-        if !is_own_url(uri, &host) {
-            log::warn!("oidc_auth: rejected redirectUri {uri:?} (not on {host:?})");
-            return Json(OidcAuthUrl {
-                url: "".to_string(),
-                code: "REDIRECT_URI_ERROR".to_string(),
-            });
-        }
+    if !is_loopback_return(&request.return_to) && !is_own_url(&request.return_to, &host) {
+        log::warn!("oidc_auth: rejected returnTo {:?}", request.return_to);
+        return Json(OidcAuthUrl { url: "".to_string(), code: "RETURN_TO_ERROR".to_string() });
+    }
+    if !is_s256_challenge(&request.code_challenge) {
+        return Json(OidcAuthUrl { url: "".to_string(), code: "CODE_CHALLENGE_ERROR".to_string() });
     }
     let callback_url = format!("{}/api/oidc/callback", host);
     let providers_config = state
@@ -1309,8 +1310,8 @@ async fn oidc_auth(
         }
     };
 
-    let redirect_url =
-        provider_trait_object.get_redirect_url(callback_url.as_str(), &oauth2::pkce::ProviderLogin::new(&uuid_code));
+    let provider_login = oauth2::pkce::ProviderLogin::new(&uuid_code);
+    let redirect_url = provider_trait_object.get_redirect_url(callback_url.as_str(), &provider_login);
     let _oidc_session = state
         .insert_oidc_session(
             uuid_code.clone(),
@@ -1325,8 +1326,9 @@ async fn oidc_auth(
                 sub: None,
                 name: None,
                 email: None,
-                client_redirect_uri: request.redirect_uri.clone(),
-                browser_key: Some(set_oidc_browser_cookie(cookies, host.starts_with("https://"))),
+                return_to: request.return_to.clone(),
+                code_challenge: request.code_challenge.clone(),
+                provider_login: Some(provider_login),
                 device_name: request.device_info.name.clone(),
                 device_os: request.device_info.os.clone(),
                 device_type: request.device_info.r#type.clone(),
@@ -1357,79 +1359,25 @@ async fn oidc_auth(
 ///
 /// ## Returns
 ///
-/// If successful, this function returns "OK".  <br>
-/// If the session does not exist or the code exchange fails, this function returns "ERROR".  <br>
-///
-/// ## Errors
-///
-/// This function will return an error if the system is in maintenance mode, or if the session does not exist or the code exchange fails.
+/// Redirects to the login's `returnTo` with `result` and `code`, or with `error=login_failed`
+/// when the code exchange fails. An unknown or expired session gets a "Login failed" page.
 ///
 /// # Example
 ///
 /// GET /api/oidc/callback?code=authorization_code&state=session_code
 #[get("/api/oidc/callback?<code>&<state>")]
-async fn oidc_callback(
-    apistate: &State<ApiState>,
-    cookies: &CookieJar<'_>,
-    code: &str,
-    state: &str,
-) -> OidcCallbackResponse {
-    let oidc_code = state;
-    let session = apistate.get_oidc_session(oidc_code.to_string()).await;
-    let signed_in = session.is_some()
-        && apistate
-            .oidc_session_exchange_code(code.to_string(), oidc_code.to_string())
-            .await
-            .is_some();
-    let client_redirect_uri = session.and_then(|s| s.client_redirect_uri);
-    if !signed_in {
-        return oidc_finish(client_redirect_uri, oidc_code, false);
-    }
-    // The browser that started the login needs no confirmation; any other one must confirm.
-    let same_browser = match cookies.get(OIDC_BROWSER_COOKIE) {
-        Some(c) => apistate.oidc_approve_by_browser(oidc_code, c.value()).await,
-        None => false,
-    };
-    if same_browser {
-        return oidc_finish(client_redirect_uri, oidc_code, true);
-    }
-    match apistate.oidc_request_confirmation(oidc_code).await {
-        Some((token, login)) => oidc_confirmation_page(oidc_code, &token, &login),
-        None => oidc_finish(client_redirect_uri, oidc_code, false),
-    }
-}
-
-#[derive(FromForm)]
-struct OidcConfirmForm {
-    state: String,
-    token: String,
-    approve: bool,
-}
-
-/// Answer from the confirmation page shown when a login finishes in another browser than it started in.
-#[post("/api/oidc/confirm", data = "<form>")]
-async fn oidc_confirm(apistate: &State<ApiState>, form: Form<OidcConfirmForm>) -> OidcCallbackResponse {
-    match apistate.oidc_confirm(&form.state, &form.token, form.approve).await {
-        Some(login) if form.approve => oidc_finish(login.client_redirect_uri, &form.state, true),
-        Some(_) => oidc_page("Login denied. You can close this window."),
+async fn oidc_callback(apistate: &State<ApiState>, code: &str, state: &str) -> OidcCallbackResponse {
+    match apistate.oidc_complete_callback(state, code).await {
+        Some((return_to, Some(result))) => oidc_return(&return_to, &format!("result={result}&code={state}")),
+        Some((return_to, None)) => oidc_return(&return_to, "error=login_failed"),
         None => oidc_page("Login failed. Please close this window and try again."),
     }
 }
 
-const OIDC_BROWSER_COOKIE: &str = "rustdesk_oidc_login";
-
-/// Gives the starting browser a secret that ties the login to it; returns the secret.
-fn set_oidc_browser_cookie(cookies: &CookieJar<'_>, secure: bool) -> String {
-    let key = Uuid::new_v4().simple().to_string();
-    cookies.add(
-        Cookie::build((OIDC_BROWSER_COOKIE, key.clone()))
-            .path("/api/oidc")
-            .http_only(true)
-            .secure(secure)
-            .same_site(SameSite::Lax)
-            .max_age(rocket::time::Duration::seconds(state::OIDC_LOGIN_TTL_SECS as i64)),
-    );
-    key
+/// Sends the browser back to the login's starter.
+fn oidc_return(return_to: &str, query: &str) -> OidcCallbackResponse {
+    let separator = if return_to.contains('?') { "&" } else { "?" };
+    OidcCallbackResponse::Redirect(Redirect::found(format!("{return_to}{separator}{query}")))
 }
 
 /// True for a path on this server or an absolute URL on `host` (scheme://authority).
@@ -1441,6 +1389,19 @@ fn is_own_url(uri: &str, host: &str) -> bool {
         (Ok(u), Ok(h)) => !host.is_empty() && u.origin() == h.origin(),
         _ => false,
     }
+}
+
+/// A native app's loopback listener (RFC 8252 §7.3): http, an IP loopback literal, an explicit port, path `/`.
+fn is_loopback_return(uri: &str) -> bool {
+    let Ok(u) = url::Url::parse(uri) else { return false };
+    let loopback = matches!(u.host(), Some(url::Host::Ipv4(ip)) if ip.is_loopback())
+        || matches!(u.host(), Some(url::Host::Ipv6(ip)) if ip.is_loopback());
+    u.scheme() == "http" && loopback && u.port().is_some() && u.path() == "/" && u.query().is_none() && u.fragment().is_none()
+}
+
+/// BASE64URL without padding of a SHA-256: 43 characters.
+fn is_s256_challenge(c: &str) -> bool {
+    c.len() == 43 && c.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
 }
 
 /// Proxies whose forwarded headers are believed; empty trusts every peer, as before the setting existed.
@@ -1499,20 +1460,6 @@ fn client_ip(
     peer.map(|ip| ip.to_string())
 }
 
-fn html_escape(s: &str) -> String {
-    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;").replace('\'', "&#39;")
-}
-
-/// Ends the login in the browser: back to the web console when it asked for that, else a message.
-fn oidc_finish(client_redirect_uri: Option<String>, oidc_code: &str, ok: bool) -> OidcCallbackResponse {
-    if let Some(redirect_uri) = client_redirect_uri {
-        let separator = if redirect_uri.contains('?') { "&" } else { "?" };
-        let result = if ok { format!("oidc_code={oidc_code}") } else { "oidc_error=login_failed".to_string() };
-        return OidcCallbackResponse::Redirect(Redirect::found(format!("{redirect_uri}{separator}{result}")));
-    }
-    oidc_page(if ok { "Login successful!" } else { "Login failed. Please close this window and try again." })
-}
-
 fn oidc_page(message: &str) -> OidcCallbackResponse {
     OidcCallbackResponse::Html(rocket::response::content::RawHtml(format!(
         r#"<!DOCTYPE html>
@@ -1526,77 +1473,28 @@ try {{ window.close(); }} catch(e) {{}}
     )))
 }
 
-fn oidc_confirmation_page(oidc_code: &str, token: &str, login: &OidcState) -> OidcCallbackResponse {
-    let device = html_escape(&login.device_name);
-    let os = html_escape(&login.device_os);
-    let ip = html_escape(login.requester_ip.as_deref().unwrap_or("an unknown address"));
-    let (code, token) = (html_escape(oidc_code), html_escape(token));
-    OidcCallbackResponse::Html(rocket::response::content::RawHtml(format!(
-        r#"<!DOCTYPE html>
-<html><head><title>RustDesk Login</title><meta name="viewport" content="width=device-width, initial-scale=1"></head>
-<body style="font-family: sans-serif; max-width: 32em; margin: 3em auto; padding: 0 1em">
-<h2>Sign in to RustDesk?</h2>
-<p>A RustDesk login was started on <b>{device}</b> ({os}) from <b>{ip}</b>.</p>
-<p>Approve only if you started this login yourself, just now. If someone sent you this link, deny.</p>
-<form method="post" action="/api/oidc/confirm">
-<input type="hidden" name="state" value="{code}">
-<input type="hidden" name="token" value="{token}">
-<button type="submit" name="approve" value="true">Approve</button>
-<button type="submit" name="approve" value="false">Deny</button>
-</form>
-</body></html>"#
-    )))
-}
-
 #[derive(Responder)]
 enum OidcCallbackResponse {
     Redirect(Redirect),
     Html(rocket::response::content::RawHtml<String>),
 }
 
-/// # OIDC State
+/// # OIDC Token
 ///
-/// This function is an API endpoint that checks the state of an OpenID Connect (OIDC) session.
-/// It is tagged with "login" for OpenAPI documentation.
+/// Redeems the one-time result of a finished login with the starter's PKCE verifier.
+/// Unknown, expired or reused results, a wrong verifier or another `id`/`uuid` answer 400.
 ///
-/// ## Parameters
-///
-/// - `code`: The authorization code received from the OIDC provider.  
-///
-/// - `id`: The identifier of the OIDC session.  
-///
-/// - `uuid`: The UUID of the OIDC session.  
-///
-/// ## Returns
-///
-/// If successful, this function returns a `Json<Option<OidcResponse>>` object.  <br>
-/// If the session does not exist, this function returns `Json(None)`.  <br>
-///
-/// ## Errors
-///
-/// This function will return an error if the system is in maintenance mode, or if the session does not exist.
-///
-/// # Example
-///
-/// GET /api/oidc/auth-query?code=authorization_code&id=session_id&uuid=session_uuid
+/// POST /api/oidc/token {"result": "...", "codeVerifier": "...", "id": "...", "uuid": "..."}
 #[openapi(tag = "login")]
-#[get("/api/oidc/auth-query?<code>&<id>&<uuid>")]
-async fn oidc_state(
+#[post("/api/oidc/token", format = "application/json", data = "<request>")]
+async fn oidc_token(
     state: &State<ApiState>,
-    code: &str,
-    id: &str,
-    uuid: &str,
-) -> Json<Option<OidcResponse>> {
-    log::debug!("oidc_state: {:?} {:?} {:?}", code, id, uuid);
-
-    let res = state.oidc_check_session(code.to_string()).await;
-
-    if res.is_none() {
-        return Json(None);
-    }
-
-    let (token, username, userinfo) = res.unwrap();
-    let auth_response = OidcResponse {
+    request: Json<utils::OidcTokenRequest>,
+) -> Result<Json<OidcResponse>, status::Custom<Json<serde_json::Value>>> {
+    let Some((token, username, userinfo)) = state.oidc_redeem(&request).await else {
+        return Err(status::Custom(Status::BadRequest, Json(serde_json::json!({ "error": "Login failed" }))));
+    };
+    Ok(Json(OidcResponse {
         access_token: token.to_base64(),
         type_field: "access_token".to_string(),
         tfa_type: "".to_string(),
@@ -1615,9 +1513,7 @@ async fn oidc_state(
             is_admin: userinfo.admin,
             third_auth_type: "Oauth2".to_string(),
         },
-    };
-
-    Json(Some(auth_response))
+    }))
 }
 
 /// # Get Personal Address Book
@@ -4144,19 +4040,6 @@ mod tests {
         assert_eq!(resp.status(), Status::Ok);
         let body = resp.into_string().await.unwrap();
         assert!(body.contains("Login failed"));
-    }
-
-    #[rocket::async_test]
-    async fn test_oidc_state_invalid_session() {
-        let client = test_client().await;
-        let resp = client
-            .get("/api/oidc/auth-query?code=fake&id=fake&uuid=fake")
-            .header(ContentType::JSON)
-            .dispatch()
-            .await;
-        assert_eq!(resp.status(), Status::Ok);
-        let body: serde_json::Value = resp.into_json().await.unwrap();
-        assert!(body.is_null());
     }
 
     #[rocket::async_test]

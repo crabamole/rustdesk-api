@@ -1723,7 +1723,7 @@
         "tags": [
           "login"
         ],
-        "description": "OIDC Auth request\n\nThis entrypoint is called by the client for getting the authorization url for the Oauth2 provider he chooses\n\nFor testing you can generate a valid uuid field with the following command: `uuidgen | base64` # OIDC Auth Request\n\nThis function is an API endpoint that is called by the client to get the authorization URL for the chosen OAuth2 provider. It is tagged with \"login\" for OpenAPI documentation.\n\n## Parameters\n\n- `request`: The request data, which includes the chosen OAuth2 provider and a UUID.  <br> For testing you can generate a valid uuid field with the following command: `uuidgen | base64`\n\n## Returns\n\nIf successful, this function returns a `Json<OidcAuthUrl>` object, which includes the authorization URL and a session code.  <br> If the UUID is invalid or the OAuth2 provider is not found, this function returns an `OidcAuthUrl` object with an empty URL and an error code.  <br>\n\n## Errors\n\nThis function will return an error if the system is in maintenance mode, or if the UUID is invalid or the OAuth2 provider is not found.\n\n# Example\n\nPOST /api/oidc/auth { \"op\": \"github\", \"uuid\": \"generated_uuid_base64_encoded\" }",
+        "description": "OIDC Auth request\n\nThis entrypoint is called by the client for getting the authorization url for the Oauth2 provider he chooses\n\nFor testing you can generate a valid uuid field with the following command: `uuidgen | base64` # OIDC Auth Request\n\nThis function is an API endpoint that is called by the client to get the authorization URL for the chosen OAuth2 provider. It is tagged with \"login\" for OpenAPI documentation.\n\n## Parameters\n\n- `request`: The request data, which includes the chosen OAuth2 provider and a UUID.  <br> For testing you can generate a valid uuid field with the following command: `uuidgen | base64` - `returnTo`: where the callback sends the one-time result: a loopback `http://127.0.0.1:<port>/` (or `[::1]`) of a native client, or a URL on this server. Otherwise the code is `RETURN_TO_ERROR`. - `codeChallenge`: the S256 PKCE challenge (43 base64url characters) whose verifier redeems the result at `POST /api/oidc/token`. Otherwise the code is `CODE_CHALLENGE_ERROR`.\n\n## Returns\n\nIf successful, this function returns a `Json<OidcAuthUrl>` object, which includes the authorization URL and a session code.  <br> If the UUID is invalid or the OAuth2 provider is not found, this function returns an `OidcAuthUrl` object with an empty URL and an error code.  <br>\n\n## Errors\n\nThis function will return an error if the system is in maintenance mode, or if the UUID is invalid or the OAuth2 provider is not found.\n\n# Example\n\nPOST /api/oidc/auth { \"op\": \"github\", \"uuid\": \"generated_uuid_base64_encoded\", \"returnTo\": \"http://127.0.0.1:48123/\", \"codeChallenge\": \"base64url_sha256_of_the_verifier\" }",
         "operationId": "oidc_auth",
         "requestBody": {
           "content": {
@@ -1749,49 +1749,40 @@
         }
       }
     },
-    "/api/oidc/auth-query": {
-      "get": {
+    "/api/oidc/token": {
+      "post": {
         "tags": [
           "login"
         ],
-        "summary": "OIDC State",
-        "description": "This function is an API endpoint that checks the state of an OpenID Connect (OIDC) session. It is tagged with \"login\" for OpenAPI documentation.\n\n## Parameters\n\n- `code`: The authorization code received from the OIDC provider.\n\n- `id`: The identifier of the OIDC session.\n\n- `uuid`: The UUID of the OIDC session.\n\n## Returns\n\nIf successful, this function returns a `Json<Option<OidcResponse>>` object.  <br> If the session does not exist, this function returns `Json(None)`.  <br>\n\n## Errors\n\nThis function will return an error if the system is in maintenance mode, or if the session does not exist.\n\n# Example\n\nGET /api/oidc/auth-query?code=authorization_code&id=session_id&uuid=session_uuid",
-        "operationId": "oidc_state",
-        "parameters": [
-          {
-            "name": "code",
-            "in": "query",
-            "required": true,
-            "schema": {
-              "type": "string"
+        "summary": "OIDC Token",
+        "description": "Redeems the one-time result of a finished login with the starter's PKCE verifier. Unknown, expired or reused results, a wrong verifier or another `id`/`uuid` answer 400.\n\nPOST /api/oidc/token {\"result\": \"...\", \"codeVerifier\": \"...\", \"id\": \"...\", \"uuid\": \"...\"}",
+        "operationId": "oidc_token",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OidcTokenRequest"
+              }
             }
           },
-          {
-            "name": "id",
-            "in": "query",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "uuid",
-            "in": "query",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
+          "required": true
+        },
         "responses": {
           "200": {
             "description": "",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/OidcResponse",
-                  "nullable": true
+                  "$ref": "#/components/schemas/OidcResponse"
                 }
+              }
+            }
+          },
+          "default": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {}
               }
             }
           }
@@ -4127,10 +4118,13 @@
           "uuid": {
             "type": "string"
           },
-          "redirectUri": {
-            "default": null,
-            "type": "string",
-            "nullable": true
+          "returnTo": {
+            "default": "",
+            "type": "string"
+          },
+          "codeChallenge": {
+            "default": "",
+            "type": "string"
           }
         }
       },
@@ -4242,6 +4236,29 @@
             "additionalProperties": {
               "type": "string"
             }
+          }
+        }
+      },
+      "OidcTokenRequest": {
+        "type": "object",
+        "required": [
+          "codeVerifier",
+          "id",
+          "result",
+          "uuid"
+        ],
+        "properties": {
+          "result": {
+            "type": "string"
+          },
+          "codeVerifier": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "uuid": {
+            "type": "string"
           }
         }
       },

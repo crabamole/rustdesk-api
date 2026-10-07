@@ -26,6 +26,7 @@ use std::{
     time::SystemTime,
 };
 
+use base64::Engine as _;
 use oauth2::ProviderConfig;
 
 use tokio::sync::RwLock;
@@ -161,7 +162,13 @@ impl ApiState {
     #[cfg(any(test, feature = "test-util"))]
     pub async fn test_age_oidc_session(&self, uuid_code: &str, secs: u64) -> bool {
         let mut sessions = self.oidc_sessions.write().await;
-        sessions.get_mut(uuid_code).map(|s| s.created_at = s.created_at.saturating_sub(secs)).is_some()
+        sessions
+            .get_mut(uuid_code)
+            .map(|s| {
+                s.created_at = s.created_at.saturating_sub(secs);
+                s.result_at = s.result_at.saturating_sub(secs);
+            })
+            .is_some()
     }
 
     async fn get_access_token(&self, user_id: Vec<u8>, _username: &String, _is_admin: bool) -> Token {
@@ -366,44 +373,6 @@ impl ApiState {
         oidc_sessions.get(&uuid_code).filter(|s| !oidc_login_expired(s, unix_now())).cloned()
     }
 
-    /// Approves a signed-in login when `browser_key` is the cookie of the browser that started it.
-    pub async fn oidc_approve_by_browser(&self, uuid_code: &str, browser_key: &str) -> bool {
-        let mut sessions = self.oidc_sessions.write().await;
-        match sessions.get_mut(uuid_code) {
-            Some(s) if s.sub.is_some() && s.browser_key.as_deref() == Some(browser_key) && !oidc_login_expired(s, unix_now()) => {
-                s.approved = true;
-                true
-            }
-            _ => false,
-        }
-    }
-
-    /// Issues the one-time value for the confirmation page of a signed-in login.
-    pub async fn oidc_request_confirmation(&self, uuid_code: &str) -> Option<(String, OidcState)> {
-        let mut sessions = self.oidc_sessions.write().await;
-        let s = sessions.get_mut(uuid_code).filter(|s| s.sub.is_some() && !oidc_login_expired(s, unix_now()))?;
-        let token = uuid::Uuid::new_v4().simple().to_string();
-        s.confirm_token = Some(token.clone());
-        Some((token, s.clone()))
-    }
-
-    /// Applies the user's answer on the confirmation page: approve, or drop the login.
-    /// Returns the login when `token` matches, `None` otherwise.
-    pub async fn oidc_confirm(&self, uuid_code: &str, token: &str, approve: bool) -> Option<OidcState> {
-        let mut sessions = self.oidc_sessions.write().await;
-        let s = sessions.get_mut(uuid_code).filter(|s| !oidc_login_expired(s, unix_now()))?;
-        if s.confirm_token.as_deref() != Some(token) {
-            return None;
-        }
-        s.confirm_token = None;
-        if approve {
-            s.approved = true;
-            Some(s.clone())
-        } else {
-            sessions.remove(uuid_code)
-        }
-    }
-
     /// Exchange code for tokens
     ///
     /// This function exchanges a code obtained from an oauth2 provider
@@ -437,8 +406,9 @@ impl ApiState {
         {
             let provider = oidc_session.clone().provider.unwrap();
             let callback_url = oidc_session.clone().callback_url.unwrap();
+            let login = oidc_session.provider_login.clone()?;
             let exchange_result = provider
-                .exchange_code(authorization_code.as_str(), callback_url.as_str(), &oauth2::pkce::ProviderLogin::new(&uuid_code))
+                .exchange_code(authorization_code.as_str(), callback_url.as_str(), &login)
                 .await;
             if let Err(e) = &exchange_result {
                 log::error!("OIDC code exchange failed: {}", e);
@@ -458,56 +428,51 @@ impl ApiState {
         None
     }
 
-    /// Check if the client uuid has completed the authorization flow
-    /// If yes drop the session and provide the access token
-    /// If not return None
-    ///
-    /// # Arguments
-    ///
-    /// * `uuid_code` - The uuid code of the client
-    ///
-    /// # Returns
-    ///
-    /// * `Option<(Token,String,DatabaseUserInfo)>`
-    /// - The access token
-    /// - The username
-    /// - The database user info
-    pub async fn oidc_check_session(
-        &self,
-        uuid_code: String,
-    ) -> Option<(Token, String, DatabaseUserInfo)> {
-        let mut oidc_sessions = self.oidc_sessions.write().await;
-        let oidc_session = oidc_sessions.get_mut(&uuid_code).filter(|s| s.approved && !oidc_login_expired(s, unix_now()));
-        if oidc_session.is_none() {
+    /// Finishes the provider leg of a login; returns where to send the browser and, when it
+    /// succeeded, the one-time result for the starter.
+    pub async fn oidc_complete_callback(&self, uuid_code: &str, code: &str) -> Option<(String, Option<String>)> {
+        let return_to = self.get_oidc_session(uuid_code.to_string()).await?.return_to;
+        if self.oidc_session_exchange_code(code.to_string(), uuid_code.to_string()).await.is_none() {
+            self.oidc_sessions.write().await.remove(uuid_code);
+            return Some((return_to, None));
+        }
+        let result = oauth2::pkce::random_secret();
+        let mut sessions = self.oidc_sessions.write().await;
+        let s = sessions.get_mut(uuid_code)?;
+        s.result = Some(result.clone());
+        s.result_at = unix_now();
+        Some((return_to, Some(result)))
+    }
+
+    /// Issues the session for a one-time result when the starter proves itself; the result
+    /// is used up either way.
+    pub async fn oidc_redeem(&self, req: &utils::OidcTokenRequest) -> Option<(Token, String, DatabaseUserInfo)> {
+        let now = unix_now();
+        let login = {
+            let mut sessions = self.oidc_sessions.write().await;
+            let key = sessions.iter().find(|(_, s)| s.result.as_deref() == Some(req.result.as_str()))?.0.clone();
+            sessions.remove(&key)?
+        };
+        let uuid = base64::prelude::BASE64_STANDARD.decode(&req.uuid).ok().and_then(|u| String::from_utf8(u).ok());
+        if login.result_at.saturating_add(OIDC_RESULT_TTL_SECS) < now
+            || oauth2::pkce::s256_challenge(&req.code_verifier) != login.code_challenge
+            || login.id != req.id
+            || uuid.as_deref() != Some(login.uuid.as_str())
+        {
+            log::warn!("oidc_redeem: refused a result (expired, wrong verifier or another client)");
             return None;
         }
-        let oidc_session = oidc_session.unwrap();
-        if let (Some(_), Some(sub)) = (&oidc_session.auth_token, oidc_session.sub.clone()) {
-            // Display name: name claim, else email, else the subject itself.
-            let email = oidc_session.email.clone();
-            let name = oidc_session.name.clone().or_else(|| email.clone()).unwrap_or_else(|| sub.clone());
-            let res = self.db.get_user_for_oauth2(&sub, &name, email.as_deref()).await;
-            if res.is_none() {
-                log::debug!("oidc_check_session user not found");
-                return None;
-            }
-            let (uuid_vec, username, db_user_info) = res.unwrap();
-            if !db_user_info.active {
-                log::debug!("oidc_check_session user not active");
-                return None;
-            }
-            let token = self
-                .get_access_token(uuid_vec.clone(), &username, db_user_info.admin)
-                .await;
-            // User has completed the authorization flow
-            let login = oidc_sessions.remove(&uuid_code);
-            drop(oidc_sessions);
-            if let Some(login) = login {
-                self.record_viewer_login(&login, &uuid_vec).await;
-            }
-            return Some((token, username, db_user_info));
+        let sub = login.sub.clone()?;
+        let email = login.email.clone();
+        let name = login.name.clone().or_else(|| email.clone()).unwrap_or_else(|| sub.clone());
+        let (user_id, username, db_user_info) = self.db.get_user_for_oauth2(&sub, &name, email.as_deref()).await?;
+        if !db_user_info.active {
+            log::debug!("oidc_redeem: user not active");
+            return None;
         }
-        None
+        let token = self.get_access_token(user_id.clone(), &username, db_user_info.admin).await;
+        self.record_viewer_login(&login, &user_id).await;
+        Some((token, username, db_user_info))
     }
 
     /// Remembers the machine of a native client login so viewers that never register are listed.
@@ -968,6 +933,9 @@ fn audit_info(raw: &str) -> serde_json::Value {
 /// How long a started OIDC login stays usable; the RustDesk client stops polling after 3 minutes.
 pub const OIDC_LOGIN_TTL_SECS: u64 = 180;
 
+/// How long the one-time result of a finished login can be redeemed.
+pub const OIDC_RESULT_TTL_SECS: u64 = 60;
+
 /// Heartbeats come every 3–15 s; a row this young may have been opened after the heartbeat's snapshot.
 pub const AUDIT_CONN_HEARTBEAT_GRACE_SECS: i64 = 30;
 
@@ -1195,7 +1163,6 @@ mod tests {
             sub: None,
             name: None,
             email: None,
-            client_redirect_uri: None,
             ..Default::default()
         };
         let result = state
@@ -1225,7 +1192,6 @@ mod tests {
             sub: None,
             name: None,
             email: None,
-            client_redirect_uri: None,
             ..Default::default()
         };
         state
@@ -1237,35 +1203,55 @@ mod tests {
         assert!(result.is_none());
     }
 
-    #[tokio::test]
-    async fn oidc_check_session_no_auth_token() {
-        let state = test_state().await;
-        let oidc = OidcState {
-            id: "u".to_string(),
-            uuid: "u".to_string(),
-            code: None,
-            auth_token: None,
-            redirect_url: None,
-            callback_url: None,
-            provider: None,
-            sub: None,
-            name: None,
-            email: None,
-            client_redirect_uri: None,
+    /// A login whose provider leg finished for `sub`, waiting for `verifier` to redeem `result`.
+    async fn finished_login(state: &ApiState, sub: &str, verifier: &str, result: &str) {
+        let login = OidcState {
+            id: "601".into(),
+            uuid: "dev".into(),
+            sub: Some(sub.into()),
+            code_challenge: oauth2::pkce::s256_challenge(verifier),
+            result: Some(result.into()),
             ..Default::default()
         };
-        state
-            .insert_oidc_session("check".to_string(), oidc)
-            .await;
-        let result = state.oidc_check_session("check".to_string()).await;
-        assert!(result.is_none());
+        state.insert_oidc_session(result.into(), login).await;
+        state.oidc_sessions.write().await.get_mut(result).unwrap().result_at = unix_now();
+    }
+
+    fn token_request(result: &str, verifier: &str) -> utils::OidcTokenRequest {
+        let uuid = base64::prelude::BASE64_STANDARD.encode("dev");
+        utils::OidcTokenRequest { result: result.into(), code_verifier: verifier.into(), id: "601".into(), uuid }
     }
 
     #[tokio::test]
-    async fn oidc_check_session_missing() {
+    async fn oidc_redeem_issues_a_session_once() {
         let state = test_state().await;
-        let result = state.oidc_check_session("missing".to_string()).await;
-        assert!(result.is_none());
+        finished_login(&state, "admin", "v", "r1").await;
+        let (_, username, _) = state.oidc_redeem(&token_request("r1", "v")).await.unwrap();
+        assert_eq!(username, "admin");
+        assert!(state.oidc_redeem(&token_request("r1", "v")).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn oidc_redeem_gives_an_inactive_user_no_session() {
+        let state = test_state().await;
+        finished_login(&state, "nobody", "v", "r2").await;
+        assert!(state.oidc_redeem(&token_request("r2", "v")).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn oidc_redeem_unknown_result() {
+        let state = test_state().await;
+        assert!(state.oidc_redeem(&token_request("missing", "v")).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn oidc_complete_callback_without_provider_fails_and_drops_the_login() {
+        let state = test_state().await;
+        let login = OidcState { return_to: "/ui/login".into(), ..Default::default() };
+        state.insert_oidc_session("c".into(), login).await;
+        assert_eq!(state.oidc_complete_callback("c", "code").await, Some(("/ui/login".to_string(), None)));
+        assert!(state.get_oidc_session("c".into()).await.is_none());
+        assert!(state.oidc_complete_callback("missing", "code").await.is_none());
     }
 
     #[tokio::test]

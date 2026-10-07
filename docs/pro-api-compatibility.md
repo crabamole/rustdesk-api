@@ -22,8 +22,8 @@ Update this file with every API change.
 | POST | /api/sysinfo | [C] `src/hbbs_http/sync.rs` (`url.replace("heartbeat","sysinfo")`) | implemented | |
 | POST | /api/login | [C] `flutter/lib/models/user_model.dart` | implemented | password login intentionally disabled, always 401; use OIDC |
 | GET | /api/login-options | [C] `src/hbbs_http/account.rs`, `flutter/lib/models/user_model.dart` | implemented | |
-| POST | /api/oidc/auth | [C] `src/hbbs_http/account.rs` | implemented | |
-| GET | /api/oidc/auth-query | [C] `src/hbbs_http/account.rs` | implemented | completing a native client login records the machine for `GET /api/viewers` |
+| POST | /api/oidc/auth | [C] `src/hbbs_http/account.rs` | implemented | requires `returnTo` (loopback `http://127.0.0.1:<port>/` or a URL on this server) and an S256 `codeChallenge`; the callback redirects there with a one-time `result` |
+| POST | /api/oidc/token | [C] `src/hbbs_http/account.rs` | ours | redeems the one-time login result with the PKCE verifier; replaces polling (`GET /api/oidc/auth-query`, removed); completing a native client login records the machine for `GET /api/viewers` |
 | POST | /api/logout | [C] `flutter/lib/models/user_model.dart` | implemented | |
 | POST | /api/currentUser | [C] `flutter/lib/models/user_model.dart` | implemented | also refreshes the last-seen time of a machine recorded by a login |
 | POST | /api/audit/conn | [C] `src/server/connection.rs` | implemented | connection lifecycle (`new`, `authorized`, `close`) and session-menu note (§4) per audit-api-spec.md §3-4 |
@@ -52,6 +52,8 @@ Update this file with every API change.
 | GET | /api/users | [C] `flutter/lib/models/group_model.dart` | implemented | client-facing list, paginated |
 | GET | /api/peers | [C] `flutter/lib/models/group_model.dart` | implemented | |
 | GET | /api/device-group/accessible | [C] `flutter/lib/models/group_model.dart` | missing | no `/api/device-group*` route exists |
+
+Upstream clients log in by polling `GET /api/oidc/auth-query`; that login is not supported, since a login is bound to the client that started it.
 
 ## Admin API (Pro scripts)
 

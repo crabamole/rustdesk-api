@@ -694,8 +694,10 @@ pub struct OidcAuthRequest {
     pub id: String,
     pub op: String,
     pub uuid: String,
-    #[serde(default, rename = "redirectUri")]
-    pub redirect_uri: Option<String>,
+    #[serde(default, rename = "returnTo")]
+    pub return_to: String,
+    #[serde(default, rename = "codeChallenge")]
+    pub code_challenge: String,
 }
 
 #[derive(Serialize, Deserialize, JsonSchema, Clone, Debug)]
@@ -704,9 +706,11 @@ pub struct OidcAuthUrl {
     pub url: String,
 }
 
-#[derive(Serialize, Deserialize, JsonSchema, Debug)]
-pub struct AuthQueryParams {
-    pub code: String,
+#[derive(Serialize, Deserialize, JsonSchema, Debug, Clone)]
+pub struct OidcTokenRequest {
+    pub result: String,
+    #[serde(rename = "codeVerifier")]
+    pub code_verifier: String,
     pub id: String,
     pub uuid: String,
 }
@@ -777,15 +781,16 @@ pub struct OidcState {
     pub sub: Option<String>, // is the OIDC subject, the user's identity
     pub name: Option<String>,
     pub email: Option<String>,
-    pub client_redirect_uri: Option<String>,
     /// When the login started (Unix seconds); pending logins expire.
     pub created_at: u64,
-    /// Secret cookie value given to the browser that started the login.
-    pub browser_key: Option<String>,
-    /// Set once the login is tied to its starting browser or confirmed by the user.
-    pub approved: bool,
-    /// One-time value on the confirmation page shown after the IdP login.
-    pub confirm_token: Option<String>,
+    /// Where the callback sends the one-time result: the starter's loopback or page.
+    pub return_to: String,
+    /// PKCE challenge of the starter; its verifier redeems the result.
+    pub code_challenge: String,
+    pub provider_login: Option<oauth2::pkce::ProviderLogin>,
+    /// One-time value handed to `return_to`, and when it was issued (Unix seconds).
+    pub result: Option<String>,
+    pub result_at: u64,
     /// What the starting client said it is, and where it asked from; shown for confirmation.
     pub device_name: String,
     pub device_os: String,
@@ -806,11 +811,12 @@ impl Default for OidcState {
             sub: None,
             name: None,
             email: None,
-            client_redirect_uri: None,
             created_at: 0,
-            browser_key: None,
-            approved: false,
-            confirm_token: None,
+            return_to: String::new(),
+            code_challenge: String::new(),
+            provider_login: None,
+            result: None,
+            result_at: 0,
             device_name: String::new(),
             device_os: String::new(),
             requester_ip: None,
