@@ -1226,7 +1226,7 @@ impl oauth2::oauth_provider::OAuthProvider for FailingIdp {
     }
 }
 
-/// A client that sends only the cookies a test passes, so two "browsers" can share one server.
+/// A client on a fresh database that keeps no cookies between requests.
 async fn untracked_client() -> Client {
     let db_url = state::testing::fresh_database_url().await;
     let figment = rocket::Config::figment()
@@ -1419,6 +1419,18 @@ async fn test_oidc_native_login_returns_a_one_time_result_to_the_loopback() {
     assert_eq!(body["user"]["name"], "alice");
     let (again, _) = redeem(&client, &result, VERIFIER).await;
     assert_eq!(again, Status::BadRequest, "a result works once");
+}
+
+#[rocket::async_test]
+async fn test_oidc_callback_runs_once() {
+    let client = untracked_client().await;
+    let code = start_login(&client, "MY-LAPTOP", LOOPBACK).await;
+    use_stub_idp(&client, &code, "alice").await;
+    let result = result_of(&callback(&client, &code).await);
+    let replay = callback(&client, &code).await;
+    assert!(!replay.starts_with(LOOPBACK), "{replay}");
+    let (status, body) = redeem(&client, &result, VERIFIER).await;
+    assert_eq!(status, Status::Ok, "{body}");
 }
 
 #[rocket::async_test]

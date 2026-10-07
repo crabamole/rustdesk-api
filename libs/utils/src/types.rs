@@ -791,7 +791,7 @@ pub struct OidcState {
     /// One-time value handed to `return_to`, and when it was issued (Unix seconds).
     pub result: Option<String>,
     pub result_at: u64,
-    /// What the starting client said it is, and where it asked from; shown for confirmation.
+    /// What the starting client said it is, and where it asked from; recorded for the viewer list.
     pub device_name: String,
     pub device_os: String,
     pub requester_ip: Option<String>,

@@ -421,7 +421,6 @@ impl ApiState {
                 oidc_session.sub = Some(access_token.subject.clone());
                 oidc_session.name = access_token.name.clone();
                 oidc_session.email = access_token.email.clone();
-                log::debug!("oidc_session_exchange_code {:?}", oidc_session.auth_token);
                 return Some(access_token.access_token);
             }
         }
@@ -431,7 +430,16 @@ impl ApiState {
     /// Finishes the provider leg of a login; returns where to send the browser and, when it
     /// succeeded, the one-time result for the starter.
     pub async fn oidc_complete_callback(&self, uuid_code: &str, code: &str) -> Option<(String, Option<String>)> {
-        let return_to = self.get_oidc_session(uuid_code.to_string()).await?.return_to;
+        let return_to = {
+            let mut sessions = self.oidc_sessions.write().await;
+            let s = sessions.get_mut(uuid_code).filter(|s| !oidc_login_expired(s, unix_now()))?;
+            // Single use: a replayed callback must not replace or drop the login's result.
+            if s.code.is_some() || s.result.is_some() {
+                return None;
+            }
+            s.code = Some(code.to_string());
+            s.return_to.clone()
+        };
         if self.oidc_session_exchange_code(code.to_string(), uuid_code.to_string()).await.is_none() {
             self.oidc_sessions.write().await.remove(uuid_code);
             return Some((return_to, None));
@@ -930,7 +938,7 @@ fn audit_info(raw: &str) -> serde_json::Value {
     serde_json::from_str(raw).unwrap_or_else(|_| serde_json::Value::String(raw.to_owned()))
 }
 
-/// How long a started OIDC login stays usable; the RustDesk client stops polling after 3 minutes.
+/// How long a started OIDC login waits for the browser sign-in.
 pub const OIDC_LOGIN_TTL_SECS: u64 = 180;
 
 /// How long the one-time result of a finished login can be redeemed.
