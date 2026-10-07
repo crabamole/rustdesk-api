@@ -17,6 +17,7 @@ pub mod dex_provider;
 pub mod github_provider;
 pub mod oauth_provider;
 pub mod oauth2_provider;
+pub mod pkce;
 pub mod validate;
 use serde::{Deserialize, Serialize};
 use std::str::FromStr;
@@ -65,6 +66,8 @@ pub struct Claims {
     preferred_username: Option<String>,
     #[serde(default)]
     email: Option<String>,
+    #[serde(default)]
+    nonce: Option<String>,
     #[serde(default)]
     exp: u64,
 }
@@ -319,7 +322,7 @@ mod tests {
     fn test_decode_id_token() {
         let id_token = "eyJhbGciOiJSUzI1NiIsImtpZCI6IjhiMjFkMTM0NjExZDQxNWJkMWU2MjUzOGE0ZGRjOTA4NmYxYTZiMjUifQ.eyJpc3MiOiJodHRwczovL2RleC1tb2NrLXNlcnZlci5OT05FL2RleCIsInN1YiI6IkNpUXdPR0U0TmpnMFlpMWtZamc0TFRSaU56TXRPVEJoT1MwelkyUXhOall4WmpVME5qWVNCV3h2WTJGcyIsImF1ZCI6InNjdGdkZXNrLWFwaS1zZXJ2ZXIiLCJleHAiOjE3MTU2NzEwODQsImlhdCI6MTcxNTU4NDY4NCwiYXRfaGFzaCI6IjVvZEdyU3VrMW9lejJkc1NaRXZFM0EiLCJjX2hhc2giOiJfdFZfZFNiU09qTVVmRVdMeVVNSTNnIiwiZW1haWwiOiJhZG1pbkBkZXNrLk5PTkUiLCJlbWFpbF92ZXJpZmllZCI6dHJ1ZSwibmFtZSI6ImFkbWluIn0.AqOiwBKq2i_AoJcbfxuaVY54PN3GJjnHIn3E2FWoZY2IOu8qxvZevcUb4mjnoUZGf2QaabIcTAIxIg-mpFTRxheOPiQ1c9VSZ0vd-wNGrAG12vdraRq0-evqmFduR2G9k20QMIV8iHiGM7l93k8Fw5_bnTQId044BjepayS98bpUclS4RIIGoOLBM5IenfBCqLhHHv6oYUM6HDU4rCD02U9_Bu597wedeLdYYa7lzBDyb88ab83-eALsDpbFZ90rUnvAhpTQcl9_t51Etx-sP1yWSQ3UZ-QL61cKreqWlMbimM43R4boUWnpQTMF7ZO0EftVixEfaIQvWDRm-TLl8A";
         // A real Dex token from 2024: well-formed, but long expired.
-        assert!(decode_id_token(id_token, "https://dex-mock-server.NONE/dex", "sctgdesk-api-server").is_err());
+        assert!(decode_id_token(id_token, "https://dex-mock-server.NONE/dex", "sctgdesk-api-server", "").is_err());
     }
 
     #[test]

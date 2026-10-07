@@ -14,7 +14,7 @@
 // You should have received a copy of the Affero General Public License
 // along with SCTGDesk. If not, see <https://www.gnu.org/licenses/agpl-3.0.html>.
 use crate::{
-    errors::Oauth2Error, get_providers_config_file, get_providers_config_from_file, Claims, Provider, ProviderConfig
+    errors::Oauth2Error, pkce::ProviderLogin, get_providers_config_file, get_providers_config_from_file, Claims, Provider, ProviderConfig
 };
 use std::{future::Future, pin::Pin};
 use base64::prelude::{Engine as _, BASE64_URL_SAFE_NO_PAD};
@@ -50,15 +50,16 @@ pub trait OAuthProvider: Send + Sync{
     ///
     /// # Arguments
     /// * `callback_url` - The callback url
-    /// * `state` - The state code
+    /// * `login` - The state, nonce and PKCE verifier of this login
     ///
     /// # Returns  
     /// The redirect url
-    fn get_redirect_url(&self, callback_url: &str, state: &str) -> String;
+    fn get_redirect_url(&self, callback_url: &str, login: &ProviderLogin) -> String;
     fn exchange_code(
         &self,
         code: &str,
         callback_url: &str,
+        login: &ProviderLogin,
     ) -> Pin<Box<dyn Future<Output = Result<OAuthResponse, Oauth2Error>> + Send + Sync>>;
 
     /// Get the provider type
@@ -78,8 +79,8 @@ const EXP_LEEWAY_SECS: u64 = 60;
 
 /// Reads the claims of an ID token received directly from the provider's token endpoint.
 /// The signature is not checked (allowed for tokens from the token endpoint over TLS),
-/// but `iss`, `aud` and `exp` must match. `name` falls back to `preferred_username`.
-pub fn decode_id_token(id_token: &str, issuer: &str, client_id: &str) -> Result<IdTokenIdentity, Oauth2Error> {
+/// but `iss`, `aud`, `exp` and `nonce` must match. `name` falls back to `preferred_username`.
+pub fn decode_id_token(id_token: &str, issuer: &str, client_id: &str, nonce: &str) -> Result<IdTokenIdentity, Oauth2Error> {
     let payload = id_token.split('.').nth(1).ok_or(Oauth2Error::DecodeIdTokenError)?;
     let claims = BASE64_URL_SAFE_NO_PAD
         .decode(payload)
@@ -93,10 +94,11 @@ pub fn decode_id_token(id_token: &str, issuer: &str, client_id: &str) -> Result<
     if claims.iss != issuer
         || !claims.aud.iter().any(|a| a == client_id)
         || claims.exp.saturating_add(EXP_LEEWAY_SECS) < now
+        || claims.nonce.as_deref() != Some(nonce)
     {
         log::warn!(
-            "rejected ID token: iss {:?} (want {issuer:?}), aud {:?} (want {client_id:?}), exp {}",
-            claims.iss, claims.aud, claims.exp
+            "rejected ID token: iss {:?} (want {issuer:?}), aud {:?} (want {client_id:?}), exp {}, nonce ok {}",
+            claims.iss, claims.aud, claims.exp, claims.nonce.as_deref() == Some(nonce)
         );
         return Err(Oauth2Error::DecodeIdTokenError);
     }
@@ -116,6 +118,7 @@ mod tests {
 
     const ISS: &str = "https://idp.example.com";
     const APP: &str = "app";
+    const NONCE: &str = "n-123";
 
     fn make_jwt(claims_json: &str) -> String {
         let header = BASE64_URL_SAFE_NO_PAD.encode(r#"{"alg":"none"}"#);
@@ -125,11 +128,11 @@ mod tests {
 
     /// A token with valid iss/aud/exp plus `extra` claims (a JSON fragment without braces).
     fn valid(extra: &str) -> String {
-        make_jwt(&format!(r#"{{"iss":"{ISS}","aud":"{APP}","exp":9999999999,{extra}}}"#))
+        make_jwt(&format!(r#"{{"iss":"{ISS}","aud":"{APP}","exp":9999999999,"nonce":"{NONCE}",{extra}}}"#))
     }
 
     fn decode(token: &str) -> Result<IdTokenIdentity, Oauth2Error> {
-        decode_id_token(token, ISS, APP)
+        decode_id_token(token, ISS, APP, NONCE)
     }
 
     fn now() -> u64 {
@@ -162,37 +165,45 @@ mod tests {
 
     #[test]
     fn aud_may_be_an_array_containing_the_client_id() {
-        let t = make_jwt(&format!(r#"{{"iss":"{ISS}","aud":["other","{APP}"],"exp":9999999999,"sub":"u1"}}"#));
+        let t = make_jwt(&format!(r#"{{"iss":"{ISS}","aud":["other","{APP}"],"exp":9999999999,"nonce":"{NONCE}","sub":"u1"}}"#));
         assert_eq!(decode(&t).unwrap().sub, "u1");
     }
 
     #[test]
     fn another_audience_is_rejected() {
         for aud in [r#""other""#, r#"["x","y"]"#, r#"[]"#] {
-            let t = make_jwt(&format!(r#"{{"iss":"{ISS}","aud":{aud},"exp":9999999999,"sub":"u1"}}"#));
+            let t = make_jwt(&format!(r#"{{"iss":"{ISS}","aud":{aud},"exp":9999999999,"nonce":"{NONCE}","sub":"u1"}}"#));
             assert!(decode(&t).is_err(), "aud {aud} accepted");
         }
     }
 
     #[test]
     fn another_or_missing_issuer_is_rejected() {
-        let t = make_jwt(&format!(r#"{{"iss":"https://evil.example.com","aud":"{APP}","exp":9999999999,"sub":"u1"}}"#));
+        let t = make_jwt(&format!(r#"{{"iss":"https://evil.example.com","aud":"{APP}","exp":9999999999,"nonce":"{NONCE}","sub":"u1"}}"#));
         assert!(decode(&t).is_err());
-        let t = make_jwt(&format!(r#"{{"aud":"{APP}","exp":9999999999,"sub":"u1"}}"#));
+        let t = make_jwt(&format!(r#"{{"aud":"{APP}","exp":9999999999,"nonce":"{NONCE}","sub":"u1"}}"#));
         assert!(decode(&t).is_err());
     }
 
     #[test]
     fn expired_or_missing_exp_is_rejected() {
-        let t = make_jwt(&format!(r#"{{"iss":"{ISS}","aud":"{APP}","exp":{},"sub":"u1"}}"#, now() - 3600));
+        let t = make_jwt(&format!(r#"{{"iss":"{ISS}","aud":"{APP}","exp":{},"nonce":"{NONCE}","sub":"u1"}}"#, now() - 3600));
         assert!(decode(&t).is_err());
         let t = make_jwt(&format!(r#"{{"iss":"{ISS}","aud":"{APP}","sub":"u1"}}"#));
         assert!(decode(&t).is_err());
     }
 
     #[test]
+    fn another_or_missing_nonce_is_rejected() {
+        let t = |nonce: &str| make_jwt(&format!(r#"{{"iss":"{ISS}","aud":"{APP}","exp":9999999999,{nonce}"sub":"u1"}}"#));
+        assert!(decode(&t(r#""nonce":"n-123","#)).is_ok());
+        assert!(decode(&t(r#""nonce":"other","#)).is_err());
+        assert!(decode(&t("")).is_err());
+    }
+
+    #[test]
     fn small_clock_skew_is_tolerated() {
-        let t = make_jwt(&format!(r#"{{"iss":"{ISS}","aud":"{APP}","exp":{},"sub":"u1"}}"#, now() - 30));
+        let t = make_jwt(&format!(r#"{{"iss":"{ISS}","aud":"{APP}","exp":{},"nonce":"{NONCE}","sub":"u1"}}"#, now() - 30));
         assert!(decode(&t).is_ok());
     }
 

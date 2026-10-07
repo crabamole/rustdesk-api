@@ -21,6 +21,7 @@ use url::form_urlencoded;
 
 use crate::{
     errors::Oauth2Error,
+    pkce::ProviderLogin,
     oauth_provider::{OAuthProvider, OAuthProviderFactory, OAuthResponse},
     exchange_err, response_text, Provider, ProviderConfig,
 };
@@ -96,20 +97,22 @@ impl OAuthProviderFactory for GithubProvider {
     }
 }
 impl OAuthProvider for GithubProvider {
-    fn get_redirect_url(&self, callback_url: &str, state: &str) -> String {
+    fn get_redirect_url(&self, callback_url: &str, login: &ProviderLogin) -> String {
         let redirect_url =
             form_urlencoded::byte_serialize(callback_url.as_bytes()).collect::<String>();
         let scope = form_urlencoded::byte_serialize(self.provider_config.scope.as_bytes())
             .collect::<String>();
-        let state = form_urlencoded::byte_serialize(state.as_bytes()).collect::<String>();
+        let state = form_urlencoded::byte_serialize(login.state.as_bytes()).collect::<String>();
+        let challenge = crate::pkce::s256_challenge(&login.code_verifier);
 
         format!(
-            "{}?client_id={}&redirect_uri={}&scope={}&state={}&allow_signup=true",
+            "{}?client_id={}&redirect_uri={}&scope={}&state={}&allow_signup=true&code_challenge={}&code_challenge_method=S256",
             self.provider_config.authorization_url,
             self.provider_config.app_id,
             redirect_url,
             scope,
-            state
+            state,
+            challenge
         )
     }
 
@@ -117,9 +120,11 @@ impl OAuthProvider for GithubProvider {
         &self,
         code: &str,
         callback_url: &str,
+        login: &ProviderLogin,
     ) -> Pin<Box<dyn Future<Output = Result<OAuthResponse, Oauth2Error>> + Send + Sync>> {
         let code = code.to_string();
         let callback_url = callback_url.to_string();
+        let login = login.clone();
         let provider_config = self.provider_config.clone();
 
         Box::pin(async move {
@@ -131,6 +136,7 @@ impl OAuthProvider for GithubProvider {
                     ("code", code.as_str()),
                     ("redirect_uri", &callback_url),
                     ("client_id", &provider_config.app_id.as_str()),
+                    ("code_verifier", login.code_verifier.as_str()),
                     ("client_secret", &provider_config.app_secret.as_str()),
                 ])
                 .send()
@@ -198,7 +204,7 @@ mod tests {
         let provider = GithubProvider {
             provider_config: test_config(),
         };
-        let url = provider.get_redirect_url("https://myapp.com/cb", "xyz");
+        let url = provider.get_redirect_url("https://myapp.com/cb", &ProviderLogin::new("xyz"));
         assert!(url.starts_with("https://github.com/login/oauth/authorize?"));
         assert!(url.contains("client_id=gh-app-id"));
         assert!(url.contains("allow_signup=true"));
@@ -210,8 +216,18 @@ mod tests {
         let provider = GithubProvider {
             provider_config: test_config(),
         };
-        let url = provider.get_redirect_url("https://app.com/cb?p=1&q=2", "s");
+        let url = provider.get_redirect_url("https://app.com/cb?p=1&q=2", &ProviderLogin::new("s"));
         assert!(url.contains("redirect_uri=https%3A%2F%2Fapp.com%2Fcb%3Fp%3D1%26q%3D2"));
+    }
+
+    #[test]
+    fn test_redirect_url_has_nonce_and_pkce() {
+        let provider = GithubProvider { provider_config: test_config() };
+        let login = ProviderLogin::new("st");
+        let url = provider.get_redirect_url("https://api.example.com/api/oidc/callback", &login);
+        assert!(url.contains("state=st"));
+        assert!(url.contains(&format!("code_challenge={}", crate::pkce::s256_challenge(&login.code_verifier))));
+        assert!(url.contains("code_challenge_method=S256"));
     }
 
     #[test]
@@ -239,7 +255,7 @@ mod tests {
         let mut config = test_config();
         config.token_exchange_url = format!("{url}/token");
         let provider = GithubProvider { provider_config: config };
-        let _ = provider.exchange_code("a+b/c=d", "https://example.com/cb").await;
+        let _ = provider.exchange_code("a+b/c=d", "https://example.com/cb", &ProviderLogin::new("s")).await;
         assert_eq!(crate::form_code(&body.recv().unwrap()), "a+b/c=d");
     }
 
@@ -252,7 +268,7 @@ mod tests {
         config.token_exchange_url = format!("{url}/token");
         let provider = GithubProvider { provider_config: config };
         let err = provider
-            .exchange_code("code", "https://example.com/cb")
+            .exchange_code("code", "https://example.com/cb", &ProviderLogin::new("s"))
             .await
             .err()
             .expect("exchange must fail")

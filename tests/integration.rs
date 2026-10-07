@@ -1187,13 +1187,14 @@ struct StubIdp {
 }
 
 impl oauth2::oauth_provider::OAuthProvider for StubIdp {
-    fn get_redirect_url(&self, _callback_url: &str, state: &str) -> String {
-        format!("https://idp.example.com/authorize?state={state}")
+    fn get_redirect_url(&self, _callback_url: &str, login: &oauth2::pkce::ProviderLogin) -> String {
+        format!("https://idp.example.com/authorize?state={}", login.state)
     }
     fn exchange_code(
         &self,
         _code: &str,
         _callback_url: &str,
+        _login: &oauth2::pkce::ProviderLogin,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<oauth2::oauth_provider::OAuthResponse, oauth2::errors::Oauth2Error>> + Send + Sync>> {
         let sub = self.sub.clone();
         Box::pin(async move {

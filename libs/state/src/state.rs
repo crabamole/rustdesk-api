@@ -438,7 +438,7 @@ impl ApiState {
             let provider = oidc_session.clone().provider.unwrap();
             let callback_url = oidc_session.clone().callback_url.unwrap();
             let exchange_result = provider
-                .exchange_code(authorization_code.as_str(), callback_url.as_str())
+                .exchange_code(authorization_code.as_str(), callback_url.as_str(), &oauth2::pkce::ProviderLogin::new(&uuid_code))
                 .await;
             if let Err(e) = &exchange_result {
                 log::error!("OIDC code exchange failed: {}", e);

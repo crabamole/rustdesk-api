@@ -1310,7 +1310,7 @@ async fn oidc_auth(
     };
 
     let redirect_url =
-        provider_trait_object.get_redirect_url(callback_url.as_str(), uuid_code.as_str());
+        provider_trait_object.get_redirect_url(callback_url.as_str(), &oauth2::pkce::ProviderLogin::new(&uuid_code));
     let _oidc_session = state
         .insert_oidc_session(
             uuid_code.clone(),
