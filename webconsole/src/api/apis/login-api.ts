@@ -24,6 +24,7 @@ import { LogoutReply } from '../models';
 import { OidcAuthRequest } from '../models';
 import { OidcAuthUrl } from '../models';
 import { OidcResponse } from '../models';
+import { OidcTokenRequest } from '../models';
 /**
  * LoginApi - axios parameter creator
  * @export
@@ -202,49 +203,29 @@ export const LoginApiAxiosParamCreator = function (configuration?: Configuration
             };
         },
         /**
-         * This function is an API endpoint that checks the state of an OpenID Connect (OIDC) session. It is tagged with \"login\" for OpenAPI documentation.  ## Parameters  - `code`: The authorization code received from the OIDC provider.  - `id`: The identifier of the OIDC session.  - `uuid`: The UUID of the OIDC session.  ## Returns  If successful, this function returns a `Json<Option<OidcResponse>>` object.  <br> If the session does not exist, this function returns `Json(None)`.  <br>  ## Errors  This function will return an error if the system is in maintenance mode, or if the session does not exist.  # Example  GET /api/oidc/auth-query?code=authorization_code&id=session_id&uuid=session_uuid
-         * @summary OIDC State
-         * @param {string} code 
-         * @param {string} id 
-         * @param {string} uuid 
+         * Redeems the one-time result of a finished login with the starter's PKCE verifier. Unknown, expired or reused results, a wrong verifier or another `id`/`uuid` answer 400.\n\nPOST /api/oidc/token {\"result\": \"...\", \"codeVerifier\": \"...\", \"id\": \"...\", \"uuid\": \"...\"}
+         * @summary OIDC Token
+         * @param {OidcTokenRequest} body 
          * @param {*} [options] Override http request option.
          * @throws {RequiredError}
          */
-        oidcState: async (code: string, id: string, uuid: string, options: AxiosRequestConfig = {}): Promise<RequestArgs> => {
-            // verify required parameter 'code' is not null or undefined
-            if (code === null || code === undefined) {
-                throw new RequiredError('code','Required parameter code was null or undefined when calling oidcState.');
+        oidcToken: async (body: OidcTokenRequest, options: AxiosRequestConfig = {}): Promise<RequestArgs> => {
+            // verify required parameter 'body' is not null or undefined
+            if (body === null || body === undefined) {
+                throw new RequiredError('body','Required parameter body was null or undefined when calling oidcToken.');
             }
-            // verify required parameter 'id' is not null or undefined
-            if (id === null || id === undefined) {
-                throw new RequiredError('id','Required parameter id was null or undefined when calling oidcState.');
-            }
-            // verify required parameter 'uuid' is not null or undefined
-            if (uuid === null || uuid === undefined) {
-                throw new RequiredError('uuid','Required parameter uuid was null or undefined when calling oidcState.');
-            }
-            const localVarPath = `/api/oidc/auth-query`;
+            const localVarPath = `/api/oidc/token`;
             // use dummy base URL string because the URL constructor only accepts absolute URLs.
             const localVarUrlObj = new URL(localVarPath, 'https://example.com');
             let baseOptions;
             if (configuration) {
                 baseOptions = configuration.baseOptions;
             }
-            const localVarRequestOptions :AxiosRequestConfig = { method: 'GET', ...baseOptions, ...options};
+            const localVarRequestOptions :AxiosRequestConfig = { method: 'POST', ...baseOptions, ...options};
             const localVarHeaderParameter = {} as any;
             const localVarQueryParameter = {} as any;
 
-            if (code !== undefined) {
-                localVarQueryParameter['code'] = code;
-            }
-
-            if (id !== undefined) {
-                localVarQueryParameter['id'] = id;
-            }
-
-            if (uuid !== undefined) {
-                localVarQueryParameter['uuid'] = uuid;
-            }
+            localVarHeaderParameter['Content-Type'] = 'application/json';
 
             const query = new URLSearchParams(localVarUrlObj.search);
             for (const key in localVarQueryParameter) {
@@ -256,6 +237,8 @@ export const LoginApiAxiosParamCreator = function (configuration?: Configuration
             localVarUrlObj.search = (new URLSearchParams(query)).toString();
             let headersFromBaseOptions = baseOptions && baseOptions.headers ? baseOptions.headers : {};
             localVarRequestOptions.headers = {...localVarHeaderParameter, ...headersFromBaseOptions, ...options.headers};
+            const needsSerialization = (typeof body !== "string") || localVarRequestOptions.headers['Content-Type'] === 'application/json';
+            localVarRequestOptions.data =  needsSerialization ? JSON.stringify(body !== undefined ? body : {}) : (body || "");
 
             return {
                 url: localVarUrlObj.pathname + localVarUrlObj.search + localVarUrlObj.hash,
@@ -326,16 +309,14 @@ export const LoginApiFp = function(configuration?: Configuration) {
             };
         },
         /**
-         * This function is an API endpoint that checks the state of an OpenID Connect (OIDC) session. It is tagged with \"login\" for OpenAPI documentation.  ## Parameters  - `code`: The authorization code received from the OIDC provider.  - `id`: The identifier of the OIDC session.  - `uuid`: The UUID of the OIDC session.  ## Returns  If successful, this function returns a `Json<Option<OidcResponse>>` object.  <br> If the session does not exist, this function returns `Json(None)`.  <br>  ## Errors  This function will return an error if the system is in maintenance mode, or if the session does not exist.  # Example  GET /api/oidc/auth-query?code=authorization_code&id=session_id&uuid=session_uuid
-         * @summary OIDC State
-         * @param {string} code 
-         * @param {string} id 
-         * @param {string} uuid 
+         * Redeems the one-time result of a finished login with the starter's PKCE verifier. Unknown, expired or reused results, a wrong verifier or another `id`/`uuid` answer 400.\\n\\nPOST /api/oidc/token {\\"result\\": \\"...\\", \\"codeVerifier\\": \\"...\\", \\"id\\": \\"...\\", \\"uuid\\": \\"...\\"}
+         * @summary OIDC Token
+         * @param {OidcTokenRequest} body 
          * @param {*} [options] Override http request option.
          * @throws {RequiredError}
          */
-        async oidcState(code: string, id: string, uuid: string, options?: AxiosRequestConfig): Promise<(axios?: AxiosInstance, basePath?: string) => Promise<AxiosResponse<OidcResponse>>> {
-            const localVarAxiosArgs = await LoginApiAxiosParamCreator(configuration).oidcState(code, id, uuid, options);
+        async oidcToken(body: OidcTokenRequest, options?: AxiosRequestConfig): Promise<(axios?: AxiosInstance, basePath?: string) => Promise<AxiosResponse<OidcResponse>>> {
+            const localVarAxiosArgs = await LoginApiAxiosParamCreator(configuration).oidcToken(body, options);
             return (axios: AxiosInstance = globalAxios, basePath: string = BASE_PATH) => {
                 const axiosRequestArgs :AxiosRequestConfig = {...localVarAxiosArgs.options, url: basePath + localVarAxiosArgs.url};
                 return axios.request(axiosRequestArgs);
@@ -389,16 +370,14 @@ export const LoginApiFactory = function (configuration?: Configuration, basePath
             return LoginApiFp(configuration).oidcAuth(body, options).then((request) => request(axios, basePath));
         },
         /**
-         * This function is an API endpoint that checks the state of an OpenID Connect (OIDC) session. It is tagged with \"login\" for OpenAPI documentation.  ## Parameters  - `code`: The authorization code received from the OIDC provider.  - `id`: The identifier of the OIDC session.  - `uuid`: The UUID of the OIDC session.  ## Returns  If successful, this function returns a `Json<Option<OidcResponse>>` object.  <br> If the session does not exist, this function returns `Json(None)`.  <br>  ## Errors  This function will return an error if the system is in maintenance mode, or if the session does not exist.  # Example  GET /api/oidc/auth-query?code=authorization_code&id=session_id&uuid=session_uuid
-         * @summary OIDC State
-         * @param {string} code 
-         * @param {string} id 
-         * @param {string} uuid 
+         * Redeems the one-time result of a finished login with the starter's PKCE verifier. Unknown, expired or reused results, a wrong verifier or another `id`/`uuid` answer 400.\\n\\nPOST /api/oidc/token {\\"result\\": \\"...\\", \\"codeVerifier\\": \\"...\\", \\"id\\": \\"...\\", \\"uuid\\": \\"...\\"}
+         * @summary OIDC Token
+         * @param {OidcTokenRequest} body 
          * @param {*} [options] Override http request option.
          * @throws {RequiredError}
          */
-        async oidcState(code: string, id: string, uuid: string, options?: AxiosRequestConfig): Promise<AxiosResponse<OidcResponse>> {
-            return LoginApiFp(configuration).oidcState(code, id, uuid, options).then((request) => request(axios, basePath));
+        async oidcToken(body: OidcTokenRequest, options?: AxiosRequestConfig): Promise<AxiosResponse<OidcResponse>> {
+            return LoginApiFp(configuration).oidcToken(body, options).then((request) => request(axios, basePath));
         },
     };
 };
@@ -453,16 +432,14 @@ export class LoginApi extends BaseAPI {
         return LoginApiFp(this.configuration).oidcAuth(body, options).then((request) => request(this.axios, this.basePath));
     }
     /**
-     * This function is an API endpoint that checks the state of an OpenID Connect (OIDC) session. It is tagged with \"login\" for OpenAPI documentation.  ## Parameters  - `code`: The authorization code received from the OIDC provider.  - `id`: The identifier of the OIDC session.  - `uuid`: The UUID of the OIDC session.  ## Returns  If successful, this function returns a `Json<Option<OidcResponse>>` object.  <br> If the session does not exist, this function returns `Json(None)`.  <br>  ## Errors  This function will return an error if the system is in maintenance mode, or if the session does not exist.  # Example  GET /api/oidc/auth-query?code=authorization_code&id=session_id&uuid=session_uuid
-     * @summary OIDC State
-     * @param {string} code 
-     * @param {string} id 
-     * @param {string} uuid 
+     * Redeems the one-time result of a finished login with the starter's PKCE verifier. Unknown, expired or reused results, a wrong verifier or another `id`/`uuid` answer 400.\\n\\nPOST /api/oidc/token {\\"result\\": \\"...\\", \\"codeVerifier\\": \\"...\\", \\"id\\": \\"...\\", \\"uuid\\": \\"...\\"}
+     * @summary OIDC Token
+     * @param {OidcTokenRequest} body 
      * @param {*} [options] Override http request option.
      * @throws {RequiredError}
      * @memberof LoginApi
      */
-    public async oidcState(code: string, id: string, uuid: string, options?: AxiosRequestConfig) : Promise<AxiosResponse<OidcResponse>> {
-        return LoginApiFp(this.configuration).oidcState(code, id, uuid, options).then((request) => request(this.axios, this.basePath));
+    public async oidcToken(body: OidcTokenRequest, options?: AxiosRequestConfig) : Promise<AxiosResponse<OidcResponse>> {
+        return LoginApiFp(this.configuration).oidcToken(body, options).then((request) => request(this.axios, this.basePath));
     }
 }

@@ -34,6 +34,7 @@ import { onMounted, ref } from 'vue';
 import { LoginApi, Configuration } from '@/api';
 import { useVersionsStore } from '@/stores/versionsStore';
 import { basePath } from '@/utilities/api';
+import { randomVerifier, s256Challenge } from '@/utilities/pkce';
 
 const serverVersion = ref("");
 
@@ -63,12 +64,12 @@ function setLoginResult(message: string): void {
  * @param {OauthProvider} provider - The OauthProvider object representing the chosen provider.
  * @return {Promise<void>} - A promise that resolves when the authentication process is complete.
  */
-function oidcAuth_step1(provider: OauthProvider) {
+async function oidcAuth_step1(provider: OauthProvider) {
     const configuration = new Configuration({
         basePath: basePath,
     });
     const loginApi = new LoginApi(configuration);
-    const redirectUri = window.location.origin + '/ui/login';
+    const verifier = randomVerifier();
     const oidcAuthRequest = {
         deviceInfo: {
             name: navigator.appName,
@@ -78,7 +79,8 @@ function oidcAuth_step1(provider: OauthProvider) {
         id: userStore.id,
         op: provider.rustdesk_name,
         uuid: userStore.uuid_base64,
-        redirectUri: redirectUri,
+        returnTo: window.location.origin + '/ui/login',
+        codeChallenge: await s256Challenge(verifier),
     }
     loginApi.oidcAuth(oidcAuthRequest).then((response) => {
         if (!response.data.url) {
@@ -87,6 +89,7 @@ function oidcAuth_step1(provider: OauthProvider) {
         }
         sessionStorage.setItem('oidc_id', userStore.id);
         sessionStorage.setItem('oidc_uuid', userStore.uuid_base64);
+        sessionStorage.setItem('oidc_verifier', verifier);
         window.location.href = response.data.url;
     }).catch((error) => {
         console.log(error);
@@ -94,18 +97,20 @@ function oidcAuth_step1(provider: OauthProvider) {
     });
 }
 
-function handleOidcCallback(oidcCode: string) {
+function handleOidcResult(result: string) {
     const id = sessionStorage.getItem('oidc_id');
     const uuid = sessionStorage.getItem('oidc_uuid');
     sessionStorage.removeItem('oidc_id');
+    const verifier = sessionStorage.getItem('oidc_verifier');
     sessionStorage.removeItem('oidc_uuid');
-    if (!id || !uuid) {
+    sessionStorage.removeItem('oidc_verifier');
+    if (!id || !uuid || !verifier) {
         setLoginResult("OIDC session expired, please try again");
         return;
     }
     const configuration = new Configuration({ basePath: basePath });
     const loginApi = new LoginApi(configuration);
-    loginApi.oidcState(oidcCode, id, uuid).then((response) => {
+    loginApi.oidcToken({ result, codeVerifier: verifier, id, uuid }).then((response) => {
         if (response.data.access_token !== undefined) {
             userStore.user = {
                 name: response.data.user.name,
@@ -142,11 +147,11 @@ onMounted(() => {
     userStore.id = Math.random().toString(36).substring(2, 15);
 
     const params = new URLSearchParams(window.location.search);
-    const oidcCode = params.get('oidc_code');
-    const oidcError = params.get('oidc_error');
-    if (oidcCode) {
+    const oidcResult = params.get('result');
+    const oidcError = params.get('error');
+    if (oidcResult) {
         window.history.replaceState({}, '', window.location.pathname);
-        handleOidcCallback(oidcCode);
+        handleOidcResult(oidcResult);
         return;
     }
     if (oidcError) {

@@ -47,6 +47,7 @@ export * from './oidc-auth-url';
 export * from './oidc-device-info';
 export * from './oidc-response';
 export * from './oidc-settings-response';
+export * from './oidc-token-request';
 export * from './oidc-user';
 export * from './oidc-user-info';
 export * from './peer';

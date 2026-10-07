@@ -12,48 +12,35 @@
  * Do not edit the class manually.
  */
 
-import { OidcDeviceInfo } from './oidc-device-info';
  /**
  * 
  *
  * @export
- * @interface OidcAuthRequest
+ * @interface OidcTokenRequest
  */
-export interface OidcAuthRequest {
-
-    /**
-     * @type {OidcDeviceInfo}
-     * @memberof OidcAuthRequest
-     */
-    "deviceInfo": OidcDeviceInfo;
+export interface OidcTokenRequest {
 
     /**
      * @type {string}
-     * @memberof OidcAuthRequest
+     * @memberof OidcTokenRequest
+     */
+    codeVerifier: string;
+
+    /**
+     * @type {string}
+     * @memberof OidcTokenRequest
      */
     id: string;
 
     /**
      * @type {string}
-     * @memberof OidcAuthRequest
+     * @memberof OidcTokenRequest
      */
-    op: string;
+    result: string;
 
     /**
      * @type {string}
-     * @memberof OidcAuthRequest
+     * @memberof OidcTokenRequest
      */
     uuid: string;
-
-    /**
-     * @type {string}
-     * @memberof OidcAuthRequest
-     */
-    returnTo: string;
-
-    /**
-     * @type {string}
-     * @memberof OidcAuthRequest
-     */
-    codeChallenge: string;
 }
