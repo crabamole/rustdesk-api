@@ -1359,7 +1359,7 @@ async fn oidc_auth(
 ///
 /// ## Returns
 ///
-/// Redirects to the login's `returnTo` with `result` and `code`, or with `error=login_failed`
+/// Redirects to the login's `returnTo` with `result` and `code`, or with `error=login_failed` and `code`
 /// when the code exchange fails. An unknown or expired session gets a "Login failed" page.
 ///
 /// # Example
@@ -1369,7 +1369,7 @@ async fn oidc_auth(
 async fn oidc_callback(apistate: &State<ApiState>, code: &str, state: &str) -> OidcCallbackResponse {
     match apistate.oidc_complete_callback(state, code).await {
         Some((return_to, Some(result))) => oidc_return(&return_to, &format!("result={result}&code={state}")),
-        Some((return_to, None)) => oidc_return(&return_to, "error=login_failed"),
+        Some((return_to, None)) => oidc_return(&return_to, &format!("error=login_failed&code={state}")),
         None => oidc_page("Login failed. Please close this window and try again."),
     }
 }

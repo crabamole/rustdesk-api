@@ -1501,7 +1501,7 @@ async fn test_oidc_failed_login_returns_an_error_to_the_starter() {
     let state = client.rocket().state::<state::ApiState>().unwrap();
     assert!(state.test_set_oidc_provider(&code, std::sync::Arc::new(FailingIdp)).await);
     let location = callback(&client, &code).await;
-    assert_eq!(location, format!("{LOOPBACK}?error=login_failed"));
+    assert_eq!(location, format!("{LOOPBACK}?error=login_failed&code={code}"));
 }
 
 #[test]
