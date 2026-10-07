@@ -70,6 +70,14 @@ async function oidcAuth_step1(provider: OauthProvider) {
     });
     const loginApi = new LoginApi(configuration);
     const verifier = randomVerifier();
+    let codeChallenge: string;
+    try {
+        codeChallenge = await s256Challenge(verifier);
+    } catch (error) {
+        console.log(error);
+        setLoginResult("OIDC authentication failed");
+        return;
+    }
     const oidcAuthRequest = {
         deviceInfo: {
             name: navigator.appName,
@@ -80,7 +88,7 @@ async function oidcAuth_step1(provider: OauthProvider) {
         op: provider.rustdesk_name,
         uuid: userStore.uuid_base64,
         returnTo: window.location.origin + '/ui/login',
-        codeChallenge: await s256Challenge(verifier),
+        codeChallenge: codeChallenge,
     }
     loginApi.oidcAuth(oidcAuthRequest).then((response) => {
         if (!response.data.url) {
