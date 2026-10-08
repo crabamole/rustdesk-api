@@ -22,8 +22,9 @@ Update this file with every API change.
 | POST | /api/sysinfo | [C] `src/hbbs_http/sync.rs` (`url.replace("heartbeat","sysinfo")`) | implemented | |
 | POST | /api/login | [C] `flutter/lib/models/user_model.dart` | implemented | password login intentionally disabled, always 401; use OIDC |
 | GET | /api/login-options | [C] `src/hbbs_http/account.rs`, `flutter/lib/models/user_model.dart` | implemented | |
-| POST | /api/oidc/auth | [C] `src/hbbs_http/account.rs` | implemented | requires `returnTo` (loopback `http://127.0.0.1:<port>/` or a URL on this server) and an S256 `codeChallenge`; the callback redirects there with a one-time `result` |
+| POST | /api/oidc/auth | [C] `src/hbbs_http/account.rs` | implemented | requires `returnTo` (loopback `http://127.0.0.1:<port>/`, or this server's `/ui/login` or `/oidc-callback.html`) and an S256 `codeChallenge`; the callback redirects there with a one-time `result` |
 | POST | /api/oidc/token | [C] `src/hbbs_http/account.rs` | ours | redeems the one-time login result with the PKCE verifier; replaces polling (`GET /api/oidc/auth-query`, removed); completing a native client login records the machine for `GET /api/viewers` |
+| GET | /api/oidc/callback | [I] | ours | the IdP's redirect target: `code` sends the one-time `result` to `returnTo`; `error` (e.g. the user cancelled) sends `error=login_failed`; each outcome is written to the login audit |
 | POST | /api/logout | [C] `flutter/lib/models/user_model.dart` | implemented | |
 | POST | /api/currentUser | [C] `flutter/lib/models/user_model.dart` | implemented | also refreshes the last-seen time of a machine recorded by a login |
 | POST | /api/audit/conn | [C] `src/server/connection.rs` | implemented | connection lifecycle (`new`, `authorized`, `close`) and session-menu note (§4) per audit-api-spec.md §3-4 |
@@ -166,6 +167,7 @@ Upstream clients log in by polling `GET /api/oidc/auth-query`; that login is not
 | GET | /api/user-list | admin-only paginated user list with email/name filters (separate from client-facing `GET /api/users`) |
 | GET | /api/peers/count/{platform} | peer count by platform |
 | GET | /api/peers/cpus | cpu count per peer |
+| GET | /api/audits/login | admin-only login audit: one row per OIDC login that reached the callback, with its outcome; `user` (LIKE) and `outcome` filters, per audit-api-spec.md §9 |
 | GET | /api/viewers | admin-only paginated list of machines whose native client logged in through OIDC but never registered with hbbs; one row per machine and user, with the latest login address (`login_ip`) |
 | GET | /api/oidc/settings | stub; always 401; TODO in source |
 | PUT | /api/oidc/settings | stub; always 401; TODO in source |
