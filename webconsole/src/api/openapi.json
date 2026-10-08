@@ -432,8 +432,18 @@
           "audit"
         ],
         "summary": "Mint a connection audit ref",
-        "description": "Called by hbbs with the viewer's token (audit-api-spec §11). The ref names the caller only, so any logged-in user may mint one.",
+        "description": "Called by hbbs with the viewer's token (audit-api-spec §11) and the device it connects to. The ref names the caller only, so any logged-in user may mint one; it attributes only records of `target`.",
         "operationId": "audit_ref",
+        "parameters": [
+          {
+            "name": "target",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "",
@@ -4029,10 +4039,6 @@
             "nullable": true
           },
           "username": {
-            "type": "string",
-            "nullable": true
-          },
-          "uuid": {
             "type": "string",
             "nullable": true
           },

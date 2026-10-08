@@ -554,6 +554,18 @@ impl ApiState {
             .await;
     }
 
+    /// Registers a device as hbbs would; `uuid` is base64 as in device records. Test-only.
+    #[cfg(any(test, feature = "test-util"))]
+    pub async fn test_register_device(&self, id: &str, uuid: &str) {
+        self.db.test_register_device(id, uuid).await;
+    }
+
+    /// A device's stored info JSON. Test-only.
+    #[cfg(any(test, feature = "test-util"))]
+    pub async fn test_peer_info(&self, id: &str) -> String {
+        self.db.test_peer_info(id).await
+    }
+
     /// Makes a recorded viewer machine `secs` older (all its times). Test-only.
     #[cfg(any(test, feature = "test-util"))]
     pub async fn test_age_viewer_device(&self, id: &str, secs: i64) {
@@ -786,6 +798,12 @@ impl ApiState {
     /// Stores one connection record (docs/audit-api-spec.md §3); `None` means it was not stored.
     pub async fn audit_conn(&self, request: &utils::AuditConnRequest) -> Option<()> {
         let (id, uuid, conn_id) = (&request.id, &request.uuid, request.conn_id);
+        // A viewer's menu note (spec §4) carries no uuid; it only lands on an existing row of its session.
+        let menu_note = request.action.is_empty() && request.note.is_some() && uuid.is_empty()
+            && request.peer.is_none() && request.conn_type.is_none();
+        if !menu_note && !self.from_registered_device("conn", id, uuid).await {
+            return Some(());
+        }
         match request.action.to_lowercase().as_str() {
             "new" => {
                 if !request.nonce.is_empty() && self.db.find_audit_conn_by_nonce(&request.nonce).await.is_some() {
@@ -806,7 +824,7 @@ impl ApiState {
                     .insert_audit_conn(guid.as_bytes(), None, id.as_bytes(), None, request.note.as_deref(), &info.to_string())
                     .await?;
                 if let Some(conn_ref) = request.conn_audit_ref.as_deref().filter(|r| !r.is_empty()) {
-                    match self.resolve_audit_conn_ref(conn_ref).await {
+                    match self.resolve_audit_conn_ref(conn_ref, id).await {
                         // The row is already stored; a failed attribution update must not make the
                         // client retry (it would just hit find_audit_conn_by_nonce and never retry this).
                         Some(user) => { self.db.set_audit_conn_user(guid.as_bytes(), &user).await; }
@@ -877,6 +895,9 @@ impl ApiState {
     }
 
     pub async fn audit_file(&self, request: &utils::AuditFileRequest) -> Option<()> {
+        if !self.from_registered_device("file", &request.id, &request.uuid).await {
+            return Some(());
+        }
         if !request.nonce.is_empty() && self.db.find_audit_file_by_nonce(&request.nonce).await {
             return Some(());
         }
@@ -901,6 +922,9 @@ impl ApiState {
     }
 
     pub async fn audit_alarm(&self, request: &utils::AuditAlarmRequest) -> Option<()> {
+        if !self.from_registered_device("alarm", &request.id, &request.uuid).await {
+            return Some(());
+        }
         if !request.nonce.is_empty() && self.db.find_audit_alarm_by_nonce(&request.nonce).await {
             return Some(());
         }
@@ -912,7 +936,7 @@ impl ApiState {
             "info": audit_info(&request.info),
         });
         let user = match request.conn_audit_ref.as_deref().filter(|r| !r.is_empty()) {
-            Some(conn_ref) => match self.resolve_audit_conn_ref(conn_ref).await {
+            Some(conn_ref) => match self.resolve_audit_conn_ref(conn_ref, &request.id).await {
                 Some(user) => Some(user),
                 None => self.db.audit_conn_user(&request.id, &request.uuid, request.conn_id).await,
             },
@@ -959,15 +983,24 @@ impl ApiState {
         self.db.audit_conn_rows(remote).await.last()?.note.clone()
     }
 
-    /// Opaque ref hbbs forwards to the controlled device; it identifies `user` without exposing a token.
-    pub async fn mint_audit_conn_ref(&self, user: &UserId) -> Option<String> {
+    /// Opaque ref hbbs forwards to the controlled device `target`; it identifies `user` without exposing a token.
+    pub async fn mint_audit_conn_ref(&self, user: &UserId, target: &str) -> Option<String> {
         let conn_ref = uuid::Uuid::new_v4().simple().to_string();
-        self.db.insert_audit_conn_ref(&conn_ref, user).await?;
+        self.db.insert_audit_conn_ref(&conn_ref, user, target).await?;
         Some(conn_ref)
     }
 
-    pub async fn resolve_audit_conn_ref(&self, conn_ref: &str) -> Option<UserId> {
-        self.db.resolve_audit_conn_ref(conn_ref).await
+    pub async fn resolve_audit_conn_ref(&self, conn_ref: &str, target: &str) -> Option<UserId> {
+        self.db.resolve_audit_conn_ref(conn_ref, target).await
+    }
+
+    /// Audit records are stored only from the device they name (spec §12.1); others are answered and dropped.
+    async fn from_registered_device(&self, kind: &str, id: &str, uuid: &str) -> bool {
+        let registered = self.db.is_registered_device(id, uuid).await;
+        if !registered {
+            log::warn!("audit {kind}: dropped a record for {id:?}: no registered device with that uuid");
+        }
+        registered
     }
 
     /// Admin read API (audit-api-spec.md §9).
@@ -1675,6 +1708,15 @@ mod tests {
         assert_eq!(state.get_strategy(guid).await.unwrap().1, opts);
     }
 
+    /// A test state where the devices the audit tests post for are registered (base64 uuid "uuid").
+    async fn audit_state() -> ApiState {
+        let state = test_state().await;
+        for id in ["dev", "dev1", "dev2", "dev3", "dev4", "dev5"] {
+            state.test_register_device(id, "dXVpZA==").await;
+        }
+        state
+    }
+
     fn conn_record(json: &str) -> utils::AuditConnRequest {
         serde_json::from_str(json).unwrap()
     }
@@ -1694,7 +1736,7 @@ mod tests {
 
     #[tokio::test]
     async fn audit_conn_close_matches_the_connection_key() {
-        let state = test_state().await;
+        let state = audit_state().await;
         state.audit_conn(&new_record(17, "n-new")).await.unwrap();
         state.audit_conn(&close_record("dev1", "dXVpZA==", 17, "n-close")).await.unwrap();
         let rows = state.db.audit_conn_rows("dev1").await;
@@ -1704,7 +1746,7 @@ mod tests {
 
     #[tokio::test]
     async fn heartbeat_ends_open_rows_missing_from_conns() {
-        let state = test_state().await;
+        let state = audit_state().await;
         state.audit_conn(&new_record(1, "n-hb1")).await.unwrap();
         state.audit_conn(&new_record(2, "n-hb2")).await.unwrap();
         state.db.end_audit_conns_not_alive("dev1", "dXVpZA==", &[2], 0).await.unwrap();
@@ -1715,7 +1757,7 @@ mod tests {
 
     #[tokio::test]
     async fn heartbeat_without_conns_ends_every_open_row_of_the_device_only() {
-        let state = test_state().await;
+        let state = audit_state().await;
         state.audit_conn(&new_record(3, "n-hb3")).await.unwrap();
         state.audit_conn(&conn_record(
             r#"{"action":"new","id":"dev2","uuid":"dXVpZA==","conn_id":3,"session_id":0,"nonce":"n-hb4"}"#,
@@ -1727,7 +1769,7 @@ mod tests {
 
     #[tokio::test]
     async fn heartbeat_spares_rows_younger_than_the_grace_period() {
-        let state = test_state().await;
+        let state = audit_state().await;
         state.audit_conn(&new_record(5, "n-hb5")).await.unwrap();
         state.db.end_audit_conns_not_alive("dev1", "dXVpZA==", &[], AUDIT_CONN_HEARTBEAT_GRACE_SECS).await.unwrap();
         assert!(state.db.audit_conn_rows("dev1").await[0].end_time.is_none());
@@ -1735,7 +1777,7 @@ mod tests {
 
     #[tokio::test]
     async fn audit_conn_close_ignores_other_connections() {
-        let state = test_state().await;
+        let state = audit_state().await;
         state.audit_conn(&new_record(17, "n-new")).await.unwrap();
         state.audit_conn(&close_record("dev1", "dXVpZA==", 18, "c1")).await.unwrap();
         state.audit_conn(&close_record("dev1", "b3RoZXI=", 17, "c2")).await.unwrap();
@@ -1746,7 +1788,7 @@ mod tests {
 
     #[tokio::test]
     async fn audit_conn_new_retry_is_stored_once() {
-        let state = test_state().await;
+        let state = audit_state().await;
         state.audit_conn(&new_record(17, "same")).await.unwrap();
         state.audit_conn(&new_record(17, "same")).await.unwrap();
         assert_eq!(state.db.audit_conn_rows("dev1").await.len(), 1);
@@ -1755,7 +1797,7 @@ mod tests {
     #[tokio::test]
     async fn audit_conn_reused_conn_id_ends_the_stale_row() {
         // conn_id restarts with the RustDesk process; a still-open row with the same key is dead.
-        let state = test_state().await;
+        let state = audit_state().await;
         state.audit_conn(&new_record(17, "first")).await.unwrap();
         state.audit_conn(&new_record(17, "second")).await.unwrap();
         let rows = state.db.audit_conn_rows("dev1").await;
@@ -1768,14 +1810,14 @@ mod tests {
 
     #[tokio::test]
     async fn audit_conn_new_has_no_type_until_authorized() {
-        let state = test_state().await;
+        let state = audit_state().await;
         state.audit_conn(&new_record(17, "n")).await.unwrap();
         assert_eq!(state.db.audit_conn_rows("dev1").await[0].conn_type, None);
     }
 
     #[tokio::test]
     async fn audit_conn_authorized_records_the_controller() {
-        let state = test_state().await;
+        let state = audit_state().await;
         state.audit_conn(&new_record(17, "n")).await.unwrap();
         state
             .audit_conn(&conn_record(
@@ -1798,7 +1840,7 @@ mod tests {
 
     #[tokio::test]
     async fn audit_conn_authorized_without_new_creates_the_row() {
-        let state = test_state().await;
+        let state = audit_state().await;
         state
             .audit_conn(&conn_record(
                 r#"{"peer":["987654321","alice-laptop"],"type":0,"id":"dev1","uuid":"dXVpZA==","conn_id":5,"session_id":7,"nonce":"a"}"#,
@@ -1814,7 +1856,7 @@ mod tests {
 
     #[tokio::test]
     async fn audit_menu_note_without_session_id_is_ignored() {
-        let state = test_state().await;
+        let state = audit_state().await;
         state.audit_conn(&new_record(5, "n-note2")).await.unwrap();
 
         // session_id 0 is the "new" row's own default, not a real session; applying the
@@ -1832,31 +1874,31 @@ mod tests {
 
     #[tokio::test]
     async fn audit_conn_unknown_shapes_are_accepted() {
-        let state = test_state().await;
+        let state = audit_state().await;
         assert!(state.audit_conn(&conn_record(r#"{"id":"dev1","session_id":1,"note":"hi"}"#)).await.is_some());
         assert!(state.audit_conn(&conn_record(r#"{"action":"bogus","id":"dev1"}"#)).await.is_some());
     }
 
     #[tokio::test]
     async fn audit_conn_ref_resolves_to_its_user() {
-        let state = test_state().await;
+        let state = audit_state().await;
         let (user, _, _) = state.db.get_user_for_oauth2("bob", "bob", Some("bob@example.org")).await.unwrap();
-        let r = state.mint_audit_conn_ref(&user).await.unwrap();
+        let r = state.mint_audit_conn_ref(&user, "dev1").await.unwrap();
         assert_eq!(r.len(), 32);
-        assert_eq!(state.resolve_audit_conn_ref(&r).await, Some(user));
-        assert_eq!(state.resolve_audit_conn_ref("unknown").await, None);
+        assert_eq!(state.resolve_audit_conn_ref(&r, "dev1").await, Some(user));
+        assert_eq!(state.resolve_audit_conn_ref("unknown", "dev1").await, None);
     }
 
     #[tokio::test]
     async fn audit_conn_new_with_ref_records_the_viewer_user() {
-        let state = test_state().await;
+        let state = audit_state().await;
         let (user, _, _) = state.db.get_user_for_oauth2("carol", "carol", Some("carol@example.org")).await.unwrap();
-        let r = state.mint_audit_conn_ref(&user).await.unwrap();
+        let r = state.mint_audit_conn_ref(&user, "dev1").await.unwrap();
         let new = conn_record(&format!(
-            r#"{{"action":"new","id":"dev1","uuid":"u1","conn_id":7,"nonce":"n-ref","conn_audit_ref":"{r}"}}"#
+            r#"{{"action":"new","id":"dev1","uuid":"dXVpZA==","conn_id":7,"nonce":"n-ref","conn_audit_ref":"{r}"}}"#
         ));
         state.audit_conn(&new).await.unwrap();
-        assert_eq!(state.db.audit_conn_user("dev1", "u1", 7).await, Some(user));
+        assert_eq!(state.db.audit_conn_user("dev1", "dXVpZA==", 7).await, Some(user));
     }
 
     /// Logs `viewer` in as a new user (`name`) on machine `host`, then records new + authorized for a session from it.
@@ -1865,12 +1907,12 @@ mod tests {
         if let Some(host) = host {
             state.db.upsert_viewer_device(viewer, "vu", host, "Windows", "198.51.100.7", &user).await.unwrap();
         }
-        let r = state.mint_audit_conn_ref(&user).await.unwrap();
+        let r = state.mint_audit_conn_ref(&user, "dev1").await.unwrap();
         state.audit_conn(&conn_record(&format!(
-            r#"{{"action":"new","ip":"10.0.0.1","id":"dev1","uuid":"u1","conn_id":{conn_id},"nonce":"n{conn_id}","conn_audit_ref":"{r}"}}"#
+            r#"{{"action":"new","ip":"10.0.0.1","id":"dev1","uuid":"dXVpZA==","conn_id":{conn_id},"nonce":"n{conn_id}","conn_audit_ref":"{r}"}}"#
         ))).await.unwrap();
         state.audit_conn(&conn_record(&format!(
-            r#"{{"peer":["{viewer}","Alice"],"type":0,"id":"dev1","uuid":"u1","conn_id":{conn_id},"session_id":1,"nonce":"a{conn_id}"}}"#
+            r#"{{"peer":["{viewer}","Alice"],"type":0,"id":"dev1","uuid":"dXVpZA==","conn_id":{conn_id},"session_id":1,"nonce":"a{conn_id}"}}"#
         ))).await.unwrap();
         user
     }
@@ -1884,7 +1926,7 @@ mod tests {
 
     #[tokio::test]
     async fn audit_conn_authorized_records_the_viewer_machine() {
-        let state = test_state().await;
+        let state = audit_state().await;
         session_from_viewer(&state, "alice", "111222333", Some("LAPTOP-FIN-042"), 1).await;
         let info = conn_info(&state.db.audit_conn_rows("dev1").await, 1);
         assert_eq!(info["peer_hostname"], "LAPTOP-FIN-042");
@@ -1895,7 +1937,7 @@ mod tests {
 
     #[tokio::test]
     async fn audit_conn_viewer_machine_needs_a_login_by_the_same_user() {
-        let state = test_state().await;
+        let state = audit_state().await;
         let (other, _, _) = state.db.get_user_for_oauth2("mallory", "mallory", Some("mallory@example.org")).await.unwrap();
         state.db.upsert_viewer_device("111222333", "vu", "OTHER-PC", "Linux", "", &other).await.unwrap();
         session_from_viewer(&state, "bob", "111222333", None, 2).await;
@@ -1906,7 +1948,7 @@ mod tests {
 
     #[tokio::test]
     async fn viewer_login_with_another_users_id_and_uuid_does_not_take_the_row_over() {
-        let state = test_state().await;
+        let state = audit_state().await;
         let (victim, _, _) = state.db.get_user_for_oauth2("erin", "erin", Some("erin@example.org")).await.unwrap();
         let (other, _, _) = state.db.get_user_for_oauth2("frank", "frank", Some("frank@example.org")).await.unwrap();
         state.db.upsert_viewer_device("555666777", "vu", "ERIN-PC", "Windows", "", &victim).await.unwrap();
@@ -1917,7 +1959,7 @@ mod tests {
 
     #[tokio::test]
     async fn audit_conn_without_user_records_no_viewer_machine() {
-        let state = test_state().await;
+        let state = audit_state().await;
         let (user, _, _) = state.db.get_user_for_oauth2("dave", "dave", Some("dave@example.org")).await.unwrap();
         state.db.upsert_viewer_device("987654321", "vu", "DAVE-PC", "macOS", "", &user).await.unwrap();
         state.audit_conn(&new_record(3, "n-nouser")).await.unwrap();
@@ -1930,20 +1972,20 @@ mod tests {
 
     #[tokio::test]
     async fn audit_conn_new_with_unknown_ref_is_stored_without_user() {
-        let state = test_state().await;
-        let new = conn_record(r#"{"action":"new","id":"dev2","uuid":"u2","conn_id":1,"nonce":"n-unk","conn_audit_ref":"nope"}"#);
+        let state = audit_state().await;
+        let new = conn_record(r#"{"action":"new","id":"dev2","uuid":"dXVpZA==","conn_id":1,"nonce":"n-unk","conn_audit_ref":"nope"}"#);
         state.audit_conn(&new).await.unwrap();
         assert_eq!(state.db.audit_conn_rows("dev2").await.len(), 1);
-        assert_eq!(state.db.audit_conn_user("dev2", "u2", 1).await, None);
+        assert_eq!(state.db.audit_conn_user("dev2", "dXVpZA==", 1).await, None);
     }
 
     #[tokio::test]
     async fn audit_menu_note_lands_on_the_session_row() {
-        let state = test_state().await;
+        let state = audit_state().await;
         state.audit_conn(&new_record(5, "n-note")).await.unwrap();
         // authorized record carries the session id
         state.audit_conn(&conn_record(
-            r#"{"peer":["v1","Viewer"],"type":0,"id":"dev","uuid":"uuid","conn_id":5,"session_id":18446744073709551615,"nonce":"a-note"}"#,
+            r#"{"peer":["v1","Viewer"],"type":0,"id":"dev","uuid":"dXVpZA==","conn_id":5,"session_id":18446744073709551615,"nonce":"a-note"}"#,
         )).await.unwrap();
         state.audit_conn(&conn_record(r#"{"id":"dev@srv","session_id":18446744073709551615,"note":"hello"}"#)).await.unwrap();
         assert_eq!(state.db.audit_conn_rows("dev").await[0].note.as_deref(), Some("hello"));
@@ -1951,15 +1993,15 @@ mod tests {
 
     #[tokio::test]
     async fn find_active_audit_conn_is_scoped_to_the_row_owner() {
-        let state = test_state().await;
+        let state = audit_state().await;
         let (owner, _, _) = state.db.get_user_for_oauth2("erin", "erin", Some("erin@example.org")).await.unwrap();
         let (other, _, _) = state.db.get_user_for_oauth2("frank", "frank", Some("frank@example.org")).await.unwrap();
-        let r = state.mint_audit_conn_ref(&owner).await.unwrap();
+        let r = state.mint_audit_conn_ref(&owner, "dev4").await.unwrap();
         state.audit_conn(&conn_record(&format!(
-            r#"{{"action":"new","id":"dev4","uuid":"u4","conn_id":9,"session_id":42,"nonce":"n-active","conn_audit_ref":"{r}"}}"#
+            r#"{{"action":"new","id":"dev4","uuid":"dXVpZA==","conn_id":9,"session_id":42,"nonce":"n-active","conn_audit_ref":"{r}"}}"#
         ))).await.unwrap();
         state.audit_conn(&conn_record(
-            r#"{"peer":["v1","Viewer"],"type":0,"id":"dev4","uuid":"u4","conn_id":9,"session_id":42,"nonce":"a-active"}"#,
+            r#"{"peer":["v1","Viewer"],"type":0,"id":"dev4","uuid":"dXVpZA==","conn_id":9,"session_id":42,"nonce":"a-active"}"#,
         )).await.unwrap();
 
         assert!(state.find_active_audit_conn("dev4", "42", "0", &owner).await.is_some());
@@ -1975,17 +2017,17 @@ mod tests {
 
     #[tokio::test]
     async fn set_audit_note_enforces_ownership() {
-        let state = test_state().await;
+        let state = audit_state().await;
         let (owner, _, _) = state.db.get_user_for_oauth2("gina", "gina", Some("gina@example.org")).await.unwrap();
         let (other, _, _) = state.db.get_user_for_oauth2("hank", "hank", Some("hank@example.org")).await.unwrap();
-        let r = state.mint_audit_conn_ref(&owner).await.unwrap();
+        let r = state.mint_audit_conn_ref(&owner, "dev5").await.unwrap();
         state.audit_conn(&conn_record(&format!(
-            r#"{{"action":"new","id":"dev5","uuid":"u5","conn_id":11,"session_id":1,"nonce":"n-set","conn_audit_ref":"{r}"}}"#
+            r#"{{"action":"new","id":"dev5","uuid":"dXVpZA==","conn_id":11,"session_id":1,"nonce":"n-set","conn_audit_ref":"{r}"}}"#
         ))).await.unwrap();
         let guid = state.find_active_audit_conn("dev5", "1", "0", &owner).await;
         assert_eq!(guid, None, "row has no type until authorized");
         state.audit_conn(&conn_record(
-            r#"{"peer":["v1","Viewer"],"type":0,"id":"dev5","uuid":"u5","conn_id":11,"session_id":1,"nonce":"a-set"}"#,
+            r#"{"peer":["v1","Viewer"],"type":0,"id":"dev5","uuid":"dXVpZA==","conn_id":11,"session_id":1,"nonce":"a-set"}"#,
         )).await.unwrap();
         let guid = state.find_active_audit_conn("dev5", "1", "0", &owner).await.unwrap();
 
@@ -2002,14 +2044,14 @@ mod tests {
 
     #[tokio::test]
     async fn audit_file_is_stored_against_the_device_and_attributed() {
-        let state = test_state().await;
+        let state = audit_state().await;
         let (user, _, _) = state.db.get_user_for_oauth2("dave", "dave", Some("dave@example.org")).await.unwrap();
-        let r = state.mint_audit_conn_ref(&user).await.unwrap();
+        let r = state.mint_audit_conn_ref(&user, "dev3").await.unwrap();
         state.audit_conn(&conn_record(&format!(
-            r#"{{"action":"new","id":"dev3","uuid":"u3","conn_id":2,"nonce":"n3","conn_audit_ref":"{r}"}}"#
+            r#"{{"action":"new","id":"dev3","uuid":"dXVpZA==","conn_id":2,"nonce":"n3","conn_audit_ref":"{r}"}}"#
         ))).await.unwrap();
         let file: utils::AuditFileRequest = serde_json::from_str(
-            r#"{"id":"dev3","uuid":"u3","peer_id":"viewer9","conn_id":2,"type":1,"path":"/tmp","is_file":false,
+            r#"{"id":"dev3","uuid":"dXVpZA==","peer_id":"viewer9","conn_id":2,"type":1,"path":"/tmp","is_file":false,
                 "info":"{\"ip\":\"203.0.113.5\",\"name\":\"v\",\"num\":1,\"files\":[[\"a.txt\",3]]}","nonce":"f1"}"#,
         ).unwrap();
         state.audit_file(&file).await.unwrap();
@@ -2023,14 +2065,14 @@ mod tests {
 
     #[tokio::test]
     async fn audit_alarm_without_ref_is_attributed_from_the_connection() {
-        let state = test_state().await;
+        let state = audit_state().await;
         let (user, _, _) = state.db.get_user_for_oauth2("erin", "erin", Some("erin@example.org")).await.unwrap();
-        let r = state.mint_audit_conn_ref(&user).await.unwrap();
+        let r = state.mint_audit_conn_ref(&user, "dev4").await.unwrap();
         state.audit_conn(&conn_record(&format!(
-            r#"{{"action":"new","id":"dev4","uuid":"u4","conn_id":3,"nonce":"n4","conn_audit_ref":"{r}"}}"#
+            r#"{{"action":"new","id":"dev4","uuid":"dXVpZA==","conn_id":3,"nonce":"n4","conn_audit_ref":"{r}"}}"#
         ))).await.unwrap();
         let alarm: utils::AuditAlarmRequest = serde_json::from_str(
-            r#"{"id":"dev4","uuid":"u4","typ":1,"info":"{\"ip\":\"203.0.113.5\",\"id\":\"1\",\"name\":\"n\"}","conn_id":3,"nonce":"a1"}"#,
+            r#"{"id":"dev4","uuid":"dXVpZA==","typ":1,"info":"{\"ip\":\"203.0.113.5\",\"id\":\"1\",\"name\":\"n\"}","conn_id":3,"nonce":"a1"}"#,
         ).unwrap();
         state.audit_alarm(&alarm).await.unwrap();
         let row = state.db.audit_alarm_row_for_test("a1").await;
@@ -2041,15 +2083,54 @@ mod tests {
 
     #[tokio::test]
     async fn audit_alarm_with_ref_is_attributed_from_the_ref() {
-        let state = test_state().await;
+        let state = audit_state().await;
         let (user, _, _) = state.db.get_user_for_oauth2("frank", "frank", Some("frank@example.org")).await.unwrap();
-        let r = state.mint_audit_conn_ref(&user).await.unwrap();
+        let r = state.mint_audit_conn_ref(&user, "dev5").await.unwrap();
         let alarm: utils::AuditAlarmRequest = serde_json::from_str(&format!(
-            r#"{{"id":"dev5","uuid":"u5","typ":0,"info":"{{\"ip\":\"203.0.113.5\"}}","conn_id":9,"nonce":"a2","conn_audit_ref":"{r}"}}"#
+            r#"{{"id":"dev5","uuid":"dXVpZA==","typ":0,"info":"{{\"ip\":\"203.0.113.5\"}}","conn_id":9,"nonce":"a2","conn_audit_ref":"{r}"}}"#
         )).unwrap();
         state.audit_alarm(&alarm).await.unwrap();
         let row = state.db.audit_alarm_row_for_test("a2").await;
         assert_eq!(row.user, Some(user));
+    }
+
+    #[tokio::test]
+    async fn audit_records_from_unregistered_devices_are_dropped() {
+        let state = audit_state().await;
+        // Wrong uuid for a registered ID, an unknown ID, a uuid that is not base64.
+        for (id, uuid) in [("dev1", "b3RoZXI="), ("ghost", "dXVpZA=="), ("dev1", "not base64")] {
+            let new = conn_record(&format!(r#"{{"action":"new","id":"{id}","uuid":"{uuid}","conn_id":1,"nonce":"n-{id}-{uuid}"}}"#));
+            assert!(state.audit_conn(&new).await.is_some(), "answered as stored");
+            let file: utils::AuditFileRequest = serde_json::from_str(&format!(
+                r#"{{"id":"{id}","uuid":"{uuid}","peer_id":"v","conn_id":1,"type":1,"path":"/","is_file":true,"info":"{{}}","nonce":"f-{id}-{uuid}"}}"#
+            )).unwrap();
+            assert!(state.audit_file(&file).await.is_some());
+            let alarm: utils::AuditAlarmRequest = serde_json::from_str(&format!(
+                r#"{{"id":"{id}","uuid":"{uuid}","typ":1,"info":"{{}}","conn_id":1,"nonce":"a-{id}-{uuid}"}}"#
+            )).unwrap();
+            assert!(state.audit_alarm(&alarm).await.is_some());
+        }
+        assert!(state.db.audit_conn_rows("dev1").await.is_empty());
+        assert!(state.db.audit_conn_rows("ghost").await.is_empty());
+        assert!(!state.db.find_audit_file_by_nonce("f-dev1-b3RoZXI=").await);
+        assert!(!state.db.find_audit_alarm_by_nonce("a-ghost-dXVpZA==").await);
+    }
+
+    #[tokio::test]
+    async fn audit_ref_attributes_only_records_of_its_target() {
+        let state = audit_state().await;
+        let (user, _, _) = state.db.get_user_for_oauth2("ivy", "ivy", Some("ivy@example.org")).await.unwrap();
+        let r = state.mint_audit_conn_ref(&user, "dev1").await.unwrap();
+        state.audit_conn(&conn_record(&format!(
+            r#"{{"action":"new","id":"dev2","uuid":"dXVpZA==","conn_id":1,"nonce":"n-other","conn_audit_ref":"{r}"}}"#
+        ))).await.unwrap();
+        assert_eq!(state.db.audit_conn_rows("dev2").await.len(), 1, "the record is kept");
+        assert_eq!(state.db.audit_conn_user("dev2", "dXVpZA==", 1).await, None);
+        let alarm: utils::AuditAlarmRequest = serde_json::from_str(&format!(
+            r#"{{"id":"dev2","uuid":"dXVpZA==","typ":0,"info":"{{}}","conn_id":9,"nonce":"a-other","conn_audit_ref":"{r}"}}"#
+        )).unwrap();
+        state.audit_alarm(&alarm).await.unwrap();
+        assert_eq!(state.db.audit_alarm_row_for_test("a-other").await.user, None);
     }
 
     #[tokio::test]

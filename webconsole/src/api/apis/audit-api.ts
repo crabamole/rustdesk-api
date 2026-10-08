@@ -324,12 +324,17 @@ export const AuditApiAxiosParamCreator = function (configuration?: Configuration
             };
         },
         /**
-         * Called by hbbs with the viewer's token (audit-api-spec §11). The ref names the caller only, so any logged-in user may mint one.
+         * Called by hbbs with the viewer's token (audit-api-spec §11) and the device it connects to. The ref names the caller only, so any logged-in user may mint one; it attributes only records of `target`.
          * @summary Mint a connection audit ref
+         * @param {string} target 
          * @param {*} [options] Override http request option.
          * @throws {RequiredError}
          */
-        auditRef: async (options: AxiosRequestConfig = {}): Promise<RequestArgs> => {
+        auditRef: async (target: string, options: AxiosRequestConfig = {}): Promise<RequestArgs> => {
+            // verify required parameter 'target' is not null or undefined
+            if (target === null || target === undefined) {
+                throw new RequiredError('target','Required parameter target was null or undefined when calling auditRef.');
+            }
             const localVarPath = `/api/audit/ref`;
             // use dummy base URL string because the URL constructor only accepts absolute URLs.
             const localVarUrlObj = new URL(localVarPath, 'https://example.com');
@@ -348,6 +353,10 @@ export const AuditApiAxiosParamCreator = function (configuration?: Configuration
                     ? await configuration.accessToken()
                     : await configuration.accessToken;
                 localVarHeaderParameter["Authorization"] = "Bearer " + accessToken;
+            }
+
+            if (target !== undefined) {
+                localVarQueryParameter['target'] = target;
             }
 
             const query = new URLSearchParams(localVarUrlObj.search);
@@ -782,13 +791,14 @@ export const AuditApiFp = function(configuration?: Configuration) {
             };
         },
         /**
-         * Called by hbbs with the viewer's token (audit-api-spec §11). The ref names the caller only, so any logged-in user may mint one.
+         * Called by hbbs with the viewer's token (audit-api-spec §11) and the device it connects to. The ref names the caller only, so any logged-in user may mint one; it attributes only records of `target`.
          * @summary Mint a connection audit ref
+         * @param {string} target 
          * @param {*} [options] Override http request option.
          * @throws {RequiredError}
          */
-        async auditRef(options?: AxiosRequestConfig): Promise<(axios?: AxiosInstance, basePath?: string) => Promise<AxiosResponse<AuditRefResponse>>> {
-            const localVarAxiosArgs = await AuditApiAxiosParamCreator(configuration).auditRef(options);
+        async auditRef(target: string, options?: AxiosRequestConfig): Promise<(axios?: AxiosInstance, basePath?: string) => Promise<AxiosResponse<AuditRefResponse>>> {
+            const localVarAxiosArgs = await AuditApiAxiosParamCreator(configuration).auditRef(target, options);
             return (axios: AxiosInstance = globalAxios, basePath: string = BASE_PATH) => {
                 const axiosRequestArgs :AxiosRequestConfig = {...localVarAxiosArgs.options, url: basePath + localVarAxiosArgs.url};
                 return axios.request(axiosRequestArgs);
@@ -948,13 +958,14 @@ export const AuditApiFactory = function (configuration?: Configuration, basePath
             return AuditApiFp(configuration).auditNote(body, options).then((request) => request(axios, basePath));
         },
         /**
-         * Called by hbbs with the viewer's token (audit-api-spec §11). The ref names the caller only, so any logged-in user may mint one.
+         * Called by hbbs with the viewer's token (audit-api-spec §11) and the device it connects to. The ref names the caller only, so any logged-in user may mint one; it attributes only records of `target`.
          * @summary Mint a connection audit ref
+         * @param {string} target 
          * @param {*} [options] Override http request option.
          * @throws {RequiredError}
          */
-        async auditRef(options?: AxiosRequestConfig): Promise<AxiosResponse<AuditRefResponse>> {
-            return AuditApiFp(configuration).auditRef(options).then((request) => request(axios, basePath));
+        async auditRef(target: string, options?: AxiosRequestConfig): Promise<AxiosResponse<AuditRefResponse>> {
+            return AuditApiFp(configuration).auditRef(target, options).then((request) => request(axios, basePath));
         },
         /**
          * Pro-compatible (`audits.py alarm`): newest first; `device` is an SQL LIKE pattern.
@@ -1097,14 +1108,15 @@ export class AuditApi extends BaseAPI {
         return AuditApiFp(this.configuration).auditNote(body, options).then((request) => request(this.axios, this.basePath));
     }
     /**
-     * Called by hbbs with the viewer's token (audit-api-spec §11). The ref names the caller only, so any logged-in user may mint one.
+     * Called by hbbs with the viewer's token (audit-api-spec §11) and the device it connects to. The ref names the caller only, so any logged-in user may mint one; it attributes only records of `target`.
      * @summary Mint a connection audit ref
+     * @param {string} target 
      * @param {*} [options] Override http request option.
      * @throws {RequiredError}
      * @memberof AuditApi
      */
-    public async auditRef(options?: AxiosRequestConfig) : Promise<AxiosResponse<AuditRefResponse>> {
-        return AuditApiFp(this.configuration).auditRef(options).then((request) => request(this.axios, this.basePath));
+    public async auditRef(target: string, options?: AxiosRequestConfig) : Promise<AxiosResponse<AuditRefResponse>> {
+        return AuditApiFp(this.configuration).auditRef(target, options).then((request) => request(this.axios, this.basePath));
     }
     /**
      * Pro-compatible (`audits.py alarm`): newest first; `device` is an SQL LIKE pattern.

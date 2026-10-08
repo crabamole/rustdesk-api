@@ -226,8 +226,9 @@ async fn test_audit() {
 #[rocket::async_test]
 async fn test_audit_file_answers_empty_when_stored() {
     let (client, _dir) = test_client().await;
+    client.rocket().state::<state::ApiState>().unwrap().test_register_device("d", "dQ==").await;
     let resp = client.post("/api/audit/file").header(ContentType::JSON)
-        .body(r#"{"id":"d","uuid":"u","peer_id":"p","conn_id":1,"type":0,"path":"","is_file":false,"info":"{}","nonce":"x1"}"#)
+        .body(r#"{"id":"d","uuid":"dQ==","peer_id":"p","conn_id":1,"type":0,"path":"","is_file":false,"info":"{}","nonce":"x1"}"#)
         .dispatch().await;
     assert_eq!(resp.status(), Status::Ok);
     assert_eq!(resp.into_string().await.unwrap_or_default(), "");
@@ -236,8 +237,9 @@ async fn test_audit_file_answers_empty_when_stored() {
 #[rocket::async_test]
 async fn test_audit_alarm_answers_empty_when_stored() {
     let (client, _dir) = test_client().await;
+    client.rocket().state::<state::ApiState>().unwrap().test_register_device("d", "dQ==").await;
     let resp = client.post("/api/audit/alarm").header(ContentType::JSON)
-        .body(r#"{"id":"d","uuid":"u","typ":1,"info":"{}","conn_id":1,"nonce":"x2"}"#)
+        .body(r#"{"id":"d","uuid":"dQ==","typ":1,"info":"{}","conn_id":1,"nonce":"x2"}"#)
         .dispatch().await;
     assert_eq!(resp.status(), Status::Ok);
     assert_eq!(resp.into_string().await.unwrap_or_default(), "");
@@ -246,7 +248,7 @@ async fn test_audit_alarm_answers_empty_when_stored() {
 #[rocket::async_test]
 async fn test_audit_ref_requires_login() {
     let (client, _dir) = test_client().await;
-    let resp = client.post("/api/audit/ref").dispatch().await;
+    let resp = client.post("/api/audit/ref?target=dev1").dispatch().await;
     assert!(resp.status() == Status::Unauthorized || resp.status() == Status::Forbidden);
 }
 
@@ -259,11 +261,16 @@ async fn test_audit_ref_is_minted_for_the_caller() {
     state.set_admin("alice@example.org", true).await.unwrap();
     state.set_admin("alice@example.org", false).await.unwrap();
     let token = oidc_token(&client, "alice").await;
-    let resp = client.post("/api/audit/ref").header(auth_header(&token)).dispatch().await;
+    let resp = client.post("/api/audit/ref?target=dev1").header(auth_header(&token)).dispatch().await;
     assert_eq!(resp.status(), Status::Ok);
     let body: Value = resp.into_json().await.unwrap();
     let r = body["ref"].as_str().unwrap().to_string();
-    assert!(state.resolve_audit_conn_ref(&r).await.is_some());
+    assert!(state.resolve_audit_conn_ref(&r, "dev1").await.is_some());
+    assert!(state.resolve_audit_conn_ref(&r, "dev2").await.is_none(), "bound to its target");
+    let resp = client.post("/api/audit/ref").header(auth_header(&token)).dispatch().await;
+    assert_eq!(resp.status(), Status::UnprocessableEntity, "the target is required");
+    let resp = client.post("/api/audit/ref?target=").header(auth_header(&token)).dispatch().await;
+    assert_eq!(resp.status(), Status::BadRequest);
 }
 
 #[rocket::async_test]
@@ -279,6 +286,7 @@ async fn test_audit_conn_active_requires_auth() {
 #[rocket::async_test]
 async fn test_audit_conn_active_and_note() {
     let (client, _dir) = test_client().await;
+    client.rocket().state::<state::ApiState>().unwrap().test_register_device("devX", "dVg=").await;
     let state = client.rocket().state::<state::ApiState>().unwrap();
     // A plain (non-admin) logged-in user: created inactive, then activated and demoted.
     state.test_oidc_login(&"ivy".to_string()).await;
@@ -286,7 +294,7 @@ async fn test_audit_conn_active_and_note() {
     state.set_admin("ivy@example.org", false).await.unwrap();
     let token = oidc_token(&client, "ivy").await;
 
-    let resp = client.post("/api/audit/ref").header(auth_header(&token)).dispatch().await;
+    let resp = client.post("/api/audit/ref?target=devX").header(auth_header(&token)).dispatch().await;
     let body: Value = resp.into_json().await.unwrap();
     let conn_ref = body["ref"].as_str().unwrap().to_string();
 
@@ -294,7 +302,7 @@ async fn test_audit_conn_active_and_note() {
         .post("/api/audit/conn")
         .header(ContentType::JSON)
         .body(format!(
-            r#"{{"action":"new","id":"devX","uuid":"uX","conn_id":1,"session_id":99,"nonce":"nA","conn_audit_ref":"{conn_ref}"}}"#
+            r#"{{"action":"new","id":"devX","uuid":"dVg=","conn_id":1,"session_id":99,"nonce":"nA","conn_audit_ref":"{conn_ref}"}}"#
         ))
         .dispatch()
         .await;
@@ -302,7 +310,7 @@ async fn test_audit_conn_active_and_note() {
     let resp = client
         .post("/api/audit/conn")
         .header(ContentType::JSON)
-        .body(r#"{"peer":["v1","Viewer"],"type":0,"id":"devX","uuid":"uX","conn_id":1,"session_id":99,"nonce":"nB"}"#)
+        .body(r#"{"peer":["v1","Viewer"],"type":0,"id":"devX","uuid":"dVg=","conn_id":1,"session_id":99,"nonce":"nB"}"#)
         .dispatch()
         .await;
     assert_eq!(resp.status(), Status::Ok);
@@ -1666,13 +1674,14 @@ async fn activated_user_token(client: &Client, name: &str) -> String {
 #[rocket::async_test]
 async fn test_audits_conn_lists_newest_first_with_viewer_user() {
     let (client, _dir) = test_client().await;
+    client.rocket().state::<state::ApiState>().unwrap().test_register_device("devx", "dXg=").await;
     let admin = login_admin(&client).await;
     let alice = activated_user_token(&client, "alice").await;
-    let r: Value = client.post("/api/audit/ref").header(auth_header(&alice)).dispatch().await.into_json().await.unwrap();
+    let r: Value = client.post("/api/audit/ref?target=devx").header(auth_header(&alice)).dispatch().await.into_json().await.unwrap();
     let r = r["ref"].as_str().unwrap();
     for (n, conn_id) in [("a", 1), ("b", 2)] {
         client.post("/api/audit/conn").header(ContentType::JSON)
-            .body(format!(r#"{{"action":"new","id":"devx","uuid":"ux","conn_id":{conn_id},"ip":"203.0.113.9","nonce":"{n}","conn_audit_ref":"{r}"}}"#))
+            .body(format!(r#"{{"action":"new","id":"devx","uuid":"dXg=","conn_id":{conn_id},"ip":"203.0.113.9","nonce":"{n}","conn_audit_ref":"{r}"}}"#))
             .dispatch().await;
     }
     let resp = client.get("/api/audits/conn?current=1&pageSize=10&remote=%25devx%25").header(auth_header(&admin)).dispatch().await;
@@ -1700,10 +1709,11 @@ async fn test_audits_conn_requires_admin() {
 #[rocket::async_test]
 async fn test_audits_conn_pagination_returns_the_older_row_on_page_two() {
     let (client, _dir) = test_client().await;
+    client.rocket().state::<state::ApiState>().unwrap().test_register_device("devpage", "dXBhZ2U=").await;
     let admin = login_admin(&client).await;
     for (n, conn_id) in [("p1", 1), ("p2", 2)] {
         client.post("/api/audit/conn").header(ContentType::JSON)
-            .body(format!(r#"{{"action":"new","id":"devpage","uuid":"upage","conn_id":{conn_id},"ip":"203.0.113.10","nonce":"{n}"}}"#))
+            .body(format!(r#"{{"action":"new","id":"devpage","uuid":"dXBhZ2U=","conn_id":{conn_id},"ip":"203.0.113.10","nonce":"{n}"}}"#))
             .dispatch().await;
     }
     let resp = client.get("/api/audits/conn?current=2&pageSize=1&remote=%25devpage%25").header(auth_header(&admin)).dispatch().await;
@@ -1717,12 +1727,13 @@ async fn test_audits_conn_pagination_returns_the_older_row_on_page_two() {
 #[rocket::async_test]
 async fn test_audits_conn_filters_by_conn_type() {
     let (client, _dir) = test_client().await;
+    client.rocket().state::<state::ApiState>().unwrap().test_register_device("devtype", "dXR5cGU=").await;
     let admin = login_admin(&client).await;
     client.post("/api/audit/conn").header(ContentType::JSON)
-        .body(r#"{"action":"new","id":"devtype","uuid":"utype","conn_id":1,"ip":"203.0.113.11","nonce":"nt1"}"#)
+        .body(r#"{"action":"new","id":"devtype","uuid":"dXR5cGU=","conn_id":1,"ip":"203.0.113.11","nonce":"nt1"}"#)
         .dispatch().await;
     client.post("/api/audit/conn").header(ContentType::JSON)
-        .body(r#"{"peer":["v1","Viewer"],"type":0,"id":"devtype","uuid":"utype","conn_id":1,"session_id":1,"nonce":"nt2"}"#)
+        .body(r#"{"peer":["v1","Viewer"],"type":0,"id":"devtype","uuid":"dXR5cGU=","conn_id":1,"session_id":1,"nonce":"nt2"}"#)
         .dispatch().await;
 
     let resp = client.get("/api/audits/conn?current=1&pageSize=10&remote=%25devtype%25&conn_type=0").header(auth_header(&admin)).dispatch().await;
@@ -1737,9 +1748,10 @@ async fn test_audits_conn_filters_by_conn_type() {
 #[rocket::async_test]
 async fn test_audits_conn_future_created_at_finds_nothing() {
     let (client, _dir) = test_client().await;
+    client.rocket().state::<state::ApiState>().unwrap().test_register_device("devfuture", "dWZ1dHVyZQ==").await;
     let admin = login_admin(&client).await;
     client.post("/api/audit/conn").header(ContentType::JSON)
-        .body(r#"{"action":"new","id":"devfuture","uuid":"ufuture","conn_id":1,"ip":"203.0.113.12","nonce":"nf1"}"#)
+        .body(r#"{"action":"new","id":"devfuture","uuid":"dWZ1dHVyZQ==","conn_id":1,"ip":"203.0.113.12","nonce":"nf1"}"#)
         .dispatch().await;
 
     let resp = client
@@ -1767,11 +1779,12 @@ async fn test_audits_conn_invalid_created_at_is_bad_request() {
 #[rocket::async_test]
 async fn test_audits_file_shows_remote_peer_num_and_files() {
     let (client, _dir) = test_client().await;
+    client.rocket().state::<state::ApiState>().unwrap().test_register_device("devfile", "dWZpbGU=").await;
     let admin = login_admin(&client).await;
     let resp = client
         .post("/api/audit/file")
         .header(ContentType::JSON)
-        .body(r#"{"id":"devfile","uuid":"ufile","peer_id":"viewerfile","conn_id":1,"type":0,"path":"/tmp","is_file":false,"info":"{\"ip\":\"203.0.113.13\",\"name\":\"alice-laptop\",\"num\":2,\"files\":[[\"a.pdf\",10],[\"b.txt\",5]]}","nonce":"filenonce"}"#)
+        .body(r#"{"id":"devfile","uuid":"dWZpbGU=","peer_id":"viewerfile","conn_id":1,"type":0,"path":"/tmp","is_file":false,"info":"{\"ip\":\"203.0.113.13\",\"name\":\"alice-laptop\",\"num\":2,\"files\":[[\"a.pdf\",10],[\"b.txt\",5]]}","nonce":"filenonce"}"#)
         .dispatch()
         .await;
     assert_eq!(resp.status(), Status::Ok);
@@ -1789,11 +1802,12 @@ async fn test_audits_file_shows_remote_peer_num_and_files() {
 #[rocket::async_test]
 async fn test_audits_alarm_shows_info_as_an_object() {
     let (client, _dir) = test_client().await;
+    client.rocket().state::<state::ApiState>().unwrap().test_register_device("devalarm", "dWFsYXJt").await;
     let admin = login_admin(&client).await;
     let resp = client
         .post("/api/audit/alarm")
         .header(ContentType::JSON)
-        .body(r#"{"id":"devalarm","uuid":"ualarm","typ":1,"info":"{\"ip\":\"203.0.113.14\",\"id\":\"ctl1\",\"name\":\"alice\"}","conn_id":1,"nonce":"alarmnonce"}"#)
+        .body(r#"{"id":"devalarm","uuid":"dWFsYXJt","typ":1,"info":"{\"ip\":\"203.0.113.14\",\"id\":\"ctl1\",\"name\":\"alice\"}","conn_id":1,"nonce":"alarmnonce"}"#)
         .dispatch()
         .await;
     assert_eq!(resp.status(), Status::Ok);
@@ -1823,19 +1837,21 @@ async fn test_audits_console_is_always_an_empty_page() {
 #[rocket::async_test]
 async fn test_audits_file_and_alarm_survive_an_unparsable_info_string() {
     let (client, _dir) = test_client().await;
+    client.rocket().state::<state::ApiState>().unwrap().test_register_device("devbad", "dWJhZA==").await;
+    client.rocket().state::<state::ApiState>().unwrap().test_register_device("devbadalarm", "dWJhZGFsYXJt").await;
     let admin = login_admin(&client).await;
 
     let resp = client
         .post("/api/audit/file")
         .header(ContentType::JSON)
-        .body(r#"{"id":"devbad","uuid":"ubad","peer_id":"viewerbad","conn_id":1,"type":0,"path":"/tmp","is_file":false,"info":"{x","nonce":"badfilenonce"}"#)
+        .body(r#"{"id":"devbad","uuid":"dWJhZA==","peer_id":"viewerbad","conn_id":1,"type":0,"path":"/tmp","is_file":false,"info":"{x","nonce":"badfilenonce"}"#)
         .dispatch()
         .await;
     assert_eq!(resp.status(), Status::Ok);
     let resp = client
         .post("/api/audit/file")
         .header(ContentType::JSON)
-        .body(r#"{"id":"devbad","uuid":"ubad","peer_id":"viewerbad","conn_id":2,"type":0,"path":"/tmp","is_file":false,"info":"{\"ip\":\"203.0.113.15\",\"name\":\"ok\",\"num\":1,\"files\":[]}","nonce":"goodfilenonce"}"#)
+        .body(r#"{"id":"devbad","uuid":"dWJhZA==","peer_id":"viewerbad","conn_id":2,"type":0,"path":"/tmp","is_file":false,"info":"{\"ip\":\"203.0.113.15\",\"name\":\"ok\",\"num\":1,\"files\":[]}","nonce":"goodfilenonce"}"#)
         .dispatch()
         .await;
     assert_eq!(resp.status(), Status::Ok);
@@ -1849,14 +1865,14 @@ async fn test_audits_file_and_alarm_survive_an_unparsable_info_string() {
     let resp = client
         .post("/api/audit/alarm")
         .header(ContentType::JSON)
-        .body(r#"{"id":"devbadalarm","uuid":"ubadalarm","typ":1,"info":"{x","conn_id":1,"nonce":"badalarmnonce"}"#)
+        .body(r#"{"id":"devbadalarm","uuid":"dWJhZGFsYXJt","typ":1,"info":"{x","conn_id":1,"nonce":"badalarmnonce"}"#)
         .dispatch()
         .await;
     assert_eq!(resp.status(), Status::Ok);
     let resp = client
         .post("/api/audit/alarm")
         .header(ContentType::JSON)
-        .body(r#"{"id":"devbadalarm","uuid":"ubadalarm","typ":1,"info":"{\"ip\":\"203.0.113.16\",\"id\":\"ctl1\",\"name\":\"ok\"}","conn_id":2,"nonce":"goodalarmnonce"}"#)
+        .body(r#"{"id":"devbadalarm","uuid":"dWJhZGFsYXJt","typ":1,"info":"{\"ip\":\"203.0.113.16\",\"id\":\"ctl1\",\"name\":\"ok\"}","conn_id":2,"nonce":"goodalarmnonce"}"#)
         .dispatch()
         .await;
     assert_eq!(resp.status(), Status::Ok);
@@ -1871,14 +1887,15 @@ async fn test_audits_file_and_alarm_survive_an_unparsable_info_string() {
 #[rocket::async_test]
 async fn test_audits_conn_shows_the_viewer_machine_from_its_login() {
     let client = untracked_client().await;
+    client.rocket().state::<state::ApiState>().unwrap().test_register_device("devvm", "dXZt").await;
     let alice = native_login(&client, "MY-LAPTOP", "alice").await;
     let admin = login_admin(&client).await;
 
-    let r: Value = client.post("/api/audit/ref").header(auth_header(&alice)).dispatch().await.into_json().await.unwrap();
+    let r: Value = client.post("/api/audit/ref?target=devvm").header(auth_header(&alice)).dispatch().await.into_json().await.unwrap();
     let r = r["ref"].as_str().unwrap();
     for body in [
-        format!(r#"{{"action":"new","id":"devvm","uuid":"uvm","conn_id":1,"ip":"203.0.113.20","nonce":"vm-n","conn_audit_ref":"{r}"}}"#),
-        r#"{"peer":["123456789","Alice"],"type":0,"id":"devvm","uuid":"uvm","conn_id":1,"session_id":5,"nonce":"vm-a"}"#.to_string(),
+        format!(r#"{{"action":"new","id":"devvm","uuid":"dXZt","conn_id":1,"ip":"203.0.113.20","nonce":"vm-n","conn_audit_ref":"{r}"}}"#),
+        r#"{"peer":["123456789","Alice"],"type":0,"id":"devvm","uuid":"dXZt","conn_id":1,"session_id":5,"nonce":"vm-a"}"#.to_string(),
     ] {
         let resp = client.post("/api/audit/conn").header(ContentType::JSON).body(body).dispatch().await;
         assert_eq!(resp.status(), Status::Ok);
@@ -2073,4 +2090,21 @@ async fn test_login_audit_keeps_the_name_of_a_deleted_user() {
         .body(format!(r#"{{"rows":["{guid}"]}}"#)).dispatch().await;
     assert_eq!(resp.status(), Status::Ok);
     assert_eq!(login_audit(&client, &admin, "").await["data"][0]["user"], "carol");
+}
+
+#[rocket::async_test]
+async fn test_device_lists_do_not_reveal_the_uuid() {
+    let (client, _dir) = test_client().await;
+    let state = client.rocket().state::<state::ApiState>().unwrap();
+    state.test_register_device("devinfo", "dXVpZA==").await;
+    let resp = client.post("/api/sysinfo").header(ContentType::JSON)
+        .body(r#"{"id":"devinfo","uuid":"dXVpZA==","hostname":"pc-1","os":"Linux"}"#)
+        .dispatch().await;
+    assert_eq!(resp.into_string().await.unwrap(), "SYSINFO_UPDATED");
+    let alice = activated_user_token(&client, "alice").await;
+    let body: Value = client.get("/api/peers").header(auth_header(&alice)).dispatch().await.into_json().await.unwrap();
+    let peer = body["data"].as_array().unwrap().iter().find(|p| p["id"] == "devinfo").unwrap().clone();
+    assert_eq!(peer["info"]["hostname"], "pc-1");
+    assert!(peer["info"].get("uuid").is_none(), "{peer}");
+    assert!(!state.test_peer_info("devinfo").await.contains("dXVpZA=="), "not stored either");
 }

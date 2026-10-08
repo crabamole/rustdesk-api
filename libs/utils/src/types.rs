@@ -955,7 +955,6 @@ pub struct PeerInfo {
     pub memory: Option<String>,
     pub os: Option<String>,
     pub username: Option<String>,
-    pub uuid: Option<String>,
     pub version: Option<String>,
     pub ip: Option<String>,
 }

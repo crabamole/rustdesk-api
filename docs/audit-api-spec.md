@@ -478,7 +478,9 @@ carried in `PunchHole.controlled_context` (9), `RequestRelay.controlled_context`
    the message it forwards to the controlled device.
 3. Controlled device echoes it in conn `new` (§3.1) and alarms 0/10 (§6).
 4. API server resolves the ref to the controller user and caches it per
-   connection key for file/alarm attribution.
+   connection key for file/alarm attribution. A ref attributes only records
+   of the device it was minted for (`POST /api/audit/ref?target=<id>`);
+   records of other devices keep no user.
 
 The ref format is server-defined and opaque to clients **[PR]**. Direct-IP and
 LAN connections never carry a ref (no user attribution) [C]. This is an
@@ -491,10 +493,13 @@ token.
 
 ### 12.1 Unauthenticated writes
 
-§3–§6 carry no credentials. Recommended validation **[I]**: accept only if
-`(id, uuid)` matches a registered peer; otherwise answer 2xx empty and discard
-(a 4xx would only make legitimate-but-unregistered devices log errors). §4
-notes are accepted only if `(id, session_id)` matches an existing row.
+§3–§6 carry no credentials. Validation **[I]**: accept only if `(id, uuid)`
+matches a registered peer (`peer.id`, `peer.uuid` = the base64-decoded `uuid`);
+otherwise answer 2xx empty and discard (a 4xx would only make
+legitimate-but-unregistered devices log errors). §4 notes are accepted only if
+`(id, session_id)` matches an existing row. The UUID is never returned by device
+lists (`GET /api/peers`) or stored in a device's system info, so knowing an ID
+is not enough to write for it. Design: rustdesk `docs/design-audit-authentication.md`.
 
 ### 12.2 Client IP behind proxies
 
@@ -516,8 +521,9 @@ Pro [D].
    `(id, uuid, conn_id)`, most-recent not-closed).
 2. ~~`conn_audit_ref` encoding (signed token vs. lookup id) — ours to choose.~~
    **Answered:** a stored lookup ref. `POST /api/audit/ref` mints a random
-   32-hex id in `audit_conn_ref (ref, "user", created_at)` for the bearer's
-   own user; refs older than 24 h are purged on next mint.
+   32-hex id in `audit_conn_ref (ref, "user", target, created_at)` for the
+   bearer's own user and the target device; refs older than 24 h are purged on
+   next mint.
 3. `pageSize` maximum and sort order of `/api/audits/*`.
 4. Console `typ`/`iop` codes for admin/control role, 2FA, password reset.
 5. ~~Whether §4 notes append or overwrite an existing note (Pro console lets
@@ -558,7 +564,7 @@ Legend: ✅ conforms · ⚠️ partial / deviates · ❌ missing
 | §7 `GET /api/audit/conn/active` | ✅ | Requires a login (Bearer) and returns only the caller's own rows or rows with no attributed user — rows attributed to someone else answer `""`. |
 | §8 `PUT /api/audit` | ✅ | Implemented: owner of the row's `user` (or an unattributed row) may set `note`; overwrites any existing note. 400/404 otherwise. |
 | §10 heartbeat `disconnect` | ❌ **(live)** | Heartbeat returns JSON `{"modified_at": ..., "strategy": {"config_options": {...}}}` (the `strategy` field only when the device's policy changed), used for device policy sync (2026-09-29), not disconnect; no disconnect queue. `conns` ends open conn rows of connections that are gone (see "lost `close`" above). |
-| §11 `ControlledContext` (hbbs) | ✅ | hbbs bumped `hbb_common` to `69cea8d`. A token on `PunchHoleRequest`/`RequestRelay` calls `POST /api/audit/ref` (5 s bound) to mint a ref, forwarded in `ControlledContext` on `PunchHole`/`FetchLocalAddr`/`RequestRelay`; a 404 (older api-server) falls back to `/api/currentUser` without a ref. The controlling-side viewer token is stripped from the forwarded `RequestRelay`. `LOGGED_IN_ONLY=Y` now also applies to relay requests. With `LOGGED_IN_ONLY=Y`, an unreachable api-server (timeout or any non-login answer) refuses the request with "Your session expired." rather than falling back. |
+| §11 `ControlledContext` (hbbs) | ✅ | hbbs bumped `hbb_common` to `69cea8d`. A token on `PunchHoleRequest`/`RequestRelay` calls `POST /api/audit/ref` (5 s bound) to mint a ref, forwarded in `ControlledContext` on `PunchHole`/`FetchLocalAddr`/`RequestRelay`; a 404 (older api-server) falls back to `/api/currentUser` without a ref. The request names the target device (`?target=<id>`); the api-server answers 422 without it, so hbbs and the api-server are upgraded together. The controlling-side viewer token is stripped from the forwarded `RequestRelay`. `LOGGED_IN_ONLY=Y` now also applies to relay requests. With `LOGGED_IN_ONLY=Y`, an unreachable api-server (timeout or any non-login answer) refuses the request with "Your session expired." rather than falling back. |
 | §2.2 hbbs raw-TCP API proxy | ❌ | hbbs does not handle `HttpProxyRequest`; the client's fallback path fails (only matters with `USE_RAW_TCP_FOR_API=Y` or during 5xx). |
 
 ### 14.2 Admin / console
@@ -571,7 +577,7 @@ Legend: ✅ conforms · ⚠️ partial / deviates · ❌ missing
 | §9.3 retention | ❌ | No setting, no purge job. |
 | §9.3 visibility / permissions | ❌ | No `audits.view` / `audits.edit` model; nothing to read anyway. |
 | §9.4 console audit (`audit_console`) | ❌ | Table exists in `0001_initial.sql`; nothing writes to it. |
-| §12.1 write validation | ❌ | Any anonymous caller can insert records or (once close works) end sessions. |
+| §12.1 write validation | ✅ | conn/file/alarm records only from a registered `(id, uuid)`; others answered 2xx and dropped with a warning. Refs bound to their target device. |
 
 ### 14.3 Schema (`libs/state/migrations/0001_initial.sql`)
 
@@ -597,5 +603,5 @@ All client-facing write paths (§3.1–§8) now work, including both note paths
 and controller-user attribution end to end (§11, §3.1, §5, §6). The admin
 read API (§9) and a webconsole "Audit log" page (§9.3) are implemented.
 Still open: console Disconnect, CSV export, retention, console (admin
-action) logging, §12.1 write validation, alarms 3–5, hbbs's raw-TCP API
+action) logging, alarms 3–5, hbbs's raw-TCP API
 proxy (§2.2).

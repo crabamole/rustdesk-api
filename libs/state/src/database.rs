@@ -359,6 +359,8 @@ impl Database {
         let mut patch = serde_json::to_value(&systeminfo).ok()?;
         if let serde_json::Value::Object(map) = &mut patch {
             map.remove("ip");
+            // The UUID ties the ID to the machine (hbbs, audit records); device lists must not show it.
+            map.remove("uuid");
             map.retain(|_, v| !v.is_null());
         }
 
@@ -2020,16 +2022,31 @@ impl Database {
         Some(())
     }
 
+    /// Whether `(id, uuid)` is a device hbbs registered; `uuid` is base64 as in device records.
+    pub async fn is_registered_device(&self, id: &str, uuid: &str) -> bool {
+        let Ok(uuid) = BASE64_STANDARD.decode(uuid) else { return false };
+        sqlx::query_scalar::<_, i32>("SELECT 1 FROM peer WHERE id = $1 AND uuid = $2")
+            .bind(id)
+            .bind(uuid)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|e| log::error!("is_registered_device error: {e:?}"))
+            .ok()
+            .flatten()
+            .is_some()
+    }
+
     /// Stores a ref minted for `user`; refs a day old are dropped, a connection uses its ref within seconds.
-    pub async fn insert_audit_conn_ref(&self, conn_ref: &str, user: &[u8]) -> Option<()> {
+    pub async fn insert_audit_conn_ref(&self, conn_ref: &str, user: &[u8], target: &str) -> Option<()> {
         sqlx::query("DELETE FROM audit_conn_ref WHERE created_at < now() - interval '1 day'")
             .execute(&self.pool)
             .await
             .map_err(|e| log::error!("insert_audit_conn_ref purge error: {e:?}"))
             .ok()?;
-        sqlx::query("INSERT INTO audit_conn_ref (ref, \"user\") VALUES ($1, $2)")
+        sqlx::query("INSERT INTO audit_conn_ref (ref, \"user\", target) VALUES ($1, $2, $3)")
             .bind(conn_ref)
             .bind(user)
+            .bind(target)
             .execute(&self.pool)
             .await
             .map_err(|e| log::error!("insert_audit_conn_ref error: {e:?}"))
@@ -2037,9 +2054,11 @@ impl Database {
         Some(())
     }
 
-    pub async fn resolve_audit_conn_ref(&self, conn_ref: &str) -> Option<Vec<u8>> {
-        sqlx::query("SELECT \"user\" FROM audit_conn_ref WHERE ref = $1")
+    /// The viewer behind `conn_ref`, when it was minted for a connection to `target`.
+    pub async fn resolve_audit_conn_ref(&self, conn_ref: &str, target: &str) -> Option<Vec<u8>> {
+        sqlx::query("SELECT \"user\" FROM audit_conn_ref WHERE ref = $1 AND target = $2")
             .bind(conn_ref)
+            .bind(target)
             .fetch_optional(&self.pool)
             .await
             .map_err(|e| log::error!("resolve_audit_conn_ref error: {e:?}"))
@@ -2101,6 +2120,26 @@ impl Database {
         .map_err(|e| log::error!("insert_audit_login error: {e:?}"))
         .ok()?;
         Some(())
+    }
+
+    /// A device's stored info JSON. Test-only.
+    #[cfg(any(test, feature = "test-util"))]
+    pub async fn test_peer_info(&self, id: &str) -> String {
+        sqlx::query_scalar("SELECT info FROM peer WHERE id = $1").bind(id).fetch_one(&self.pool).await.expect("peer info")
+    }
+
+    /// Registers a device as hbbs would; `uuid` is base64 as in device records. Test-only.
+    #[cfg(any(test, feature = "test-util"))]
+    pub async fn test_register_device(&self, id: &str, uuid: &str) {
+        let uuid = BASE64_STANDARD.decode(uuid).expect("base64 uuid");
+        sqlx::query("INSERT INTO peer (guid, id, uuid, pk, info) VALUES ($1, $2, $3, $4, '{}')")
+            .bind(Uuid::new_v4().as_bytes().to_vec())
+            .bind(id)
+            .bind(uuid)
+            .bind(vec![0u8; 32])
+            .execute(&self.pool)
+            .await
+            .expect("insert peer");
     }
 
     #[cfg(any(test, feature = "test-util"))]
@@ -2496,7 +2535,7 @@ mod tests {
                 .fetch_all(&first.pool)
                 .await
                 .unwrap();
-        assert_eq!(applied, vec![(1, true), (2, true), (3, true), (4, true), (5, true), (6, true), (7, true), (8, true), (9, true)]);
+        assert_eq!(applied, vec![(1, true), (2, true), (3, true), (4, true), (5, true), (6, true), (7, true), (8, true), (9, true), (10, true)]);
         first.pool.close().await;
 
         // Second start on the same database must not fail or duplicate rows.

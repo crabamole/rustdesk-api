@@ -60,12 +60,6 @@ export interface PeerInfo {
      * @type {string}
      * @memberof PeerInfo
      */
-    uuid?: string | null;
-
-    /**
-     * @type {string}
-     * @memberof PeerInfo
-     */
     version?: string | null;
 
     /**

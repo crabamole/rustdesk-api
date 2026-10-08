@@ -524,18 +524,23 @@ async fn audit_alarm(
 
 /// # Mint a connection audit ref
 ///
-/// Called by hbbs with the viewer's token (audit-api-spec §11). The ref names the caller only,
-/// so any logged-in user may mint one.
+/// Called by hbbs with the viewer's token (audit-api-spec §11) and the device it connects to.
+/// The ref names the caller only, so any logged-in user may mint one; it attributes only
+/// records of `target`.
 // no body, so no format: Rocket 0.5 404s a POST with a format guard and no Content-Type
 #[openapi(tag = "audit")]
-#[post("/api/audit/ref")]
+#[post("/api/audit/ref?<target>")]
 async fn audit_ref(
     state: &State<ApiState>,
     user: AuthenticatedUser,
+    target: &str,
 ) -> Result<Json<utils::AuditRefResponse>, Status> {
     state.check_maintenance().await;
+    if target.is_empty() {
+        return Err(Status::BadRequest);
+    }
     state
-        .mint_audit_conn_ref(&user.info.user_id)
+        .mint_audit_conn_ref(&user.info.user_id, target)
         .await
         .map(|conn_ref| Json(utils::AuditRefResponse { conn_ref }))
         .ok_or(Status::InternalServerError)
@@ -3031,6 +3036,7 @@ mod tests {
     #[rocket::async_test]
     async fn test_audit_conn_active() {
         let client = test_client().await;
+        client.rocket().state::<ApiState>().unwrap().test_register_device("peer3", "dXVpZA==").await;
         let token = login_admin(&client).await;
         let resp = client
             .post("/api/audit/conn")
