@@ -441,7 +441,9 @@ impl ApiState {
             s.return_to.clone()
         };
         if self.oidc_session_exchange_code(code.to_string(), uuid_code.to_string()).await.is_none() {
-            self.oidc_sessions.write().await.remove(uuid_code);
+            if let Some(login) = self.oidc_sessions.write().await.remove(uuid_code) {
+                self.record_login(&login, "idp_error", String::new(), String::new()).await;
+            }
             return Some((return_to, None));
         }
         let result = oauth2::pkce::random_secret();
@@ -450,6 +452,22 @@ impl ApiState {
         s.result = Some(result.clone());
         s.result_at = unix_now();
         Some((return_to, Some(result)))
+    }
+
+    /// Ends a login the IdP sent back with `error` (e.g. the user cancelled); returns where to
+    /// send the browser.
+    pub async fn oidc_fail_callback(&self, uuid_code: &str, error: &str) -> Option<String> {
+        let login = {
+            let mut sessions = self.oidc_sessions.write().await;
+            let s = sessions.get(uuid_code).filter(|s| !oidc_login_expired(s, unix_now()))?;
+            if s.code.is_some() || s.result.is_some() {
+                return None;
+            }
+            sessions.remove(uuid_code)?
+        };
+        let detail = error.chars().filter(|c| c.is_ascii_graphic()).take(64).collect();
+        self.record_login(&login, "idp_denied", detail, String::new()).await;
+        Some(login.return_to)
     }
 
     /// Issues the session for a one-time result when the starter proves itself; the result
@@ -468,6 +486,15 @@ impl ApiState {
             || uuid.as_deref() != Some(login.uuid.as_str())
         {
             log::warn!("oidc_redeem: refused a result (expired, wrong verifier or another client)");
+            let detail = if login.result_at.saturating_add(OIDC_RESULT_TTL_SECS) < now {
+                "expired"
+            } else if oauth2::pkce::s256_challenge(&req.code_verifier) != login.code_challenge {
+                "wrong verifier"
+            } else {
+                "another client"
+            };
+            let name = login.name.clone().or_else(|| login.email.clone()).unwrap_or_default();
+            self.record_login(&login, "refused", detail.to_string(), name).await;
             return None;
         }
         let sub = login.sub.clone()?;
@@ -476,11 +503,35 @@ impl ApiState {
         let (user_id, username, db_user_info) = self.db.get_user_for_oauth2(&sub, &name, email.as_deref()).await?;
         if !db_user_info.active {
             log::debug!("oidc_redeem: user not active");
+            self.record_login(&login, "inactive", String::new(), username).await;
             return None;
         }
         let token = self.get_access_token(user_id.clone(), &username, db_user_info.admin).await;
         self.record_viewer_login(&login, &user_id).await;
+        self.record_login(&login, "ok", String::new(), username.clone()).await;
         Some((token, username, db_user_info))
+    }
+
+    /// Writes the login's outcome to the login audit.
+    async fn record_login(&self, login: &OidcState, outcome: &'static str, detail: String, user_name: String) {
+        // Self-reported by the client; bounded like the viewer list.
+        let bounded = |s: &str| s.chars().take(VIEWER_FIELD_MAX_CHARS).collect::<String>();
+        let record = utils::LoginRecord {
+            outcome,
+            detail,
+            client: login_client(&login.return_to),
+            sub: login.sub.clone(),
+            user_name,
+            rustdesk_id: bounded(&login.id),
+            hostname: bounded(&login.device_name),
+            os: bounded(&login.device_os),
+            ip: login.requester_ip.clone().unwrap_or_default(),
+        };
+        self.db.insert_audit_login(&record).await;
+    }
+
+    pub async fn list_audit_logins(&self, q: &utils::AuditQuery, outcome: Option<&str>) -> Option<(i64, Vec<utils::AuditLoginLog>)> {
+        self.db.list_audit_logins(q, outcome).await
     }
 
     /// Remembers the machine of a native client login so viewers that never register are listed.
@@ -949,6 +1000,17 @@ pub const AUDIT_CONN_HEARTBEAT_GRACE_SECS: i64 = 30;
 
 fn unix_now() -> u64 {
     SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
+}
+
+/// Which client started a login, from its `returnTo` (checked when the login started).
+fn login_client(return_to: &str) -> &'static str {
+    if return_to.starts_with("http://127.") || return_to.starts_with("http://[::1]") {
+        "native"
+    } else if return_to.ends_with("/oidc-callback.html") {
+        "web"
+    } else {
+        "console"
+    }
 }
 
 fn oidc_login_expired(s: &OidcState, now: u64) -> bool {

@@ -757,6 +757,87 @@
         ]
       }
     },
+    "/api/audits/login": {
+      "get": {
+        "tags": [
+          "audit"
+        ],
+        "summary": "Login audit log",
+        "description": "One row per OIDC login that reached the callback, newest first. `user` is an SQL LIKE pattern on the user name; `outcome` is exact: `ok`, `idp_denied`, `idp_error`, `inactive` or `refused`.",
+        "operationId": "audits_login",
+        "parameters": [
+          {
+            "name": "current",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "nullable": true
+            }
+          },
+          {
+            "name": "pageSize",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "nullable": true
+            }
+          },
+          {
+            "name": "created_at",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "nullable": true
+            }
+          },
+          {
+            "name": "user",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "nullable": true
+            }
+          },
+          {
+            "name": "outcome",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "nullable": true
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuditPage_for_AuditLoginLog"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "authorization_admin": []
+          }
+        ]
+      }
+    },
     "/api/logout": {
       "post": {
         "tags": [
@@ -3368,6 +3449,77 @@
           "created_at": {
             "type": "integer",
             "format": "int64"
+          }
+        }
+      },
+      "AuditPage_for_AuditLoginLog": {
+        "type": "object",
+        "required": [
+          "data",
+          "total"
+        ],
+        "properties": {
+          "total": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AuditLoginLog"
+            }
+          }
+        }
+      },
+      "AuditLoginLog": {
+        "description": "`GET /api/audits/login` row: one OIDC login and how it ended.",
+        "type": "object",
+        "required": [
+          "client",
+          "created_at",
+          "detail",
+          "guid",
+          "hostname",
+          "ip",
+          "os",
+          "outcome",
+          "rustdesk_id",
+          "user"
+        ],
+        "properties": {
+          "guid": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "outcome": {
+            "description": "`ok`, `idp_denied`, `idp_error`, `inactive` or `refused`.",
+            "type": "string"
+          },
+          "detail": {
+            "type": "string"
+          },
+          "client": {
+            "description": "`native`, `web` or `console`.",
+            "type": "string"
+          },
+          "user": {
+            "type": "string"
+          },
+          "rustdesk_id": {
+            "description": "Self-reported by the client when it started the login.",
+            "type": "string"
+          },
+          "hostname": {
+            "type": "string"
+          },
+          "os": {
+            "type": "string"
+          },
+          "ip": {
+            "type": "string"
           }
         }
       },

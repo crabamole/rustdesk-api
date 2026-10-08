@@ -362,6 +362,39 @@ pub struct AuditAlarmLog {
     pub created_at: i64,
 }
 
+/// `GET /api/audits/login` row: one OIDC login and how it ended.
+#[derive(Serialize, Debug, JsonSchema)]
+pub struct AuditLoginLog {
+    pub guid: String,
+    pub created_at: i64,
+    /// `ok`, `idp_denied`, `idp_error`, `inactive` or `refused`.
+    pub outcome: String,
+    pub detail: String,
+    /// `native`, `web` or `console`.
+    pub client: String,
+    pub user: String,
+    /// Self-reported by the client when it started the login.
+    pub rustdesk_id: String,
+    pub hostname: String,
+    pub os: String,
+    pub ip: String,
+}
+
+/// A login's outcome, written to `audit_login`.
+#[derive(Debug, Default)]
+pub struct LoginRecord {
+    pub outcome: &'static str,
+    pub detail: String,
+    pub client: &'static str,
+    /// OIDC subject; links the row to the account when it exists.
+    pub sub: Option<String>,
+    pub user_name: String,
+    pub rustdesk_id: String,
+    pub hostname: String,
+    pub os: String,
+    pub ip: String,
+}
+
 /// `GET /api/audits/console` row (audit-api-spec.md §9.2). Nothing writes `audit_console` yet.
 #[derive(Serialize, Debug, JsonSchema)]
 pub struct AuditConsoleLog {

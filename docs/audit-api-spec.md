@@ -381,7 +381,7 @@ check the caller is its controller).
 ## 9. Admin read API — `GET /api/audits/{kind}` [S][D]
 
 `kind` ∈ `conn`, `file`, `alarm`, `console`. Bearer token with **Audit Log**
-permission.
+permission. Our server adds `login` (OIDC sign-ins; not in Pro) [D].
 
 ### 9.1 Query parameters [S]
 
@@ -394,6 +394,8 @@ permission.
 | `conn_type` | conn | exact, 0–4 |
 | `device` | alarm | SQL-LIKE pattern |
 | `operator` | console | username, SQL-LIKE pattern |
+| `user` | login | user name, SQL-LIKE pattern [D] |
+| `outcome` | login | exact: `ok`, `idp_denied`, `idp_error`, `inactive`, `refused` [D] |
 
 `audits.py` wraps string filters as `%value%` unless the value contains `%`
 or equals `-`; the server therefore receives LIKE patterns and applies
@@ -418,9 +420,11 @@ specified; we define them to cover the Pro console columns [D]:
 | file | `guid`, `remote`, `peer_id`, `user`, `type` (direction), `path`, `is_file`, `num`, `files`, `ip`, `created_at` |
 | alarm | `guid`, `typ`, `device`, `user`, `info` (object), `created_at` |
 | console | `guid`, `typ`, `iop`, `operator`, `info` (object), `created_at` |
+| login | `guid`, `created_at`, `outcome`, `detail`, `client` (`native`, `web`, `console`), `user` (name at login time), `rustdesk_id`‡, `hostname`‡, `os`‡, `ip` |
 
 \* `remote_name` looked up from the peer table.
 † The viewer machine, copied into the row when `authorized` arrives: the hostname, OS and client address (resolved through trusted proxies) of the latest native login of the row's `user` on that viewer ID (`viewer_device`). `ip` stays the session's own address; the two differ when the viewer changed networks or addresses since logging in. Absent for unattributed rows, web viewers and stock clients that never logged in. Self-reported by the viewer at login.
+‡ Self-reported by the client when the login started. One row per login that reached the OIDC callback; see rustdesk `docs/design-login-audit.md`.
 
 ### 9.3 Related Pro features [D] (not wire-specified)
 
@@ -562,7 +566,8 @@ Legend: ✅ conforms · ⚠️ partial / deviates · ❌ missing
 | Spec | Status | Finding |
 |---|---|---|
 | §9 `GET /api/audits/{conn,file,alarm,console}` | ✅ | Implemented, `audits.py`-compatible, admin only; `console` kind always answers an empty page (§9.4 not written to). |
-| §9.3 console UI (logs pages, disconnect, edit note, CSV export) | ⚠️ | Webconsole has a new "Audit log" page (conn/file/alarm). Disconnect, edit-note-from-console and CSV export are not implemented. |
+| §9 `GET /api/audits/login` (ours) | ✅ | OIDC sign-ins with outcome; console "Logins" tab. |
+| §9.3 console UI (logs pages, disconnect, edit note, CSV export) | ⚠️ | Webconsole has a new "Audit log" page (conn/file/alarm/login). Disconnect, edit-note-from-console and CSV export are not implemented. |
 | §9.3 retention | ❌ | No setting, no purge job. |
 | §9.3 visibility / permissions | ❌ | No `audits.view` / `audits.edit` model; nothing to read anyway. |
 | §9.4 console audit (`audit_console`) | ❌ | Table exists in `0001_initial.sql`; nothing writes to it. |

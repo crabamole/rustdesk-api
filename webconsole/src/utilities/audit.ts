@@ -1,5 +1,5 @@
 /*!
-Labels for audit log codes (audit-api-spec §3.2, §5, §6).
+Labels for audit log codes (audit-api-spec §3.2, §5, §6) and login outcomes.
 */
 
 export const CONN_TYPES: Record<number, string> = {
@@ -32,6 +32,21 @@ export function machineLabel(hostname?: string | null, os?: string | null, login
     if (!hostname) return '';
     const machine = os ? `${hostname} (${os})` : hostname;
     return loginIp ? `${machine}, logged in from ${loginIp}` : machine;
+}
+
+export const LOGIN_OUTCOMES: Record<string, string> = {
+    ok: 'Signed in', idp_denied: 'Denied at the identity provider', idp_error: 'Identity provider error',
+    inactive: 'Account not activated', refused: 'Refused',
+};
+
+export function loginOutcomeLabel(o: string): string {
+    return LOGIN_OUTCOMES[o] ?? o;
+}
+
+const LOGIN_CLIENTS: Record<string, string> = { native: 'Native client', web: 'Web client', console: 'Console' };
+
+export function loginClientLabel(c: string): string {
+    return LOGIN_CLIENTS[c] ?? c;
 }
 
 export function fileDirectionLabel(t: number): string {

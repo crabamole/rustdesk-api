@@ -141,6 +141,7 @@ pub fn api_routes() -> (Vec<rocket::Route>, rocket_okapi::okapi::openapi3::OpenA
         audits_file,
         audits_alarm,
         audits_console,
+        audits_login,
         logout,
         heartbeat,
         sysinfo,
@@ -212,6 +213,7 @@ pub async fn build_rocket_with_db(figment: Figment, db_path: &str) -> Rocket<Bui
             favicon,
             webconsole_vue,
             oidc_callback,
+            oidc_callback_error,
         ])
         .manage(state)
         .manage(PublicUrl(public_url));
@@ -665,6 +667,31 @@ async fn audits_console(
     state.check_maintenance().await;
     audit_query(current, pageSize, created_at, operator, None)?;
     Ok(Json(utils::AuditPage { total: 0, data: Vec::new() }))
+}
+
+/// # Login audit log
+///
+/// One row per OIDC login that reached the callback, newest first. `user` is an SQL LIKE pattern
+/// on the user name; `outcome` is exact: `ok`, `idp_denied`, `idp_error`, `inactive` or `refused`.
+#[openapi(tag = "audit")]
+#[allow(non_snake_case)]
+#[get("/api/audits/login?<current>&<pageSize>&<created_at>&<user>&<outcome>")]
+async fn audits_login(
+    state: &State<ApiState>,
+    _user: AuthenticatedAdmin,
+    current: Option<i64>,
+    pageSize: Option<i64>,
+    created_at: Option<String>,
+    user: Option<String>,
+    outcome: Option<String>,
+) -> Result<Json<utils::AuditPage<utils::AuditLoginLog>>, (Status, String)> {
+    state.check_maintenance().await;
+    let q = audit_query(current, pageSize, created_at, user, None)?;
+    state
+        .list_audit_logins(&q, outcome.as_deref())
+        .await
+        .map(|(total, data)| Json(utils::AuditPage { total, data }))
+        .ok_or((Status::InternalServerError, "cannot read audit log".to_string()))
 }
 
 /// # Log the User Out
@@ -1370,6 +1397,15 @@ async fn oidc_callback(apistate: &State<ApiState>, code: &str, state: &str) -> O
     match apistate.oidc_complete_callback(state, code).await {
         Some((return_to, Some(result))) => oidc_return(&return_to, &format!("result={result}&code={state}")),
         Some((return_to, None)) => oidc_return(&return_to, &format!("error=login_failed&code={state}")),
+        None => oidc_page("Login failed. Please close this window and try again."),
+    }
+}
+
+/// The IdP sending the browser back with an error instead of a code (e.g. the user cancelled).
+#[get("/api/oidc/callback?<error>&<state>", rank = 2)]
+async fn oidc_callback_error(apistate: &State<ApiState>, error: &str, state: &str) -> OidcCallbackResponse {
+    match apistate.oidc_fail_callback(state, error).await {
+        Some(return_to) => oidc_return(&return_to, &format!("error=login_failed&code={state}")),
         None => oidc_page("Login failed. Please close this window and try again."),
     }
 }

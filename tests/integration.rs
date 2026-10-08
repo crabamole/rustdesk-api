@@ -1961,3 +1961,116 @@ async fn test_viewers_requires_admin() {
     let resp = client.get("/api/viewers").header(auth_header(&alice)).dispatch().await;
     assert!(resp.status() == Status::Unauthorized || resp.status() == Status::Forbidden);
 }
+
+async fn login_audit(client: &Client, admin: &str, query: &str) -> Value {
+    let resp = client.get(format!("/api/audits/login?current=1&pageSize=10{query}")).header(auth_header(admin)).dispatch().await;
+    assert_eq!(resp.status(), Status::Ok);
+    resp.into_json().await.unwrap()
+}
+
+/// The `result` of a callback Location that may be a path on this server.
+fn result_of_any(location: &str) -> String {
+    let url = url::Url::parse("https://rustdesk.example.com/").unwrap().join(location).unwrap();
+    url.query_pairs().find(|(k, _)| k == "result").map(|(_, v)| v.into_owned()).expect("result in the return URL")
+}
+
+#[rocket::async_test]
+async fn test_login_audit_records_a_successful_login() {
+    let client = untracked_client().await;
+    let admin = login_admin(&client).await;
+    native_login(&client, "MY-LAPTOP", "alice").await;
+    let body = login_audit(&client, &admin, "").await;
+    assert_eq!(body["total"], 1);
+    let row = &body["data"][0];
+    assert_eq!(row["outcome"], "ok");
+    assert_eq!(row["client"], "native");
+    assert_eq!(row["user"], "alice");
+    assert_eq!(row["rustdesk_id"], "123456789");
+    assert_eq!(row["hostname"], "MY-LAPTOP");
+    assert_eq!(row["os"], "windows");
+    assert_eq!(row["ip"], "198.51.100.20");
+}
+
+#[rocket::async_test]
+async fn test_login_audit_names_the_client_from_return_to() {
+    let client = untracked_client().await;
+    let admin = login_admin(&client).await;
+    for return_to in ["/oidc-callback.html", "https://rustdesk.example.com/ui/login"] {
+        let code = start_login(&client, "browser", return_to).await;
+        use_stub_idp(&client, &code, "alice").await;
+        let result = result_of_any(&callback(&client, &code).await);
+        assert_eq!(redeem(&client, &result, VERIFIER).await.0, Status::Ok);
+    }
+    let body = login_audit(&client, &admin, "").await;
+    assert_eq!(body["data"][0]["client"], "console");
+    assert_eq!(body["data"][1]["client"], "web");
+}
+
+#[rocket::async_test]
+async fn test_login_audit_records_failures() {
+    let client = untracked_client().await;
+    let admin = login_admin(&client).await;
+    let state = client.rocket().state::<state::ApiState>().unwrap();
+
+    let code = start_login(&client, "PC", LOOPBACK).await;
+    let resp = client.get(format!("/api/oidc/callback?error=access_denied&state={code}")).dispatch().await;
+    assert_eq!(resp.headers().get_one("Location").unwrap(), format!("{LOOPBACK}?error=login_failed&code={code}"));
+    let row = &login_audit(&client, &admin, "&outcome=idp_denied").await["data"][0];
+    assert_eq!(row["detail"], "access_denied");
+    assert_eq!(row["user"], "");
+
+    let code = start_login(&client, "PC", LOOPBACK).await;
+    assert!(state.test_set_oidc_provider(&code, std::sync::Arc::new(FailingIdp)).await);
+    callback(&client, &code).await;
+    assert_eq!(login_audit(&client, &admin, "&outcome=idp_error").await["total"], 1);
+
+    let code = start_login(&client, "PC", LOOPBACK).await;
+    assert!(state.test_set_oidc_provider(&code, std::sync::Arc::new(StubIdp { sub: "bob".into() })).await);
+    let result = result_of(&callback(&client, &code).await);
+    assert_eq!(redeem(&client, &result, VERIFIER).await.0, Status::BadRequest);
+    assert_eq!(login_audit(&client, &admin, "&outcome=inactive").await["data"][0]["user"], "bob");
+
+    let code = start_login(&client, "PC", LOOPBACK).await;
+    use_stub_idp(&client, &code, "alice").await;
+    let result = result_of(&callback(&client, &code).await);
+    assert_eq!(redeem(&client, &result, "wrong-verifier").await.0, Status::BadRequest);
+    let row = &login_audit(&client, &admin, "&outcome=refused").await["data"][0];
+    assert_eq!(row["detail"], "wrong verifier");
+    assert_eq!(row["user"], "alice");
+
+    assert_eq!(login_audit(&client, &admin, "").await["total"], 4);
+    assert_eq!(login_audit(&client, &admin, "&user=%25ali%25").await["total"], 1);
+}
+
+#[rocket::async_test]
+async fn test_login_audit_ignores_unknown_logins() {
+    let client = untracked_client().await;
+    let admin = login_admin(&client).await;
+    client.get("/api/oidc/callback?error=access_denied&state=nope").dispatch().await;
+    client.get("/api/oidc/callback?code=x&state=nope").dispatch().await;
+    redeem(&client, "nope", VERIFIER).await;
+    assert_eq!(login_audit(&client, &admin, "").await["total"], 0);
+}
+
+#[rocket::async_test]
+async fn test_login_audit_requires_admin() {
+    let client = untracked_client().await;
+    let resp = client.get("/api/audits/login").dispatch().await;
+    assert!(resp.status() == Status::Unauthorized || resp.status() == Status::Forbidden);
+    let alice = activated_user_token(&client, "alice").await;
+    let resp = client.get("/api/audits/login").header(auth_header(&alice)).dispatch().await;
+    assert!(resp.status() == Status::Unauthorized || resp.status() == Status::Forbidden);
+}
+
+#[rocket::async_test]
+async fn test_login_audit_keeps_the_name_of_a_deleted_user() {
+    let client = untracked_client().await;
+    let admin = login_admin(&client).await;
+    native_login(&client, "PC", "carol").await;
+    let users: Value = client.get("/api/user-list?current=1&pageSize=10&name=carol").header(auth_header(&admin)).dispatch().await.into_json().await.unwrap();
+    let guid = users["data"][0]["guid"].as_str().unwrap().to_string();
+    let resp = client.delete("/api/user").header(ContentType::JSON).header(auth_header(&admin))
+        .body(format!(r#"{{"rows":["{guid}"]}}"#)).dispatch().await;
+    assert_eq!(resp.status(), Status::Ok);
+    assert_eq!(login_audit(&client, &admin, "").await["data"][0]["user"], "carol");
+}

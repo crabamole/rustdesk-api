@@ -2082,6 +2082,27 @@ impl Database {
         .ok()?
     }
 
+    pub async fn insert_audit_login(&self, r: &utils::LoginRecord) -> Option<()> {
+        sqlx::query(
+            "INSERT INTO audit_login (outcome, detail, client, \"user\", user_name, rustdesk_id, hostname, os, ip) \
+             VALUES ($1, $2, $3, (SELECT guid FROM \"user\" WHERE oidc_sub = $4), $5, $6, $7, $8, $9)",
+        )
+        .bind(r.outcome)
+        .bind(&r.detail)
+        .bind(r.client)
+        .bind(&r.sub)
+        .bind(&r.user_name)
+        .bind(&r.rustdesk_id)
+        .bind(&r.hostname)
+        .bind(&r.os)
+        .bind(&r.ip)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| log::error!("insert_audit_login error: {e:?}"))
+        .ok()?;
+        Some(())
+    }
+
     #[cfg(any(test, feature = "test-util"))]
     pub async fn test_age_viewer_device(&self, id: &str, secs: i64) {
         sqlx::query(
@@ -2273,6 +2294,44 @@ impl Database {
         }
         Some((total, data))
     }
+
+    /// Admin read API: login rows, newest first; `q.pattern` is a LIKE pattern on the user name.
+    pub async fn list_audit_logins(&self, q: &utils::AuditQuery, outcome: Option<&str>) -> Option<(i64, Vec<utils::AuditLoginLog>)> {
+        const WHERE: &str = "WHERE ($1::text IS NULL OR created_at >= ($1::timestamp AT TIME ZONE 'UTC')) \
+             AND ($2::text IS NULL OR user_name LIKE $2) AND ($3::text IS NULL OR outcome = $3)";
+
+        let total: i64 = sqlx::query_scalar(&format!("SELECT count(*) FROM audit_login {WHERE}"))
+            .bind(&q.created_at)
+            .bind(&q.pattern)
+            .bind(outcome)
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|e| log::error!("list_audit_logins count error: {e:?}"))
+            .ok()?;
+
+        let rows: Vec<(String, i64, String, String, String, String, String, String, String, String)> = sqlx::query_as(&format!(
+            "SELECT guid::text, extract(epoch FROM created_at)::bigint, outcome, detail, client, user_name, \
+               rustdesk_id, hostname, os, ip FROM audit_login {WHERE} \
+             ORDER BY created_at DESC LIMIT $4 OFFSET $5"
+        ))
+        .bind(&q.created_at)
+        .bind(&q.pattern)
+        .bind(outcome)
+        .bind(q.limit)
+        .bind(q.offset)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| log::error!("list_audit_logins query error: {e:?}"))
+        .ok()?;
+
+        let data = rows
+            .into_iter()
+            .map(|(guid, created_at, outcome, detail, client, user, rustdesk_id, hostname, os, ip)| utils::AuditLoginLog {
+                guid, created_at, outcome, detail, client, user, rustdesk_id, hostname, os, ip,
+            })
+            .collect();
+        Some((total, data))
+    }
 }
 
 /// Rows written before this branch double-encoded `info.info` as a JSON string, and an
@@ -2437,7 +2496,7 @@ mod tests {
                 .fetch_all(&first.pool)
                 .await
                 .unwrap();
-        assert_eq!(applied, vec![(1, true), (2, true), (3, true), (4, true), (5, true), (6, true), (7, true), (8, true)]);
+        assert_eq!(applied, vec![(1, true), (2, true), (3, true), (4, true), (5, true), (6, true), (7, true), (8, true), (9, true)]);
         first.pool.close().await;
 
         // Second start on the same database must not fail or duplicate rows.

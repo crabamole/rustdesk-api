@@ -16,11 +16,15 @@ This website use:
                 </button>
             </div>
             <div class="mb-4 flex flex-wrap items-center gap-3">
-                <input v-model="deviceFilter" type="text" placeholder="Filter by device"
+                <input v-model="deviceFilter" type="text" :placeholder="activeTab === 'login' ? 'Filter by user' : 'Filter by device'"
                     class="rounded-md border-gray-300" />
                 <select v-if="activeTab === 'conn'" v-model="connType" class="rounded-md border-gray-300">
                     <option value="">Any type</option>
                     <option v-for="(label, code) in CONN_TYPES" :key="code" :value="code">{{ label }}</option>
+                </select>
+                <select v-if="activeTab === 'login'" v-model="outcome" class="rounded-md border-gray-300" data-testid="audit-outcome">
+                    <option value="">Any outcome</option>
+                    <option v-for="(label, code) in LOGIN_OUTCOMES" :key="code" :value="code">{{ label }}</option>
                 </select>
             </div>
             <div class="max-w-full overflow-x-auto">
@@ -56,6 +60,18 @@ This website use:
                             <td class="py-2 px-3">{{ row.ip }}</td>
                         </tr>
                     </tbody>
+                    <tbody v-else-if="activeTab === 'login'">
+                        <tr v-for="row in loginRows" :key="row.guid" data-testid="audit-row" class="border-b border-[#E8E8E8]">
+                            <td class="py-2 px-3">{{ formatTime(row.created_at) }}</td>
+                            <td class="py-2 px-3">{{ row.user }}</td>
+                            <td class="py-2 px-3">{{ loginOutcomeLabel(row.outcome) }}</td>
+                            <td class="py-2 px-3">{{ loginClientLabel(row.client) }}</td>
+                            <td class="py-2 px-3">{{ row.rustdesk_id }}</td>
+                            <td class="py-2 px-3">{{ machineLabel(row.hostname, row.os) }}</td>
+                            <td class="py-2 px-3">{{ row.ip }}</td>
+                            <td class="py-2 px-3">{{ row.detail }}</td>
+                        </tr>
+                    </tbody>
                     <tbody v-else>
                         <tr v-for="row in alarmRows" :key="row.guid" data-testid="audit-row" class="border-b border-[#E8E8E8]">
                             <td class="py-2 px-3">{{ formatTime(row.created_at) }}</td>
@@ -79,25 +95,28 @@ This website use:
 
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue';
-import { AuditApi, AuditAlarmLog, AuditConnLog, AuditFileLog } from '@/api';
+import { AuditApi, AuditAlarmLog, AuditConnLog, AuditFileLog, AuditLoginLog } from '@/api';
 import { useUserStore } from '@/stores/sctgDeskStore';
-import { CONN_TYPES, alarmLabel, authLabel, connTypeLabel, fileDirectionLabel, formatTime, likePattern, machineLabel } from '@/utilities/audit';
+import { CONN_TYPES, LOGIN_OUTCOMES, alarmLabel, authLabel, connTypeLabel, fileDirectionLabel, formatTime, likePattern, loginClientLabel, loginOutcomeLabel, machineLabel } from '@/utilities/audit';
 
 const PAGE_SIZE = 20;
 const TABS = [
     { key: 'conn', label: 'Connections' },
     { key: 'file', label: 'Files' },
     { key: 'alarm', label: 'Alarms' },
+    { key: 'login', label: 'Logins' },
 ] as const;
 
-const activeTab = ref<'conn' | 'file' | 'alarm'>('conn');
+const activeTab = ref<'conn' | 'file' | 'alarm' | 'login'>('conn');
 const deviceFilter = ref('');
 const connType = ref<number | ''>('');
+const outcome = ref('');
 const current = ref(1);
 const total = ref(0);
 const connRows = ref([] as AuditConnLog[]);
 const fileRows = ref([] as AuditFileLog[]);
 const alarmRows = ref([] as AuditAlarmLog[]);
+const loginRows = ref([] as AuditLoginLog[]);
 const message = ref('');
 
 const pageCount = computed(() => Math.max(1, Math.ceil(total.value / PAGE_SIZE)));
@@ -105,6 +124,7 @@ const pageCount = computed(() => Math.max(1, Math.ceil(total.value / PAGE_SIZE))
 const columns = computed(() => {
     if (activeTab.value === 'conn') return ['Start', 'End', 'Device', 'Viewer', 'Viewer machine (self-reported)', 'User', 'Address', 'Type', 'Authentication', 'Note'];
     if (activeTab.value === 'file') return ['Time', 'Device', 'Viewer', 'User', 'Direction', 'Path', 'Files', 'Address'];
+    if (activeTab.value === 'login') return ['Time', 'User', 'Outcome', 'Client', 'ID (self-reported)', 'Machine (self-reported)', 'Address', 'Details'];
     return ['Time', 'Device', 'User', 'Type', 'Details'];
 });
 
@@ -148,6 +168,10 @@ function load(): void {
         api().auditsFile(current.value, PAGE_SIZE, undefined, pattern)
             .then((r) => { if (id === requestId) { fileRows.value = r.data.data; total.value = r.data.total; } })
             .catch((error) => { if (id === requestId) fail(error); });
+    } else if (activeTab.value === 'login') {
+        api().auditsLogin(current.value, PAGE_SIZE, undefined, pattern, outcome.value || undefined)
+            .then((r) => { if (id === requestId) { loginRows.value = r.data.data; total.value = r.data.total; } })
+            .catch((error) => { if (id === requestId) fail(error); });
     } else {
         api().auditsAlarm(current.value, PAGE_SIZE, undefined, pattern)
             .then((r) => { if (id === requestId) { alarmRows.value = r.data.data; total.value = r.data.total; } })
@@ -155,7 +179,7 @@ function load(): void {
     }
 }
 
-watch([activeTab, connType], () => { current.value = 1; load(); });
+watch([activeTab, connType, outcome], () => { current.value = 1; load(); });
 watch(deviceFilter, () => {
     current.value = 1;
     clearTimeout(filterTimer);
