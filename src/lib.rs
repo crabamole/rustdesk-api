@@ -1220,7 +1220,7 @@ async fn login_options(
 ///
 /// - `request`: The request data, which includes the chosen OAuth2 provider and a UUID.  <br> For testing you can generate a valid uuid field with the following command: `uuidgen | base64`
 /// - `returnTo`: where the callback sends the one-time result: a loopback `http://127.0.0.1:<port>/`
-///   (or `[::1]`) of a native client, or a URL on this server. Otherwise the code is `RETURN_TO_ERROR`.
+///   (or `[::1]`) of a native client, or this server's `/ui/login` or `/oidc-callback.html`. Otherwise the code is `RETURN_TO_ERROR`.
 /// - `codeChallenge`: the S256 PKCE challenge (43 base64url characters) whose verifier redeems
 ///   the result at `POST /api/oidc/token`. Otherwise the code is `CODE_CHALLENGE_ERROR`.
 ///
@@ -1266,7 +1266,7 @@ async fn oidc_auth(
     let uuid_decoded = uuid_decoded.unwrap();
     let uuid_client = String::from_utf8(uuid_decoded).unwrap();
     let host = public_url.0.clone().unwrap_or_else(|| get_host(headers.clone()));
-    if !is_loopback_return(&request.return_to) && !is_own_url(&request.return_to, &host) {
+    if !is_loopback_return(&request.return_to) && !is_own_login_page(&request.return_to, &host) {
         log::warn!("oidc_auth: rejected returnTo {:?}", request.return_to);
         return Json(OidcAuthUrl { url: "".to_string(), code: "RETURN_TO_ERROR".to_string() });
     }
@@ -1381,12 +1381,17 @@ fn oidc_return(return_to: &str, query: &str) -> OidcCallbackResponse {
 }
 
 /// True for a path on this server or an absolute URL on `host` (scheme://authority).
-fn is_own_url(uri: &str, host: &str) -> bool {
-    if uri.starts_with('/') && !uri.starts_with("//") && !uri.starts_with("/\\") {
-        return true;
+/// The console or web-client login page on this server, as a path or a URL; nothing else may receive a result.
+fn is_own_login_page(uri: &str, host: &str) -> bool {
+    const PAGES: [&str; 2] = ["/ui/login", "/oidc-callback.html"];
+    if uri.starts_with('/') {
+        return PAGES.contains(&uri);
     }
     match (url::Url::parse(uri), url::Url::parse(host)) {
-        (Ok(u), Ok(h)) => !host.is_empty() && u.origin() == h.origin(),
+        (Ok(u), Ok(h)) => {
+            !host.is_empty() && u.origin() == h.origin() && PAGES.contains(&u.path())
+                && u.query().is_none() && u.fragment().is_none()
+        }
         _ => false,
     }
 }

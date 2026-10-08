@@ -1469,10 +1469,12 @@ async fn test_oidc_result_expires() {
 }
 
 #[rocket::async_test]
-async fn test_oidc_return_to_must_be_a_loopback_or_this_server() {
+async fn test_oidc_return_to_must_be_a_loopback_or_a_login_page() {
     let client = untracked_client().await;
     let challenge = oauth2::pkce::s256_challenge(VERIFIER);
-    for bad in ["http://evil.example.com/", "https://127.0.0.1:48123/", "http://127.0.0.1/", "http://127.0.0.1:48123/x", "http://localhost:48123/", ""] {
+    for bad in ["http://evil.example.com/", "https://127.0.0.1:48123/", "http://127.0.0.1/", "http://127.0.0.1:48123/x", "http://localhost:48123/", "",
+        "https://rustdesk.example.com/ui/", "https://rustdesk.example.com/api/user", "/ui/login/x",
+        "https://rustdesk.example.com/ui/login?next=/x", "/oidc-callback.html#x", "/ui/../oidc-callback.html"] {
         let resp = client.post("/api/oidc/auth").header(ContentType::JSON)
             .header(Header::new("Host", "rustdesk.example.com")).header(Header::new("X-Forwarded-Proto", "https"))
             .body(format!(r#"{{"op":"dex","id":"1","uuid":"eA==","deviceInfo":{{"name":"n","os":"o","type":"client"}},"returnTo":"{bad}","codeChallenge":"{challenge}"}}"#))
@@ -1480,7 +1482,7 @@ async fn test_oidc_return_to_must_be_a_loopback_or_this_server() {
         let body: Value = resp.into_json().await.unwrap();
         assert_eq!(body["code"], "RETURN_TO_ERROR", "{bad}");
     }
-    for ok in ["http://[::1]:48123/", "https://rustdesk.example.com/ui/login", "/oidc-callback.html"] {
+    for ok in ["http://[::1]:48123/", "https://rustdesk.example.com/ui/login", "https://rustdesk.example.com/oidc-callback.html", "/ui/login", "/oidc-callback.html"] {
         let code = start_login(&client, "n", ok).await;
         assert!(!code.is_empty() && code != "RETURN_TO_ERROR", "{ok}");
     }
