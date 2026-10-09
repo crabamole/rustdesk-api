@@ -14,6 +14,7 @@ use uuid::Uuid;
 /// instead of each test binary invocation starting (and leaking) its own.
 /// Includes the image tag so that bumping the tag starts (and reuses) a new
 /// container instead of silently reattaching to one running the old image.
+/// `-shm`: the shm size is fixed at container creation, so a reused older container would keep 64 MB.
 const CONTAINER_NAME: &str = "rustdesk-api-test-pg-17-shm";
 
 /// Databases older than this are considered stale and dropped on startup.
