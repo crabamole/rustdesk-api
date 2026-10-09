@@ -1243,6 +1243,19 @@ async fn untracked_client() -> Client {
     Client::untracked(build_rocket_with_db(figment, &db_url).await).await.unwrap()
 }
 
+/// Two api-server instances on one database, as two pods behind one Service.
+async fn two_pods() -> (Client, Client) {
+    let db_url = state::testing::fresh_database_url().await;
+    let figment = || {
+        rocket::Config::figment()
+            .merge(("port", 0))
+            .merge(("secret_key", "hPRYyVRiMyxpw5sBB1XeCMN1kFsDCqKvBi2QJxBVHQk="))
+    };
+    let a = Client::untracked(build_rocket_with_db(figment(), &db_url).await).await.unwrap();
+    let b = Client::untracked(build_rocket_with_db(figment(), &db_url).await).await.unwrap();
+    (a, b)
+}
+
 async fn public_url_client(public_url: &str) -> Client {
     let db_url = state::testing::fresh_database_url().await;
     let figment = rocket::Config::figment()
@@ -1439,6 +1452,23 @@ async fn test_oidc_callback_runs_once() {
     assert!(!replay.starts_with(LOOPBACK), "{replay}");
     let (status, body) = redeem(&client, &result, VERIFIER).await;
     assert_eq!(status, Status::Ok, "{body}");
+}
+
+#[rocket::async_test]
+async fn test_oidc_login_across_pods() {
+    let (a, b) = two_pods().await;
+    let code = start_login(&a, "MY-LAPTOP", LOOPBACK).await;
+    use_stub_idp(&b, &code, "alice").await;
+    let location = callback(&b, &code).await;
+    assert!(location.starts_with(&format!("{LOOPBACK}?result=")), "{location}");
+    let replay = callback(&a, &code).await;
+    assert!(!replay.starts_with(LOOPBACK), "the callback runs once across pods: {replay}");
+    let result = result_of(&location);
+    let (status, body) = redeem(&a, &result, VERIFIER).await;
+    assert_eq!(status, Status::Ok, "{body}");
+    assert_eq!(body["user"]["name"], "alice");
+    let (again, _) = redeem(&b, &result, VERIFIER).await;
+    assert_eq!(again, Status::BadRequest, "a result works once across pods");
 }
 
 #[rocket::async_test]

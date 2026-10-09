@@ -21,12 +21,9 @@ use std::collections::HashMap;
 use std::env;
 use std::io::Cursor;
 use std::path::PathBuf;
-use std::sync::Arc;
 
 use api::ActionResponse;
 use extended_json::ExtendedJson;
-use oauth2::oauth_provider::OAuthProvider;
-use oauth2::oauth_provider::OAuthProviderFactory;
 use rocket::fairing::{Fairing, Info, Kind};
 use rocket::form::validate::Len;
 use rocket::http::{ContentType, Header, Status};
@@ -1327,19 +1324,11 @@ async fn oidc_auth(
         });
     }
     let provider_config = provider_config.unwrap();
-    let provider_trait_object: Arc<dyn OAuthProvider> = {
-        match provider_config.provider {
-            oauth2::Provider::Github => Arc::new(oauth2::github_provider::GithubProvider::new()),
-            oauth2::Provider::Gitlab => todo!(),
-            oauth2::Provider::Google => todo!(),
-            oauth2::Provider::Apple => todo!(),
-            oauth2::Provider::Okta => todo!(),
-            oauth2::Provider::Facebook => todo!(),
-            oauth2::Provider::Azure => todo!(),
-            oauth2::Provider::Auth0 => todo!(),
-            oauth2::Provider::Dex => Arc::new(oauth2::dex_provider::DexProvider::new()),
-            oauth2::Provider::Oauth2 => Arc::new(oauth2::oauth2_provider::Oauth2Provider::new()),
-        }
+    let Some(provider_trait_object) = oauth2::oauth_provider::provider_for(provider_config.provider) else {
+        return Json(OidcAuthUrl {
+            url: "".to_string(),
+            code: "".to_string(),
+        });
     };
 
     let provider_login = oauth2::pkce::ProviderLogin::new(&uuid_code);

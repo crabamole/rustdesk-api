@@ -45,6 +45,16 @@ pub trait OAuthProviderFactory {
     }
 }
 
+/// The implementation of `provider`; `None` for the placeholder types `validate` rejects.
+pub fn provider_for(provider: Provider) -> Option<std::sync::Arc<dyn OAuthProvider>> {
+    match provider {
+        Provider::Github => Some(std::sync::Arc::new(crate::github_provider::GithubProvider::new())),
+        Provider::Dex => Some(std::sync::Arc::new(crate::dex_provider::DexProvider::new())),
+        Provider::Oauth2 => Some(std::sync::Arc::new(crate::oauth2_provider::Oauth2Provider::new())),
+        _ => None,
+    }
+}
+
 pub trait OAuthProvider: Send + Sync{
     /// Get redirect url for the provider
     ///
@@ -115,6 +125,13 @@ pub fn decode_id_token(id_token: &str, issuer: &str, client_id: &str, nonce: &st
 mod tests {
     use super::*;
     use base64::prelude::{Engine as _, BASE64_URL_SAFE_NO_PAD};
+
+    #[test]
+    fn placeholder_provider_types_have_no_implementation() {
+        for p in [Provider::Gitlab, Provider::Google, Provider::Apple, Provider::Okta, Provider::Facebook, Provider::Azure, Provider::Auth0] {
+            assert!(provider_for(p).is_none(), "{p:?}");
+        }
+    }
 
     const ISS: &str = "https://idp.example.com";
     const APP: &str = "app";

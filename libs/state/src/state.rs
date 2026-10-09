@@ -28,6 +28,8 @@ use std::{
 
 use base64::Engine as _;
 use oauth2::ProviderConfig;
+use std::sync::Arc;
+use oauth2::oauth_provider::OAuthProvider;
 
 use tokio::sync::RwLock;
 use utils::{
@@ -38,7 +40,9 @@ use utils::{
 pub struct ApiState {
     last_maintenance_time: AtomicU64,
     address_books: RwLock<HashMap<UserId, AddressBookInfo>>,
-    oidc_sessions: RwLock<HashMap<String, OidcState>>,
+    /// IdP stand-ins by login code, on this instance only. Test-only.
+    #[cfg(any(test, feature = "test-util"))]
+    test_providers: std::sync::Mutex<HashMap<String, Arc<dyn OAuthProvider>>>,
     pub(crate) db: Database,
     oauth2_providers: RwLock<Vec<ProviderConfig>>,
 }
@@ -87,7 +91,8 @@ impl ApiState {
             last_maintenance_time: AtomicU64::new(0),
             address_books: Default::default(),
             db,
-            oidc_sessions: Default::default(),
+            #[cfg(any(test, feature = "test-util"))]
+            test_providers: Default::default(),
             oauth2_providers: Default::default(),
         }
     }
@@ -151,24 +156,30 @@ impl ApiState {
         ))
     }
 
-    /// Replaces the IdP of a pending login. Test-only.
+    /// Makes a pending login use `provider` when this instance runs its callback. Test-only.
     #[cfg(any(test, feature = "test-util"))]
-    pub async fn test_set_oidc_provider(&self, uuid_code: &str, provider: std::sync::Arc<dyn oauth2::oauth_provider::OAuthProvider>) -> bool {
-        let mut sessions = self.oidc_sessions.write().await;
-        sessions.get_mut(uuid_code).map(|s| s.provider = Some(provider)).is_some()
+    pub async fn test_set_oidc_provider(&self, uuid_code: &str, provider: Arc<dyn OAuthProvider>) -> bool {
+        if self.get_oidc_session(uuid_code.to_string()).await.is_none() {
+            return false;
+        }
+        self.test_providers.lock().unwrap().insert(uuid_code.to_string(), provider);
+        true
+    }
+
+    #[cfg(any(test, feature = "test-util"))]
+    fn test_provider(&self, uuid_code: &str) -> Option<Arc<dyn OAuthProvider>> {
+        self.test_providers.lock().unwrap().get(uuid_code).cloned()
+    }
+
+    #[cfg(not(any(test, feature = "test-util")))]
+    fn test_provider(&self, _uuid_code: &str) -> Option<Arc<dyn OAuthProvider>> {
+        None
     }
 
     /// Makes a pending login `secs` older. Test-only.
     #[cfg(any(test, feature = "test-util"))]
     pub async fn test_age_oidc_session(&self, uuid_code: &str, secs: u64) -> bool {
-        let mut sessions = self.oidc_sessions.write().await;
-        sessions
-            .get_mut(uuid_code)
-            .map(|s| {
-                s.created_at = s.created_at.saturating_sub(secs);
-                s.result_at = s.result_at.saturating_sub(secs);
-            })
-            .is_some()
+        self.db.test_age_oidc_login(uuid_code, secs).await
     }
 
     async fn get_access_token(&self, user_id: Vec<u8>, _username: &String, _is_admin: bool) -> Token {
@@ -352,119 +363,57 @@ impl ApiState {
         Some(oauth2_providers.clone())
     }
 
-    pub async fn insert_oidc_session(
-        &self,
-        uuid_code: String,
-        mut oidc_state: OidcState,
-    ) -> Option<OidcState> {
-        let now = unix_now();
-        oidc_state.created_at = now;
-        let mut oidc_sessions = self.oidc_sessions.write().await;
-        oidc_sessions.retain(|_, s| !oidc_login_expired(s, now));
-        let old_value = oidc_sessions.insert(uuid_code, oidc_state.clone());
-        if old_value.is_none() {
-            return Some(oidc_state);
-        }
-        None
+    pub async fn insert_oidc_session(&self, uuid_code: String, oidc_state: OidcState) -> Option<OidcState> {
+        let provider = oidc_state.provider.as_ref().map(|p| p.get_provider_type());
+        self.db
+            .insert_oidc_login(&uuid_code, &oidc_state, provider, OIDC_LOGIN_TTL_SECS)
+            .await?
+            .then_some(oidc_state)
     }
 
     pub async fn get_oidc_session(&self, uuid_code: String) -> Option<OidcState> {
-        let oidc_sessions = self.oidc_sessions.read().await;
-        oidc_sessions.get(&uuid_code).filter(|s| !oidc_login_expired(s, unix_now())).cloned()
-    }
-
-    /// Exchange code for tokens
-    ///
-    /// This function exchanges a code obtained from an oauth2 provider
-    /// for an access token.
-    /// If the oauth2 provider supports it, also an id token is exchanged.
-    ///
-    /// # Arguments
-    ///
-    /// * `authorization_code` - The code obtained from the oauth2 provider
-    /// * `uuid_code` - The unique code to identify this code exchange request
-    ///
-    /// # Returns
-    ///
-    /// If the code exchange was successful, an `Option` containing the access
-    /// and refresh tokens is returned, otherwise `None`.
-    pub async fn oidc_session_exchange_code(
-        &self,
-        authorization_code: String,
-        uuid_code: String,
-    ) -> Option<String> {
-        let mut oidc_sessions = self.oidc_sessions.write().await;
-        let oidc_session = oidc_sessions.get_mut(&uuid_code).filter(|s| !oidc_login_expired(s, unix_now()));
-        if oidc_session.is_none() {
-            return None;
-        }
-        let oidc_session = oidc_session.unwrap();
-        oidc_session.code = Some(authorization_code.clone());
-        if oidc_session.provider.is_some()
-            && oidc_session.code.is_some()
-            && oidc_session.callback_url.is_some()
-        {
-            let provider = oidc_session.clone().provider.unwrap();
-            let callback_url = oidc_session.clone().callback_url.unwrap();
-            let login = oidc_session.provider_login.clone()?;
-            let exchange_result = provider
-                .exchange_code(authorization_code.as_str(), callback_url.as_str(), &login)
-                .await;
-            if let Err(e) = &exchange_result {
-                log::error!("OIDC code exchange failed: {}", e);
-            }
-
-            if exchange_result.is_ok() {
-                let access_token = exchange_result.unwrap();
-
-                oidc_session.auth_token = Some(access_token.access_token.clone());
-                oidc_session.sub = Some(access_token.subject.clone());
-                oidc_session.name = access_token.name.clone();
-                oidc_session.email = access_token.email.clone();
-                return Some(access_token.access_token);
-            }
-        }
-        None
+        self.db.get_oidc_login(&uuid_code, OIDC_LOGIN_TTL_SECS).await
     }
 
     /// Finishes the provider leg of a login; returns where to send the browser and, when it
     /// succeeded, the one-time result for the starter.
     pub async fn oidc_complete_callback(&self, uuid_code: &str, code: &str) -> Option<(String, Option<String>)> {
-        let return_to = {
-            let mut sessions = self.oidc_sessions.write().await;
-            let s = sessions.get_mut(uuid_code).filter(|s| !oidc_login_expired(s, unix_now()))?;
-            // Single use: a replayed callback must not replace or drop the login's result.
-            if s.code.is_some() || s.result.is_some() {
-                return None;
-            }
-            s.code = Some(code.to_string());
-            s.return_to.clone()
+        // Single use across pods: a replayed callback must not replace or drop the login's result.
+        let (login, provider) = self.db.claim_oidc_callback(uuid_code, OIDC_LOGIN_TTL_SECS).await?;
+        let Some(identity) = self.exchange_oidc_code(uuid_code, &login, provider, code).await else {
+            self.db.delete_oidc_login(uuid_code).await;
+            self.record_login(&login, "idp_error", String::new(), String::new()).await;
+            return Some((login.return_to, None));
         };
-        if self.oidc_session_exchange_code(code.to_string(), uuid_code.to_string()).await.is_none() {
-            if let Some(login) = self.oidc_sessions.write().await.remove(uuid_code) {
-                self.record_login(&login, "idp_error", String::new(), String::new()).await;
-            }
-            return Some((return_to, None));
-        }
         let result = oauth2::pkce::random_secret();
-        let mut sessions = self.oidc_sessions.write().await;
-        let s = sessions.get_mut(uuid_code)?;
-        s.result = Some(result.clone());
-        s.result_at = unix_now();
-        Some((return_to, Some(result)))
+        self.db
+            .finish_oidc_login(uuid_code, &identity.subject, identity.name.as_deref(), identity.email.as_deref(), &result)
+            .await?;
+        Some((login.return_to, Some(result)))
+    }
+
+    /// The IdP's answer for `code`; the provider is rebuilt from its type, so any pod can ask.
+    async fn exchange_oidc_code(
+        &self,
+        uuid_code: &str,
+        login: &OidcState,
+        provider: Option<oauth2::Provider>,
+        code: &str,
+    ) -> Option<oauth2::oauth_provider::OAuthResponse> {
+        let provider = self.test_provider(uuid_code).or_else(|| oauth2::oauth_provider::provider_for(provider?))?;
+        let callback_url = login.callback_url.as_deref()?;
+        let provider_login = login.provider_login.as_ref()?;
+        provider
+            .exchange_code(code, callback_url, provider_login)
+            .await
+            .map_err(|e| log::error!("OIDC code exchange failed: {}", e))
+            .ok()
     }
 
     /// Ends a login the IdP sent back with `error` (e.g. the user cancelled); returns where to
     /// send the browser.
     pub async fn oidc_fail_callback(&self, uuid_code: &str, error: &str) -> Option<String> {
-        let login = {
-            let mut sessions = self.oidc_sessions.write().await;
-            let s = sessions.get(uuid_code).filter(|s| !oidc_login_expired(s, unix_now()))?;
-            if s.code.is_some() || s.result.is_some() {
-                return None;
-            }
-            sessions.remove(uuid_code)?
-        };
+        let login = self.db.take_failed_oidc_login(uuid_code, OIDC_LOGIN_TTL_SECS).await?;
         let detail = error.chars().filter(|c| c.is_ascii_graphic()).take(64).collect();
         self.record_login(&login, "idp_denied", detail, String::new()).await;
         Some(login.return_to)
@@ -473,20 +422,15 @@ impl ApiState {
     /// Issues the session for a one-time result when the starter proves itself; the result
     /// is used up either way.
     pub async fn oidc_redeem(&self, req: &utils::OidcTokenRequest) -> Option<(Token, String, DatabaseUserInfo)> {
-        let now = unix_now();
-        let login = {
-            let mut sessions = self.oidc_sessions.write().await;
-            let key = sessions.iter().find(|(_, s)| s.result.as_deref() == Some(req.result.as_str()))?.0.clone();
-            sessions.remove(&key)?
-        };
+        let (login, expired) = self.db.take_oidc_result(&req.result, OIDC_RESULT_TTL_SECS).await?;
         let uuid = base64::prelude::BASE64_STANDARD.decode(&req.uuid).ok().and_then(|u| String::from_utf8(u).ok());
-        if login.result_at.saturating_add(OIDC_RESULT_TTL_SECS) < now
+        if expired
             || oauth2::pkce::s256_challenge(&req.code_verifier) != login.code_challenge
             || login.id != req.id
             || uuid.as_deref() != Some(login.uuid.as_str())
         {
             log::warn!("oidc_redeem: refused a result (expired, wrong verifier or another client)");
-            let detail = if login.result_at.saturating_add(OIDC_RESULT_TTL_SECS) < now {
+            let detail = if expired {
                 "expired"
             } else if oauth2::pkce::s256_challenge(&req.code_verifier) != login.code_challenge {
                 "wrong verifier"
@@ -1031,10 +975,6 @@ pub const OIDC_RESULT_TTL_SECS: u64 = 60;
 /// Heartbeats come every 3–15 s; a row this young may have been opened after the heartbeat's snapshot.
 pub const AUDIT_CONN_HEARTBEAT_GRACE_SECS: i64 = 30;
 
-fn unix_now() -> u64 {
-    SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
-}
-
 /// Which client started a login, from its `returnTo` (checked when the login started).
 fn login_client(return_to: &str) -> &'static str {
     if return_to.starts_with("http://127.") || return_to.starts_with("http://[::1]") {
@@ -1044,10 +984,6 @@ fn login_client(return_to: &str) -> &'static str {
     } else {
         "console"
     }
-}
-
-fn oidc_login_expired(s: &OidcState, now: u64) -> bool {
-    s.created_at.saturating_add(OIDC_LOGIN_TTL_SECS) < now
 }
 
 #[cfg(test)]
@@ -1065,6 +1001,54 @@ mod tests {
             .unwrap();
         state.set_admin("admin@example.org", true).await.unwrap();
         state
+    }
+
+    /// Two instances on one database, as two api-server pods.
+    async fn two_pods() -> (ApiState, ApiState) {
+        let url = crate::testing::fresh_database_url().await;
+        let a = ApiState::new_with_db(&url).await;
+        let b = ApiState::new_with_db(&url).await;
+        a.db.get_user_for_oauth2("admin", "admin", Some("admin@example.org")).await.unwrap();
+        a.set_admin("admin@example.org", true).await.unwrap();
+        (a, b)
+    }
+
+    /// An IdP that accepts any code and says the user is its `sub`.
+    struct StubIdp(&'static str);
+
+    impl oauth2::oauth_provider::OAuthProvider for StubIdp {
+        fn get_redirect_url(&self, _callback_url: &str, login: &oauth2::pkce::ProviderLogin) -> String {
+            format!("https://idp.example.com/authorize?state={}", login.state)
+        }
+        fn exchange_code(
+            &self,
+            _code: &str,
+            _callback_url: &str,
+            _login: &oauth2::pkce::ProviderLogin,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<oauth2::oauth_provider::OAuthResponse, oauth2::errors::Oauth2Error>> + Send + Sync>> {
+            let sub = self.0.to_string();
+            Box::pin(async move {
+                Ok(oauth2::oauth_provider::OAuthResponse { access_token: "at".into(), subject: sub.clone(), name: Some(sub), email: None })
+            })
+        }
+        fn get_provider_type(&self) -> oauth2::Provider {
+            oauth2::Provider::Dex
+        }
+    }
+
+    /// A login started on `pod` as `oidc_auth` would; its verifier is "v".
+    async fn start_login(pod: &ApiState, code: &str) {
+        let login = OidcState {
+            id: "601".into(),
+            uuid: "dev".into(),
+            callback_url: Some("https://rustdesk.example.com/api/oidc/callback".into()),
+            return_to: "/ui/login".into(),
+            code_challenge: oauth2::pkce::s256_challenge("v"),
+            provider_login: Some(oauth2::pkce::ProviderLogin::new(code)),
+            provider: Some(Arc::new(StubIdp("admin"))),
+            ..Default::default()
+        };
+        pod.insert_oidc_session(code.into(), login).await.unwrap();
     }
 
     #[tokio::test]
@@ -1311,13 +1295,11 @@ mod tests {
         let login = OidcState {
             id: "601".into(),
             uuid: "dev".into(),
-            sub: Some(sub.into()),
             code_challenge: oauth2::pkce::s256_challenge(verifier),
-            result: Some(result.into()),
             ..Default::default()
         };
-        state.insert_oidc_session(result.into(), login).await;
-        state.oidc_sessions.write().await.get_mut(result).unwrap().result_at = unix_now();
+        state.insert_oidc_session(result.into(), login).await.unwrap();
+        state.db.finish_oidc_login(result, sub, None, None, result).await.unwrap();
     }
 
     fn token_request(result: &str, verifier: &str) -> utils::OidcTokenRequest {
@@ -1348,6 +1330,46 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn oidc_login_started_on_one_pod_finishes_on_another() {
+        let (a, b) = two_pods().await;
+        start_login(&a, "c").await;
+        assert!(b.test_set_oidc_provider("c", Arc::new(StubIdp("admin"))).await);
+        let (return_to, result) = b.oidc_complete_callback("c", "idp-code").await.unwrap();
+        assert_eq!(return_to, "/ui/login");
+        let (_, username, _) = a.oidc_redeem(&token_request(&result.unwrap(), "v")).await.unwrap();
+        assert_eq!(username, "admin");
+    }
+
+    #[tokio::test]
+    async fn oidc_callback_runs_once_across_pods() {
+        let (a, b) = two_pods().await;
+        start_login(&a, "c").await;
+        for pod in [&a, &b] {
+            assert!(pod.test_set_oidc_provider("c", Arc::new(StubIdp("admin"))).await);
+        }
+        let (ra, rb) = tokio::join!(a.oidc_complete_callback("c", "x"), b.oidc_complete_callback("c", "x"));
+        assert_eq!(ra.is_some() as u8 + rb.is_some() as u8, 1, "{ra:?} {rb:?}");
+    }
+
+    #[tokio::test]
+    async fn oidc_result_is_redeemed_once_across_pods() {
+        let (a, b) = two_pods().await;
+        finished_login(&a, "admin", "v", "r").await;
+        let req = token_request("r", "v");
+        let (ra, rb) = tokio::join!(a.oidc_redeem(&req), b.oidc_redeem(&req));
+        assert_eq!(ra.is_some() as u8 + rb.is_some() as u8, 1);
+    }
+
+    #[tokio::test]
+    async fn oidc_idp_error_on_another_pod_ends_the_login() {
+        let (a, b) = two_pods().await;
+        start_login(&a, "c").await;
+        assert_eq!(b.oidc_fail_callback("c", "access_denied").await, Some("/ui/login".to_string()));
+        assert!(a.get_oidc_session("c".into()).await.is_none());
+        assert!(a.oidc_fail_callback("c", "access_denied").await.is_none());
+    }
+
+    #[tokio::test]
     async fn oidc_complete_callback_without_provider_fails_and_drops_the_login() {
         let state = test_state().await;
         let login = OidcState { return_to: "/ui/login".into(), ..Default::default() };
@@ -1355,15 +1377,6 @@ mod tests {
         assert_eq!(state.oidc_complete_callback("c", "code").await, Some(("/ui/login".to_string(), None)));
         assert!(state.get_oidc_session("c".into()).await.is_none());
         assert!(state.oidc_complete_callback("missing", "code").await.is_none());
-    }
-
-    #[tokio::test]
-    async fn oidc_exchange_code_missing_session() {
-        let state = test_state().await;
-        let result = state
-            .oidc_session_exchange_code("code".to_string(), "missing".to_string())
-            .await;
-        assert!(result.is_none());
     }
 
     #[tokio::test]
