@@ -101,6 +101,62 @@ impl Fairing for CORS {
     }
 }
 
+/// Fails readiness as soon as shutdown starts.
+pub struct ShutdownReadiness;
+
+#[rocket::async_trait]
+impl Fairing for ShutdownReadiness {
+    fn info(&self) -> Info {
+        Info { name: "Fail readiness on shutdown", kind: Kind::Shutdown }
+    }
+
+    async fn on_shutdown(&self, rocket: &Rocket<rocket::Orbit>) {
+        if let Some(state) = rocket.state::<ApiState>() {
+            state.begin_shutdown();
+        }
+    }
+}
+
+/// Liveness probe: answered while the server handles requests.
+#[get("/livez")]
+fn livez() -> Status {
+    Status::Ok
+}
+
+/// Readiness probe: the database answers and the server is not shutting down.
+#[get("/readyz")]
+async fn readyz(state: &State<ApiState>) -> Status {
+    if state.ready().await {
+        Status::Ok
+    } else {
+        Status::ServiceUnavailable
+    }
+}
+
+#[get("/readyz")]
+fn startup_readyz() -> Status {
+    Status::ServiceUnavailable
+}
+
+/// Answers probes on the API port while the database connects and migrates.
+pub fn startup_probe_rocket(figment: Figment) -> Rocket<Build> {
+    rocket::custom(figment).mount("/", routes![livez, startup_readyz])
+}
+
+/// Serves `startup_probe_rocket` until the returned handle is notified; await the task before binding the port again.
+pub async fn serve_startup_probes(
+    figment: Figment,
+) -> Result<(rocket::Shutdown, tokio::task::JoinHandle<()>), rocket::Error> {
+    let rocket = startup_probe_rocket(figment).ignite().await?;
+    let shutdown = rocket.shutdown();
+    let task = tokio::spawn(async move {
+        if let Err(e) = rocket.launch().await {
+            log::error!("startup probes: {e}");
+        }
+    });
+    Ok((shutdown, task))
+}
+
 /// # Answers to OPTIONS requests
 #[openapi(tag = "Cors")]
 #[options("/<_path..>")]
@@ -205,12 +261,15 @@ pub async fn build_rocket_with_db(figment: Figment, db_path: &str) -> Rocket<Bui
 
     let rocket = rocket::custom(figment)
         .attach(CORS)
+        .attach(ShutdownReadiness)
         .mount("/", api_routes().0)
         .mount("/",routes![
             favicon,
             webconsole_vue,
             oidc_callback,
             oidc_callback_error,
+            livez,
+            readyz,
         ])
         .manage(state)
         .manage(PublicUrl(public_url));

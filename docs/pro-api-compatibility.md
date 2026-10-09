@@ -174,3 +174,5 @@ Upstream clients log in by polling `GET /api/oidc/auth-query`; that login is not
 | GET | /api/software/version/server | server version |
 | GET | /api/software/releases/tag/{version} | echoes the requested version tag back; no real release lookup |
 | GET | /api/software/download | redirects to upstream RustDesk release |
+| GET | /livez | liveness probe: 200 while the server answers requests |
+| GET | /readyz | readiness probe: 200 when the database answers `SELECT 1` within 2 s and the server is not shutting down, else 503 |

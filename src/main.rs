@@ -107,7 +107,12 @@ async fn main() -> Result<(), rocket::Error> {
 
     // Launch Rocket
     let db_url = db_url_or_exit();
-    let _rocket = build_rocket(figment, &db_url).await.ignite().await?.launch().await?;
+    // Kubernetes probes reach the port while the database connects and migrates.
+    let (stop_probes, probes) = rustdesk_api::serve_startup_probes(figment.clone()).await?;
+    let rocket = build_rocket(figment, &db_url).await;
+    stop_probes.notify();
+    probes.await.ok();
+    let _rocket = rocket.ignite().await?.launch().await?;
     
     // End of API Server start
     // Other stuff here

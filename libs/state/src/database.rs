@@ -145,6 +145,11 @@ impl Database {
         }
     }
 
+    /// Whether the database answers `SELECT 1` within `timeout`.
+    pub async fn ping(&self, timeout: Duration) -> bool {
+        matches!(tokio::time::timeout(timeout, sqlx::query("SELECT 1").execute(&self.pool)).await, Ok(Ok(_)))
+    }
+
     #[cfg(any(test, feature = "test-util"))]
     pub async fn find_user_by_name(
         &self,
@@ -2691,6 +2696,14 @@ mod tests {
 
         let connection: DbError = Box::new(std::io::Error::other("connection refused"));
         assert!(!is_migrate_error(&connection));
+    }
+
+    #[tokio::test]
+    async fn ping_answers_until_the_pool_closes() {
+        let db = bare_db().await;
+        assert!(db.ping(Duration::from_secs(2)).await);
+        db.pool.close().await;
+        assert!(!db.ping(Duration::from_secs(2)).await);
     }
 
     #[tokio::test]

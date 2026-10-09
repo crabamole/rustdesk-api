@@ -2162,3 +2162,20 @@ async fn test_device_lists_do_not_reveal_the_uuid() {
     assert!(peer["info"].get("uuid").is_none(), "{peer}");
     assert!(!state.test_peer_info("devinfo").await.contains("dXVpZA=="), "not stored either");
 }
+
+#[rocket::async_test]
+async fn test_health_endpoints() {
+    let (client, _dir) = test_client().await;
+    assert_eq!(client.get("/livez").dispatch().await.status(), Status::Ok);
+    assert_eq!(client.get("/readyz").dispatch().await.status(), Status::Ok);
+    client.rocket().state::<state::ApiState>().unwrap().begin_shutdown();
+    assert_eq!(client.get("/readyz").dispatch().await.status(), Status::ServiceUnavailable);
+    assert_eq!(client.get("/livez").dispatch().await.status(), Status::Ok);
+}
+
+#[rocket::async_test]
+async fn test_startup_probes_are_live_but_not_ready() {
+    let client = Client::untracked(rustdesk_api::startup_probe_rocket(rocket::Config::figment())).await.unwrap();
+    assert_eq!(client.get("/livez").dispatch().await.status(), Status::Ok);
+    assert_eq!(client.get("/readyz").dispatch().await.status(), Status::ServiceUnavailable);
+}
