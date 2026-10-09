@@ -2615,7 +2615,11 @@ fn oidc_login_from_row(row: &sqlx::postgres::PgRow) -> Result<(OidcState, Option
     };
     let provider = row
         .try_get::<Option<String>, _>("provider")?
-        .and_then(|p| serde_json::from_value(serde_json::Value::String(p)).ok());
+        .and_then(|p| {
+            serde_json::from_value(serde_json::Value::String(p.clone()))
+                .map_err(|_| log::warn!("stored OIDC provider {p:?} is unknown"))
+                .ok()
+        });
     let login = OidcState {
         id: row.try_get("rustdesk_id")?,
         uuid: row.try_get("uuid")?,
