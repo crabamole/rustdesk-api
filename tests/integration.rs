@@ -2168,8 +2168,6 @@ async fn test_health_endpoints() {
     let (client, _dir) = test_client().await;
     assert_eq!(client.get("/livez").dispatch().await.status(), Status::Ok);
     assert_eq!(client.get("/readyz").dispatch().await.status(), Status::Ok);
-    client.rocket().state::<state::ApiState>().unwrap().begin_shutdown();
-    assert_eq!(client.get("/readyz").dispatch().await.status(), Status::ServiceUnavailable);
     assert_eq!(client.get("/livez").dispatch().await.status(), Status::Ok);
 }
 

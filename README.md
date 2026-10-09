@@ -39,7 +39,8 @@ its status against RustDesk Pro.
   login tokens and to mint audit references.
 - Sessions, OIDC logins in progress and the legacy address book live in Postgres only, so
   several replicas can run behind one Service. `GET /livez` and `GET /readyz` (database
-  reachable, not shutting down) are the Kubernetes probes. Each replica opens up to
+  reachable) are the Kubernetes probes; on shutdown, handover relies on the pod's preStop
+  pause and endpoint removal, not on readiness. Each replica opens up to
   `MAX_DATABASE_CONNECTIONS` connections.
 
 ## Deploying

@@ -22,7 +22,6 @@ use crate::{
 use std::{
     collections::BTreeMap,
     default::Default,
-    sync::atomic::{AtomicBool, Ordering},
 };
 
 use base64::Engine as _;
@@ -42,7 +41,6 @@ pub struct ApiState {
     test_providers: std::sync::Mutex<std::collections::HashMap<String, Arc<dyn OAuthProvider>>>,
     pub(crate) db: Database,
     oauth2_providers: RwLock<Vec<ProviderConfig>>,
-    shutting_down: AtomicBool,
 }
 
 #[derive(Debug, Clone)]
@@ -75,17 +73,12 @@ impl ApiState {
             #[cfg(any(test, feature = "test-util"))]
             test_providers: Default::default(),
             oauth2_providers: Default::default(),
-            shutting_down: AtomicBool::new(false),
         }
     }
 
-    /// For `/readyz`: not shutting down and the database answers within 2 s.
+    /// For `/readyz`: the database answers within 2 s.
     pub async fn ready(&self) -> bool {
-        !self.shutting_down.load(Ordering::Relaxed) && self.db.ping(std::time::Duration::from_secs(2)).await
-    }
-
-    pub fn begin_shutdown(&self) {
-        self.shutting_down.store(true, Ordering::Relaxed);
+        self.db.ping(std::time::Duration::from_secs(2)).await
     }
 
     /// Simulates a successful OIDC login whose `sub` and `name` are `username`
@@ -891,11 +884,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn ready_until_shutdown_begins() {
-        let state = test_state().await;
-        assert!(state.ready().await);
-        state.begin_shutdown();
-        assert!(!state.ready().await);
+    async fn ready_while_the_database_answers() {
+        assert!(test_state().await.ready().await);
     }
 
     /// Two instances on one database, as two api-server pods.

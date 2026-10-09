@@ -101,29 +101,13 @@ impl Fairing for CORS {
     }
 }
 
-/// Fails readiness as soon as shutdown starts.
-pub struct ShutdownReadiness;
-
-#[rocket::async_trait]
-impl Fairing for ShutdownReadiness {
-    fn info(&self) -> Info {
-        Info { name: "Fail readiness on shutdown", kind: Kind::Shutdown }
-    }
-
-    async fn on_shutdown(&self, rocket: &Rocket<rocket::Orbit>) {
-        if let Some(state) = rocket.state::<ApiState>() {
-            state.begin_shutdown();
-        }
-    }
-}
-
 /// Liveness probe: answered while the server handles requests.
 #[get("/livez")]
 fn livez() -> Status {
     Status::Ok
 }
 
-/// Readiness probe: the database answers and the server is not shutting down.
+/// Readiness probe: the database answers.
 #[get("/readyz")]
 async fn readyz(state: &State<ApiState>) -> Status {
     if state.ready().await {
@@ -271,7 +255,6 @@ pub async fn build_rocket_with_db(figment: Figment, db_path: &str) -> Rocket<Bui
 
     let rocket = rocket::custom(figment)
         .attach(CORS)
-        .attach(ShutdownReadiness)
         .mount("/", api_routes().0)
         .mount("/",routes![
             favicon,
