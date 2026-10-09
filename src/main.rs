@@ -111,7 +111,9 @@ async fn main() -> Result<(), rocket::Error> {
     let (stop_probes, probes) = rustdesk_api::serve_startup_probes(figment.clone()).await?;
     let rocket = build_rocket(figment, &db_url).await;
     stop_probes.notify();
-    probes.await.ok();
+    if let Err(e) = probes.await {
+        log::error!("startup probes task failed: {e}");
+    }
     let _rocket = rocket.ignite().await?.launch().await?;
     
     // End of API Server start

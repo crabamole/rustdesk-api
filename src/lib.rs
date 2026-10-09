@@ -140,6 +140,8 @@ fn startup_readyz() -> Status {
 
 /// Answers probes on the API port while the database connects and migrates.
 pub fn startup_probe_rocket(figment: Figment) -> Rocket<Build> {
+    // Leave SIGTERM at its default so it still stops the process while the database is down.
+    let figment = figment.merge(("shutdown.ctrlc", false)).merge(("shutdown.signals", Vec::<String>::new()));
     rocket::custom(figment).mount("/", routes![livez, startup_readyz])
 }
 
@@ -149,9 +151,17 @@ pub async fn serve_startup_probes(
 ) -> Result<(rocket::Shutdown, tokio::task::JoinHandle<()>), rocket::Error> {
     let rocket = startup_probe_rocket(figment).ignite().await?;
     let shutdown = rocket.shutdown();
+    let addr = (rocket.config().address, rocket.config().port);
     let task = tokio::spawn(async move {
         if let Err(e) = rocket.launch().await {
             log::error!("startup probes: {e}");
+        }
+        // Rocket drops its listener a moment after launch returns; the next server must find the port free.
+        for _ in 0..100 {
+            if tokio::net::TcpListener::bind(addr).await.is_ok() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         }
     });
     Ok((shutdown, task))

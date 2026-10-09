@@ -2179,3 +2179,78 @@ async fn test_startup_probes_are_live_but_not_ready() {
     assert_eq!(client.get("/livez").dispatch().await.status(), Status::Ok);
     assert_eq!(client.get("/readyz").dispatch().await.status(), Status::ServiceUnavailable);
 }
+
+fn free_port() -> u16 {
+    std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port()
+}
+
+async fn http_status(port: u16, path: &str) -> Option<u16> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let mut s = tokio::net::TcpStream::connect(("127.0.0.1", port)).await.ok()?;
+    s.write_all(format!("GET {path} HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n").as_bytes()).await.ok()?;
+    let mut buf = String::new();
+    s.read_to_string(&mut buf).await.ok()?;
+    buf.split_whitespace().nth(1)?.parse().ok()
+}
+
+#[rocket::async_test]
+async fn test_serve_startup_probes_over_a_socket_then_frees_the_port() {
+    let port = free_port();
+    let figment = rocket::Config::figment().merge(("address", "127.0.0.1")).merge(("port", port));
+    let (stop, task) = rustdesk_api::serve_startup_probes(figment).await.unwrap();
+    let mut live = None;
+    for _ in 0..50 {
+        live = http_status(port, "/livez").await;
+        if live.is_some() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    assert_eq!(live, Some(200));
+    assert_eq!(http_status(port, "/readyz").await, Some(503));
+    stop.notify();
+    task.await.unwrap();
+    tokio::net::TcpListener::bind(("127.0.0.1", port)).await.expect("port is free again");
+}
+
+#[tokio::test]
+async fn test_sigterm_while_the_database_is_down_exits() {
+    let port = free_port();
+    let providers = std::env::temp_dir().join(format!("oauth2-{}.toml", uuid::Uuid::new_v4()));
+    std::fs::write(
+        &providers,
+        r#"[[provider]]
+provider = "Oauth2"
+authorization_url = "https://idp.example.com/authorize"
+token_exchange_url = "http://127.0.0.1:1/token"
+app_id = "rustdesk"
+app_secret = "s3cret"
+scope = "openid email profile"
+op_auth_string = "oidc/corp"
+op = "corp"
+issuer = "https://idp.example.com"
+"#,
+    )
+    .unwrap();
+    let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_rustdesk-api"))
+        .args(["serve", "--address", "127.0.0.1", "--port", &port.to_string(), "--log_level", "off"])
+        .env("DATABASE_URL", "postgres://u:p@127.0.0.1:1/db")
+        .env("OAUTH2_CONFIG_FILE", &providers)
+        .kill_on_drop(true)
+        .spawn()
+        .unwrap();
+    let mut live = None;
+    for _ in 0..100 {
+        live = http_status(port, "/livez").await;
+        if live.is_some() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    assert_eq!(live, Some(200), "probes answer while the database is down");
+    assert_eq!(http_status(port, "/readyz").await, Some(503));
+    let pid = child.id().unwrap().to_string();
+    assert!(std::process::Command::new("kill").args(["-TERM", &pid]).status().unwrap().success());
+    let exit = tokio::time::timeout(std::time::Duration::from_secs(10), child.wait()).await;
+    assert!(exit.is_ok(), "SIGTERM must stop the process during startup");
+}
