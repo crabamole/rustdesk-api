@@ -397,7 +397,7 @@ async fn ab(
     state: &State<ApiState>,
     user: AuthenticatedUser,
     request: Json<AbRequest>,
-) -> Result<(), status::Unauthorized<()>> {
+) -> Result<(), Status> {
     log::debug!("ab: {:?}", request);
 
     let ab = request.data.clone();
@@ -409,12 +409,10 @@ async fn ab(
         ..Default::default()
     };
 
-    let _ = unwrap_or_return!(state
+    state
         .set_user_address_book(user.info.user_id, ab)
         .await
-        .ok_or(Err(status::Unauthorized::<()>(()))));
-
-    Ok(())
+        .ok_or(Status::InternalServerError)
 }
 
 /// # Get the Current User

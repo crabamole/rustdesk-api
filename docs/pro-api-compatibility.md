@@ -37,7 +37,7 @@ Update this file with every API change.
 | POST | /api/devices/cli | [C] `src/core_main.rs` | missing | no `/api/devices*` route exists |
 | POST | /api/devices/deploy | [C] `src/ui_interface.rs` | missing | no `/api/devices*` route exists |
 | GET | /api/ab | [C] `flutter/lib/models/ab_model.dart` | implemented | pull address book |
-| POST | /api/ab | [C] `flutter/lib/models/ab_model.dart` | implemented | legacy set address book |
+| POST | /api/ab | [C] `flutter/lib/models/ab_model.dart` | implemented | legacy set address book; 500 when the database write fails |
 | POST | /api/ab/personal | [C] `flutter/lib/models/ab_model.dart` | implemented | |
 | POST | /api/ab/settings | [C] `flutter/lib/models/ab_model.dart` | implemented | |
 | POST | /api/ab/shared/profiles | [C] `flutter/lib/models/ab_model.dart` | implemented | |

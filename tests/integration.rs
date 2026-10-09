@@ -701,6 +701,21 @@ async fn test_ab_legacy_get_set() {
 }
 
 #[rocket::async_test]
+async fn test_ab_legacy_write_failure_is_a_server_error() {
+    let (client, pool) = client_and_pool().await;
+    let token = login_admin(&client).await;
+    sqlx::query("DROP TABLE ab_legacy").execute(&pool).await.unwrap();
+    let resp = client
+        .post("/api/ab")
+        .header(ContentType::JSON)
+        .header(auth_header(&token))
+        .body(r#"{"data":"{\"peers\":[],\"tags\":[]}"}"#)
+        .dispatch()
+        .await;
+    assert_eq!(resp.status(), Status::InternalServerError);
+}
+
+#[rocket::async_test]
 async fn test_ab_legacy_write_is_seen_by_another_pod() {
     let (a, b) = two_pods().await;
     let token = login_admin(&a).await;
@@ -1265,6 +1280,16 @@ async fn untracked_client() -> Client {
         .merge(("port", 0))
         .merge(("secret_key", "hPRYyVRiMyxpw5sBB1XeCMN1kFsDCqKvBi2QJxBVHQk="));
     Client::untracked(build_rocket_with_db(figment, &db_url).await).await.unwrap()
+}
+
+/// A client plus a way to run SQL on its database.
+async fn client_and_pool() -> (Client, sqlx::PgPool) {
+    let db_url = state::testing::fresh_database_url().await;
+    let figment = rocket::Config::figment()
+        .merge(("port", 0))
+        .merge(("secret_key", "hPRYyVRiMyxpw5sBB1XeCMN1kFsDCqKvBi2QJxBVHQk="));
+    let client = Client::untracked(build_rocket_with_db(figment, &db_url).await).await.unwrap();
+    (client, sqlx::PgPool::connect(&db_url).await.unwrap())
 }
 
 /// Two api-server instances on one database, as two pods behind one Service.
