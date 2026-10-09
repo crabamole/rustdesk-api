@@ -29,6 +29,7 @@ use utils::AbRule;
 use utils::AbTag;
 use utils::CpuCount;
 use utils::Group;
+use utils::OidcState;
 use utils::Peer;
 use utils::Platform;
 use utils::StrategySummary;
@@ -2122,6 +2123,150 @@ impl Database {
         Some(())
     }
 
+    /// Stores a started login; `Some(false)` when `code` is taken. Expired logins are removed first.
+    pub async fn insert_oidc_login(&self, code: &str, login: &OidcState, provider: Option<oauth2::Provider>, ttl_secs: u64) -> Option<bool> {
+        // Logins are the only source of rows, so pruning here keeps the table to live logins.
+        if let Err(e) = sqlx::query("DELETE FROM oidc_login WHERE created_at < now() - make_interval(secs => $1)")
+            .bind(ttl_secs as f64)
+            .execute(&self.pool)
+            .await
+        {
+            log::warn!("removing expired OIDC logins failed: {e}");
+        }
+        let provider: Option<String> = provider.map(Into::into);
+        let pl = login.provider_login.as_ref();
+        let res = sqlx::query(
+            "INSERT INTO oidc_login (code, provider, callback_url, provider_state, provider_nonce, code_verifier, \
+             return_to, code_challenge, rustdesk_id, uuid, device_name, device_os, device_type, requester_ip) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) ON CONFLICT (code) DO NOTHING",
+        )
+        .bind(code)
+        .bind(provider)
+        .bind(&login.callback_url)
+        .bind(pl.map(|l| l.state.as_str()))
+        .bind(pl.map(|l| l.nonce.as_str()))
+        .bind(pl.map(|l| l.code_verifier.as_str()))
+        .bind(&login.return_to)
+        .bind(&login.code_challenge)
+        .bind(&login.id)
+        .bind(&login.uuid)
+        .bind(&login.device_name)
+        .bind(&login.device_os)
+        .bind(&login.device_type)
+        .bind(&login.requester_ip)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| log::error!("insert_oidc_login error: {e:?}"))
+        .ok()?;
+        Some(res.rows_affected() == 1)
+    }
+
+    pub async fn get_oidc_login(&self, code: &str, ttl_secs: u64) -> Option<OidcState> {
+        let sql = format!(
+            "SELECT {OIDC_LOGIN_COLUMNS} FROM oidc_login WHERE code = $1 AND created_at >= now() - make_interval(secs => $2)"
+        );
+        let row = sqlx::query(&sql)
+            .bind(code)
+            .bind(ttl_secs as f64)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|e| log::error!("get_oidc_login error: {e:?}"))
+            .ok()??;
+        oidc_login_from_row(&row).map_err(|e| log::error!("get_oidc_login decode error: {e:?}")).ok().map(|(l, _)| l)
+    }
+
+    /// Marks the callback of a pending login as run; only the first caller on any pod gets the login.
+    pub async fn claim_oidc_callback(&self, code: &str, ttl_secs: u64) -> Option<(OidcState, Option<oauth2::Provider>)> {
+        let sql = format!(
+            "UPDATE oidc_login SET callback_at = now() WHERE code = $1 AND callback_at IS NULL \
+             AND created_at >= now() - make_interval(secs => $2) RETURNING {OIDC_LOGIN_COLUMNS}"
+        );
+        let row = sqlx::query(&sql)
+            .bind(code)
+            .bind(ttl_secs as f64)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|e| log::error!("claim_oidc_callback error: {e:?}"))
+            .ok()??;
+        oidc_login_from_row(&row).map_err(|e| log::error!("claim_oidc_callback decode error: {e:?}")).ok()
+    }
+
+    /// Stores who the IdP says signed in and the one-time result of a claimed login.
+    pub async fn finish_oidc_login(&self, code: &str, sub: &str, name: Option<&str>, email: Option<&str>, result: &str) -> Option<()> {
+        let res = sqlx::query(
+            "UPDATE oidc_login SET sub = $2, name = $3, email = $4, result = $5, result_at = now() WHERE code = $1",
+        )
+        .bind(code)
+        .bind(sub)
+        .bind(name)
+        .bind(email)
+        .bind(result)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| log::error!("finish_oidc_login error: {e:?}"))
+        .ok()?;
+        (res.rows_affected() == 1).then_some(())
+    }
+
+    pub async fn delete_oidc_login(&self, code: &str) -> Option<()> {
+        sqlx::query("DELETE FROM oidc_login WHERE code = $1")
+            .bind(code)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| log::error!("delete_oidc_login error: {e:?}"))
+            .ok()?;
+        Some(())
+    }
+
+    /// Removes a pending login the IdP ended with an error; `None` once its callback ran.
+    pub async fn take_failed_oidc_login(&self, code: &str, ttl_secs: u64) -> Option<OidcState> {
+        let sql = format!(
+            "DELETE FROM oidc_login WHERE code = $1 AND callback_at IS NULL \
+             AND created_at >= now() - make_interval(secs => $2) RETURNING {OIDC_LOGIN_COLUMNS}"
+        );
+        let row = sqlx::query(&sql)
+            .bind(code)
+            .bind(ttl_secs as f64)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|e| log::error!("take_failed_oidc_login error: {e:?}"))
+            .ok()??;
+        oidc_login_from_row(&row).map_err(|e| log::error!("take_failed_oidc_login decode error: {e:?}")).ok().map(|(l, _)| l)
+    }
+
+    /// Removes the login holding `result`, so each result is redeemed once on any pod; the bool
+    /// tells whether the result is older than `ttl_secs`.
+    pub async fn take_oidc_result(&self, result: &str, ttl_secs: u64) -> Option<(OidcState, bool)> {
+        let sql = format!(
+            "DELETE FROM oidc_login WHERE result = $1 RETURNING {OIDC_LOGIN_COLUMNS}, \
+             coalesce(result_at < now() - make_interval(secs => $2), true) AS expired"
+        );
+        let row = sqlx::query(&sql)
+            .bind(result)
+            .bind(ttl_secs as f64)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|e| log::error!("take_oidc_result error: {e:?}"))
+            .ok()??;
+        let (login, _) = oidc_login_from_row(&row).map_err(|e| log::error!("take_oidc_result decode error: {e:?}")).ok()?;
+        Some((login, row.try_get("expired").ok()?))
+    }
+
+    /// Makes a login `secs` older. Test-only.
+    #[cfg(any(test, feature = "test-util"))]
+    pub async fn test_age_oidc_login(&self, code: &str, secs: u64) -> bool {
+        sqlx::query(
+            "UPDATE oidc_login SET created_at = created_at - make_interval(secs => $2), \
+             result_at = result_at - make_interval(secs => $2) WHERE code = $1",
+        )
+        .bind(code)
+        .bind(secs as f64)
+        .execute(&self.pool)
+        .await
+        .map(|r| r.rows_affected() == 1)
+        .unwrap_or(false)
+    }
+
     /// A device's stored info JSON. Test-only.
     #[cfg(any(test, feature = "test-util"))]
     pub async fn test_peer_info(&self, id: &str) -> String {
@@ -2455,6 +2600,45 @@ fn audit_alarm_log_from_row(row: &sqlx::postgres::PgRow) -> Option<utils::AuditA
     })
 }
 
+const OIDC_LOGIN_COLUMNS: &str = "provider, callback_url, provider_state, provider_nonce, code_verifier, return_to, \
+    code_challenge, rustdesk_id, uuid, device_name, device_os, device_type, requester_ip, sub, name, email, result, \
+    extract(epoch FROM created_at)::bigint AS created_secs, coalesce(extract(epoch FROM result_at)::bigint, 0) AS result_secs";
+
+/// A stored login and the type of its provider.
+fn oidc_login_from_row(row: &sqlx::postgres::PgRow) -> Result<(OidcState, Option<oauth2::Provider>), sqlx::Error> {
+    let provider_login = match (
+        row.try_get::<Option<String>, _>("provider_state")?,
+        row.try_get::<Option<String>, _>("provider_nonce")?,
+        row.try_get::<Option<String>, _>("code_verifier")?,
+    ) {
+        (Some(state), Some(nonce), Some(code_verifier)) => Some(oauth2::pkce::ProviderLogin { state, nonce, code_verifier }),
+        _ => None,
+    };
+    let provider = row
+        .try_get::<Option<String>, _>("provider")?
+        .and_then(|p| serde_json::from_value(serde_json::Value::String(p)).ok());
+    let login = OidcState {
+        id: row.try_get("rustdesk_id")?,
+        uuid: row.try_get("uuid")?,
+        callback_url: row.try_get("callback_url")?,
+        sub: row.try_get("sub")?,
+        name: row.try_get("name")?,
+        email: row.try_get("email")?,
+        created_at: row.try_get::<i64, _>("created_secs")?.max(0) as u64,
+        return_to: row.try_get("return_to")?,
+        code_challenge: row.try_get("code_challenge")?,
+        provider_login,
+        result: row.try_get("result")?,
+        result_at: row.try_get::<i64, _>("result_secs")?.max(0) as u64,
+        device_name: row.try_get("device_name")?,
+        device_os: row.try_get("device_os")?,
+        requester_ip: row.try_get("requester_ip")?,
+        device_type: row.try_get("device_type")?,
+        ..Default::default()
+    };
+    Ok((login, provider))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2535,7 +2719,7 @@ mod tests {
                 .fetch_all(&first.pool)
                 .await
                 .unwrap();
-        assert_eq!(applied, (1..=11).map(|v| (v, true)).collect::<Vec<_>>());
+        assert_eq!(applied, (1..=12).map(|v| (v, true)).collect::<Vec<_>>());
         first.pool.close().await;
 
         // Second start on the same database must not fail or duplicate rows.
@@ -3558,5 +3742,77 @@ mod tests {
         let guid = guid_into_uuid(user).unwrap();
         db.delete_user(&guid).await.unwrap();
         assert_eq!(db.list_viewer_devices(0, 10).await.unwrap().0, 0);
+    });
+
+    fn started_oidc_login() -> OidcState {
+        OidcState {
+            id: "601".into(),
+            uuid: "dev".into(),
+            callback_url: Some("https://rustdesk.example.com/api/oidc/callback".into()),
+            return_to: "/ui/login".into(),
+            code_challenge: "challenge".into(),
+            provider_login: Some(oauth2::pkce::ProviderLogin::new("c1")),
+            device_name: "PC".into(),
+            device_os: "windows".into(),
+            device_type: "client".into(),
+            requester_ip: Some("198.51.100.20".into()),
+            ..Default::default()
+        }
+    }
+
+    db_test!(oidc_login_round_trips_with_its_provider_type, |db| {
+        let login = started_oidc_login();
+        assert_eq!(db.insert_oidc_login("c1", &login, Some(oauth2::Provider::Dex), 180).await, Some(true));
+        assert_eq!(db.insert_oidc_login("c1", &login, None, 180).await, Some(false), "codes are unique");
+        assert_eq!(db.get_oidc_login("c1", 180).await.unwrap().id, "601");
+        let (stored, provider) = db.claim_oidc_callback("c1", 180).await.unwrap();
+        assert_eq!(provider, Some(oauth2::Provider::Dex));
+        assert_eq!((stored.uuid.as_str(), stored.return_to.as_str(), stored.code_challenge.as_str()), ("dev", "/ui/login", "challenge"));
+        assert_eq!((stored.device_name.as_str(), stored.device_os.as_str(), stored.device_type.as_str()), ("PC", "windows", "client"));
+        assert_eq!(stored.callback_url, login.callback_url);
+        assert_eq!(stored.requester_ip, login.requester_ip);
+        assert!(stored.created_at > 0);
+        let (got, want) = (stored.provider_login.unwrap(), login.provider_login.unwrap());
+        assert_eq!((got.state, got.nonce, got.code_verifier), (want.state, want.nonce, want.code_verifier));
+    });
+
+    db_test!(oidc_callback_is_claimed_once, |db| {
+        db.insert_oidc_login("c2", &started_oidc_login(), None, 180).await.unwrap();
+        assert!(db.claim_oidc_callback("c2", 180).await.is_some());
+        assert!(db.claim_oidc_callback("c2", 180).await.is_none());
+        assert!(db.take_failed_oidc_login("c2", 180).await.is_none(), "an IdP error after the callback ran is ignored");
+    });
+
+    db_test!(oidc_failed_login_is_taken_once, |db| {
+        db.insert_oidc_login("c5", &started_oidc_login(), None, 180).await.unwrap();
+        assert_eq!(db.take_failed_oidc_login("c5", 180).await.unwrap().return_to, "/ui/login");
+        assert!(db.take_failed_oidc_login("c5", 180).await.is_none());
+    });
+
+    db_test!(oidc_result_is_taken_once_and_reports_its_age, |db| {
+        db.insert_oidc_login("c3", &started_oidc_login(), None, 180).await.unwrap();
+        db.claim_oidc_callback("c3", 180).await.unwrap();
+        db.finish_oidc_login("c3", "alice", Some("Alice"), None, "r3").await.unwrap();
+        let (login, expired) = db.take_oidc_result("r3", 60).await.unwrap();
+        assert_eq!((login.sub.as_deref(), login.name.as_deref(), login.result.as_deref(), expired), (Some("alice"), Some("Alice"), Some("r3"), false));
+        assert!(db.take_oidc_result("r3", 60).await.is_none());
+
+        db.insert_oidc_login("c4", &started_oidc_login(), None, 180).await.unwrap();
+        db.finish_oidc_login("c4", "bob", None, None, "r4").await.unwrap();
+        assert!(db.test_age_oidc_login("c4", 61).await);
+        assert!(db.take_oidc_result("r4", 60).await.unwrap().1, "older than the result TTL");
+    });
+
+    db_test!(expired_oidc_logins_are_hidden_and_pruned, |db| {
+        db.insert_oidc_login("old", &started_oidc_login(), None, 180).await.unwrap();
+        assert!(db.test_age_oidc_login("old", 181).await);
+        assert!(db.get_oidc_login("old", 180).await.is_none());
+        assert!(db.claim_oidc_callback("old", 180).await.is_none());
+        assert!(db.take_failed_oidc_login("old", 180).await.is_none());
+        db.insert_oidc_login("new", &started_oidc_login(), None, 180).await.unwrap();
+        let left: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM oidc_login").fetch_one(&db.pool).await.unwrap();
+        assert_eq!(left, 1, "inserting prunes expired logins");
+        assert!(db.delete_oidc_login("new").await.is_some());
+        assert!(!db.test_age_oidc_login("new", 1).await);
     });
 }
