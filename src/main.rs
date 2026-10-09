@@ -86,6 +86,8 @@ async fn main() -> Result<(), rocket::Error> {
         .merge(("port", port))
         .merge(("log_level", log_level))
         .merge(("secret_key", secret_key))
+        // Lets an OIDC callback waiting on the IdP finish during a rolling restart.
+        .merge(("shutdown.grace", 15))
         .merge(("ident", format!("rustdesk-api/{}", env!("CARGO_PKG_VERSION"))))
         .merge(("limits", Limits::new().limit("json", 2.mebibytes())));
     let figment = match public_url {
