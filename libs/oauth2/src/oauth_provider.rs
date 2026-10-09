@@ -137,6 +137,7 @@ mod tests {
 
     #[test]
     fn provider_missing_from_the_providers_file_has_no_implementation() {
+        let _env = crate::config_file_env::lock();
         let file = tempfile::NamedTempFile::new().unwrap();
         std::env::set_var("OAUTH2_CONFIG_FILE", file.path());
         for p in [Provider::Github, Provider::Dex, Provider::Oauth2] {

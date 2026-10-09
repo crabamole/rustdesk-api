@@ -242,6 +242,30 @@ pub(crate) fn form_code(body: &str) -> String {
 }
 
 #[cfg(test)]
+pub(crate) mod config_file_env {
+    use std::sync::{Mutex, MutexGuard};
+
+    static LOCK: Mutex<()> = Mutex::new(());
+
+    /// Serialises tests that touch OAUTH2_CONFIG_FILE and restores it on drop.
+    pub(crate) struct Guard(MutexGuard<'static, ()>, Option<std::ffi::OsString>);
+
+    pub(crate) fn lock() -> Guard {
+        let g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        Guard(g, std::env::var_os("OAUTH2_CONFIG_FILE"))
+    }
+
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            match &self.1 {
+                Some(v) => std::env::set_var("OAUTH2_CONFIG_FILE", v),
+                None => std::env::remove_var("OAUTH2_CONFIG_FILE"),
+            }
+        }
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::oauth_provider::decode_id_token;
@@ -467,6 +491,7 @@ mod tests {
 
     #[test]
     fn test_get_providers_config_file_default() {
+        let _env = config_file_env::lock();
         std::env::remove_var("OAUTH2_CONFIG_FILE");
         let file = get_providers_config_file();
         assert_eq!(file, "oauth2.toml");
@@ -474,9 +499,9 @@ mod tests {
 
     #[test]
     fn test_get_providers_config_file_env() {
+        let _env = config_file_env::lock();
         std::env::set_var("OAUTH2_CONFIG_FILE", "/tmp/custom-oauth2.toml");
         let file = get_providers_config_file();
         assert_eq!(file, "/tmp/custom-oauth2.toml");
-        std::env::remove_var("OAUTH2_CONFIG_FILE");
     }
 }
