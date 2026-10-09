@@ -2730,7 +2730,7 @@ mod tests {
                 .fetch_all(&first.pool)
                 .await
                 .unwrap();
-        assert_eq!(applied, (1..=13).map(|v| (v, true)).collect::<Vec<_>>());
+        assert_eq!(applied, (1..=14).map(|v| (v, true)).collect::<Vec<_>>());
         first.pool.close().await;
 
         // Second start on the same database must not fail or duplicate rows.
@@ -3856,5 +3856,20 @@ mod tests {
         let rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM audit_conn").fetch_one(&db.pool).await.unwrap();
         assert_eq!(rows, 2, "no audit row is deleted");
         assert_eq!(db.count_nonce_rows_for_test("audit_conn", "dup").await, 1);
+    }
+
+    #[tokio::test]
+    async fn audit_conn_ref_purge_uses_created_at_index() {
+        let db = bare_db().await;
+        sqlx::query("INSERT INTO audit_conn_ref (ref, \"user\", created_at) \
+             SELECT 'r' || g, '\\x00'::bytea, CASE WHEN g <= 10 THEN now() - interval '2 days' ELSE now() END \
+             FROM generate_series(1, 20000) g")
+            .execute(&db.pool).await.unwrap();
+        sqlx::query("ANALYZE audit_conn_ref").execute(&db.pool).await.unwrap();
+        let plan: Vec<String> = sqlx::query_scalar(
+            "EXPLAIN DELETE FROM audit_conn_ref WHERE created_at < now() - interval '1 day'")
+            .fetch_all(&db.pool).await.unwrap();
+        let plan = plan.join("\n");
+        assert!(plan.contains("audit_conn_ref_created_at"), "purge must use the created_at index:\n{plan}");
     }
 }
