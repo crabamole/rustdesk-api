@@ -1708,6 +1708,7 @@ impl Database {
         Some(())
     }
 
+    /// `Some(false)`: a row with this record's nonce exists already.
     pub async fn insert_audit_conn(
         &self,
         guid: &[u8],
@@ -1716,9 +1717,9 @@ impl Database {
         local: Option<&[u8]>,
         note: Option<&str>,
         info: &str,
-    ) -> Option<()> {
-        sqlx::query(
-            "INSERT INTO audit_conn (guid, type, remote, local, note, info) VALUES ($1, $2, $3, $4, $5, $6)",
+    ) -> Option<bool> {
+        let res = sqlx::query(
+            "INSERT INTO audit_conn (guid, type, remote, local, note, info) VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT DO NOTHING",
         )
         .bind(guid)
         .bind(conn_type.map(|t| t as i16))
@@ -1729,7 +1730,7 @@ impl Database {
         .execute(&self.pool)
         .await
         .ok()?;
-        Some(())
+        Some(res.rows_affected() == 1)
     }
 
     #[cfg(any(test, feature = "test-util"))]
@@ -1842,15 +1843,16 @@ impl Database {
         .ok()
     }
 
-    pub async fn end_open_audit_conns(&self, id: &str, uuid: &str, conn_id: i64) -> Option<()> {
+    pub async fn end_open_audit_conns(&self, id: &str, uuid: &str, conn_id: i64, except: &[u8]) -> Option<()> {
         sqlx::query(
             "UPDATE audit_conn SET end_time = to_char(NOW(), 'YYYY-MM-DD HH24:MI:SS.MS') \
              WHERE remote = $1 AND end_time IS NULL \
-             AND info::jsonb->>'uuid' = $2 AND (info::jsonb->>'conn_id')::bigint = $3",
+             AND info::jsonb->>'uuid' = $2 AND (info::jsonb->>'conn_id')::bigint = $3 AND guid <> $4",
         )
         .bind(id.as_bytes())
         .bind(uuid)
         .bind(conn_id)
+        .bind(except)
         .execute(&self.pool)
         .await
         .ok()?;
@@ -1927,7 +1929,7 @@ impl Database {
     ) -> Option<()> {
         let is_file_i: i8 = if is_file { 1 } else { 0 };
         sqlx::query(
-            "INSERT INTO audit_file (guid, remote, local, type, path, is_file, info, \"user\") VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+            "INSERT INTO audit_file (guid, remote, local, type, path, is_file, info, \"user\") VALUES ($1, $2, $3, $4, $5, $6, $7, $8) ON CONFLICT DO NOTHING",
         )
         .bind(guid)
         .bind(remote)
@@ -1958,6 +1960,15 @@ impl Database {
             user: r.get("user"),
             info: r.get("info"),
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn count_nonce_rows_for_test(&self, table: &str, nonce: &str) -> i64 {
+        sqlx::query_scalar(&format!("SELECT COUNT(*) FROM {table} WHERE info::jsonb->>'nonce' = $1"))
+            .bind(nonce)
+            .fetch_one(&self.pool)
+            .await
+            .unwrap()
     }
 
     #[cfg(test)]
@@ -2010,7 +2021,7 @@ impl Database {
         device: Option<&[u8]>,
     ) -> Option<()> {
         sqlx::query(
-            "INSERT INTO audit_alarm (guid, type, info, \"user\", device) VALUES ($1, $2, $3, $4, $5)",
+            "INSERT INTO audit_alarm (guid, type, info, \"user\", device) VALUES ($1, $2, $3, $4, $5) ON CONFLICT DO NOTHING",
         )
         .bind(guid)
         .bind(alarm_type as i16)
@@ -2719,7 +2730,7 @@ mod tests {
                 .fetch_all(&first.pool)
                 .await
                 .unwrap();
-        assert_eq!(applied, (1..=12).map(|v| (v, true)).collect::<Vec<_>>());
+        assert_eq!(applied, (1..=13).map(|v| (v, true)).collect::<Vec<_>>());
         first.pool.close().await;
 
         // Second start on the same database must not fail or duplicate rows.
@@ -3815,4 +3826,35 @@ mod tests {
         assert!(db.delete_oidc_login("new").await.is_some());
         assert!(!db.test_age_oidc_login("new", 1).await);
     });
+
+    db_test!(audit_nonce_is_stored_once, |db| {
+        let info = r#"{"nonce":"dup"}"#;
+        assert_eq!(db.insert_audit_conn(Uuid::new_v4().as_bytes(), None, b"p", None, None, info).await, Some(true));
+        assert_eq!(db.insert_audit_conn(Uuid::new_v4().as_bytes(), None, b"p", None, None, info).await, Some(false));
+        for _ in 0..2 {
+            db.insert_audit_file(Uuid::new_v4().as_bytes(), b"p", None, 0, "/f", true, info, None).await.unwrap();
+            db.insert_audit_alarm(Uuid::new_v4().as_bytes(), 0, info, None, None).await.unwrap();
+        }
+        for table in ["audit_conn", "audit_file", "audit_alarm"] {
+            assert_eq!(db.count_nonce_rows_for_test(table, "dup").await, 1, "{table}");
+        }
+        let empty = r#"{"nonce":""}"#;
+        for _ in 0..2 {
+            assert_eq!(db.insert_audit_conn(Uuid::new_v4().as_bytes(), None, b"p", None, None, empty).await, Some(true));
+        }
+        assert_eq!(db.count_nonce_rows_for_test("audit_conn", "").await, 2, "records without a nonce are not deduplicated");
+    });
+
+    #[tokio::test]
+    async fn audit_nonce_migration_keeps_duplicates_without_their_nonce() {
+        let db = bare_db().await;
+        sqlx::query("DROP INDEX audit_conn_nonce, audit_file_nonce, audit_alarm_nonce").execute(&db.pool).await.unwrap();
+        for _ in 0..2 {
+            db.insert_audit_conn(Uuid::new_v4().as_bytes(), None, b"p", None, None, r#"{"nonce":"dup"}"#).await.unwrap();
+        }
+        sqlx::raw_sql(include_str!("../migrations/0013_audit_nonce_unique.sql")).execute(&db.pool).await.unwrap();
+        let rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM audit_conn").fetch_one(&db.pool).await.unwrap();
+        assert_eq!(rows, 2, "no audit row is deleted");
+        assert_eq!(db.count_nonce_rows_for_test("audit_conn", "dup").await, 1);
+    }
 }

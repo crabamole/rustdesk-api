@@ -753,8 +753,6 @@ impl ApiState {
                 if !request.nonce.is_empty() && self.db.find_audit_conn_by_nonce(&request.nonce).await.is_some() {
                     return Some(());
                 }
-                // conn_id restarts with the RustDesk process, so an open row with this key is a dead session.
-                self.db.end_open_audit_conns(id, uuid, conn_id).await?;
                 let info = serde_json::json!({
                     "id": id,
                     "uuid": uuid,
@@ -764,9 +762,15 @@ impl ApiState {
                     "ip": request.ip,
                 });
                 let guid = uuid::Uuid::new_v4();
-                self.db
+                if !self.db
                     .insert_audit_conn(guid.as_bytes(), None, id.as_bytes(), None, request.note.as_deref(), &info.to_string())
-                    .await?;
+                    .await?
+                {
+                    // Another pod stored this record first.
+                    return Some(());
+                }
+                // conn_id restarts with the RustDesk process, so an older open row with this key is a dead session.
+                self.db.end_open_audit_conns(id, uuid, conn_id, guid.as_bytes()).await?;
                 if let Some(conn_ref) = request.conn_audit_ref.as_deref().filter(|r| !r.is_empty()) {
                     match self.resolve_audit_conn_ref(conn_ref, id).await {
                         // The row is already stored; a failed attribution update must not make the
@@ -801,10 +805,13 @@ impl ApiState {
                 let guid = match self.db.find_open_audit_conn(id, uuid, conn_id).await {
                     Some(guid) => guid,
                     None => {
-                        // The new record was lost; keep the connection anyway.
+                        // The new record was lost; keep the connection anyway. The record's nonce
+                        // keeps a retry that reaches another pod from adding a second row.
                         let guid = uuid::Uuid::new_v4().as_bytes().to_vec();
-                        let info = serde_json::json!({ "id": id, "uuid": uuid, "conn_id": conn_id });
-                        self.db.insert_audit_conn(&guid, None, id.as_bytes(), None, None, &info.to_string()).await?;
+                        let info = serde_json::json!({ "id": id, "uuid": uuid, "conn_id": conn_id, "nonce": request.nonce });
+                        if !self.db.insert_audit_conn(&guid, None, id.as_bytes(), None, None, &info.to_string()).await? {
+                            return Some(());
+                        }
                         guid
                     }
                 };
@@ -1849,6 +1856,40 @@ mod tests {
         assert_eq!(info["two_factor"], 1);
         assert_eq!(info["session_id"].as_u64(), Some(u64::MAX));
         assert_eq!(info["ip"], "10.0.0.1", "fields from new are kept");
+    }
+
+    #[tokio::test]
+    async fn audit_conn_authorized_retry_on_another_pod_adds_no_row() {
+        let (a, b) = two_pods().await;
+        a.test_register_device("dev1", "dXVpZA==").await;
+        let authorized = conn_record(
+            r#"{"peer":["987654321","alice-laptop"],"type":0,"id":"dev1","uuid":"dXVpZA==","conn_id":5,"session_id":7,"nonce":"auth-5"}"#,
+        );
+        a.audit_conn(&authorized).await.unwrap();
+        a.audit_conn(&close_record("dev1", "dXVpZA==", 5, "close-5")).await.unwrap();
+        b.audit_conn(&authorized).await.unwrap();
+        assert_eq!(a.db.audit_conn_rows("dev1").await.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn audit_records_taken_by_two_pods_at_once_are_stored_once() {
+        let (a, b) = two_pods().await;
+        a.test_register_device("dev1", "dXVpZA==").await;
+        let new = new_record(17, "n-race");
+        assert_eq!(tokio::join!(a.audit_conn(&new), b.audit_conn(&new)), (Some(()), Some(())));
+        let rows = a.db.audit_conn_rows("dev1").await;
+        assert_eq!(rows.len(), 1);
+        assert!(rows[0].end_time.is_none(), "the stored row stays open");
+        let file: utils::AuditFileRequest = serde_json::from_str(
+            r#"{"id":"dev1","uuid":"dXVpZA==","peer_id":"v","conn_id":17,"type":1,"path":"/tmp","is_file":true,"info":"{}","nonce":"f-race"}"#,
+        ).unwrap();
+        assert_eq!(tokio::join!(a.audit_file(&file), b.audit_file(&file)), (Some(()), Some(())));
+        let alarm: utils::AuditAlarmRequest = serde_json::from_str(
+            r#"{"id":"dev1","uuid":"dXVpZA==","typ":1,"info":"{}","conn_id":17,"nonce":"a-race"}"#,
+        ).unwrap();
+        assert_eq!(tokio::join!(a.audit_alarm(&alarm), b.audit_alarm(&alarm)), (Some(()), Some(())));
+        assert_eq!(a.db.count_nonce_rows_for_test("audit_file", "f-race").await, 1);
+        assert_eq!(a.db.count_nonce_rows_for_test("audit_alarm", "a-race").await, 1);
     }
 
     #[tokio::test]
