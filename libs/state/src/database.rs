@@ -2535,7 +2535,7 @@ mod tests {
                 .fetch_all(&first.pool)
                 .await
                 .unwrap();
-        assert_eq!(applied, vec![(1, true), (2, true), (3, true), (4, true), (5, true), (6, true), (7, true), (8, true), (9, true), (10, true)]);
+        assert_eq!(applied, (1..=11).map(|v| (v, true)).collect::<Vec<_>>());
         first.pool.close().await;
 
         // Second start on the same database must not fail or duplicate rows.
@@ -2545,6 +2545,24 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(groups, 1);
+    }
+
+    #[tokio::test]
+    async fn migrations_create_the_unlogged_presence_tables() {
+        let db = bare_db().await;
+        let tables: Vec<(String, String)> = sqlx::query_as(
+            "SELECT relname::text, relpersistence::text FROM pg_class \
+             WHERE relname IN ('hbbs_pod', 'peer_presence') ORDER BY relname",
+        )
+        .fetch_all(&db.pool)
+        .await
+        .unwrap();
+        assert_eq!(tables, vec![("hbbs_pod".into(), "u".into()), ("peer_presence".into(), "u".into())]);
+        let index: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM pg_indexes WHERE indexname = 'peer_presence_pod'")
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+        assert_eq!(index, 1);
     }
 
     db_test!(find_default_admin_user, |db| {
