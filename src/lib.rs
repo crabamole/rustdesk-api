@@ -1352,7 +1352,7 @@ async fn oidc_auth(
 
     let provider_login = oauth2::pkce::ProviderLogin::new(&uuid_code);
     let redirect_url = provider_trait_object.get_redirect_url(callback_url.as_str(), &provider_login);
-    let _oidc_session = state
+    let stored = state
         .insert_oidc_session(
             uuid_code.clone(),
             OidcState {
@@ -1377,6 +1377,10 @@ async fn oidc_auth(
             },
         )
         .await;
+    if stored.is_none() {
+        // Without a stored login the callback could never complete it.
+        return Json(OidcAuthUrl { url: "".to_string(), code: "LOGIN_STORE_ERROR".to_string() });
+    }
     log::debug!("uuid_code: {:?}", uuid_code);
 
     Json(OidcAuthUrl {

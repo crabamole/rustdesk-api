@@ -1492,6 +1492,24 @@ async fn test_oidc_native_login_returns_a_one_time_result_to_the_loopback() {
 }
 
 #[rocket::async_test]
+async fn test_oidc_auth_without_a_stored_login_hands_out_no_idp_url() {
+    let (client, pool) = client_and_pool().await;
+    sqlx::query("DROP TABLE oidc_login").execute(&pool).await.unwrap();
+    let uuid = base64::Engine::encode(&base64::prelude::BASE64_STANDARD, "device-uuid");
+    let challenge = oauth2::pkce::s256_challenge(VERIFIER);
+    let resp = client
+        .post("/api/oidc/auth")
+        .header(ContentType::JSON)
+        .header(Header::new("Host", "rustdesk.example.com"))
+        .body(format!(r#"{{"op":"dex","id":"123456789","uuid":"{uuid}","deviceInfo":{{"name":"pc","os":"windows","type":"client"}},"returnTo":"{LOOPBACK}","codeChallenge":"{challenge}"}}"#))
+        .dispatch()
+        .await;
+    let body: Value = resp.into_json().await.unwrap();
+    assert_eq!(body["url"], "");
+    assert_eq!(body["code"], "LOGIN_STORE_ERROR");
+}
+
+#[rocket::async_test]
 async fn test_oidc_callback_runs_once() {
     let client = untracked_client().await;
     let code = start_login(&client, "MY-LAPTOP", LOOPBACK).await;
@@ -1511,7 +1529,7 @@ async fn test_oidc_login_across_pods() {
     let location = callback(&b, &code).await;
     assert!(location.starts_with(&format!("{LOOPBACK}?result=")), "{location}");
     let replay = callback(&a, &code).await;
-    assert!(!replay.starts_with(LOOPBACK), "the callback runs once across pods: {replay}");
+    assert!(replay.is_empty(), "the callback runs once across pods: {replay}");
     let result = result_of(&location);
     let (status, body) = redeem(&a, &result, VERIFIER).await;
     assert_eq!(status, Status::Ok, "{body}");

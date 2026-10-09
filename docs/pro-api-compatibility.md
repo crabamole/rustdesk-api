@@ -22,7 +22,7 @@ Update this file with every API change.
 | POST | /api/sysinfo | [C] `src/hbbs_http/sync.rs` (`url.replace("heartbeat","sysinfo")`) | implemented | only for a registered `(id, uuid)`; the `uuid` is not stored in the device's info |
 | POST | /api/login | [C] `flutter/lib/models/user_model.dart` | implemented | password login intentionally disabled, always 401; use OIDC |
 | GET | /api/login-options | [C] `src/hbbs_http/account.rs`, `flutter/lib/models/user_model.dart` | implemented | |
-| POST | /api/oidc/auth | [C] `src/hbbs_http/account.rs` | implemented | requires `returnTo` (loopback `http://127.0.0.1:<port>/`, or this server's `/ui/login` or `/oidc-callback.html`) and an S256 `codeChallenge`; the callback redirects there with a one-time `result` |
+| POST | /api/oidc/auth | [C] `src/hbbs_http/account.rs` | implemented | requires `returnTo` (loopback `http://127.0.0.1:<port>/`, or this server's `/ui/login` or `/oidc-callback.html`) and an S256 `codeChallenge`; the callback redirects there with a one-time `result`; answers an empty `url` and `code` `LOGIN_STORE_ERROR` when the login cannot be stored |
 | POST | /api/oidc/token | [C] `src/hbbs_http/account.rs` | ours | redeems the one-time login result with the PKCE verifier; replaces polling (`GET /api/oidc/auth-query`, removed); completing a native client login records the machine for `GET /api/viewers` |
 | GET | /api/oidc/callback | [I] | ours | the IdP's redirect target: `code` sends the one-time `result` to `returnTo`; `error` (e.g. the user cancelled) sends `error=login_failed`; each outcome is written to the login audit |
 | POST | /api/logout | [C] `flutter/lib/models/user_model.dart` | implemented | |
