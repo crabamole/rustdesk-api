@@ -91,9 +91,9 @@ pub struct Plan {
 }
 
 impl OAuthProviderFactory for GithubProvider {
-    fn new() -> Self {
-        let provider_config = Self::get_provider_config(Provider::Github);
-        Self { provider_config }
+    fn new() -> Option<Self> {
+        let provider_config = Self::get_provider_config(Provider::Github)?;
+        Some(Self { provider_config })
     }
 }
 impl OAuthProvider for GithubProvider {

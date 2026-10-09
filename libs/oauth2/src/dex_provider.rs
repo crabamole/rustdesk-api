@@ -47,9 +47,9 @@ fn get_authorization_header(provider_config: &ProviderConfig) -> String {
 }
 
 impl OAuthProviderFactory for DexProvider {
-    fn new() -> Self {
-        let provider_config = Self::get_provider_config(Provider::Dex);
-        Self { provider_config }
+    fn new() -> Option<Self> {
+        let provider_config = Self::get_provider_config(Provider::Dex)?;
+        Some(Self { provider_config })
     }
 }
 impl OAuthProvider for DexProvider {

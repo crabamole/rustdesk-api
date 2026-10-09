@@ -27,7 +27,9 @@ pub struct OAuthResponse {
     pub email: Option<String>,
 }
 pub trait OAuthProviderFactory {
-    fn new() -> Self;
+    fn new() -> Option<Self>
+    where
+        Self: Sized;
     /// Get the provider config for the given provider name
     ///
     /// # Arguments
@@ -35,22 +37,22 @@ pub trait OAuthProviderFactory {
     ///
     /// # Returns
     /// The provider config
-    fn get_provider_config(tprovider: Provider) -> ProviderConfig {
+    fn get_provider_config(tprovider: Provider) -> Option<ProviderConfig> {
         let provider_config = get_providers_config_from_file(get_providers_config_file().as_str());
         provider_config
             .iter()
             .find(|&provider| provider.provider == tprovider)
-            .expect("Provider not found")
-            .clone()
+            .cloned()
     }
 }
 
-/// The implementation of `provider`; `None` for the placeholder types `validate` rejects.
+/// The implementation of `provider`; `None` for the placeholder types `validate` rejects and for
+/// a provider missing from the providers file.
 pub fn provider_for(provider: Provider) -> Option<std::sync::Arc<dyn OAuthProvider>> {
     match provider {
-        Provider::Github => Some(std::sync::Arc::new(crate::github_provider::GithubProvider::new())),
-        Provider::Dex => Some(std::sync::Arc::new(crate::dex_provider::DexProvider::new())),
-        Provider::Oauth2 => Some(std::sync::Arc::new(crate::oauth2_provider::Oauth2Provider::new())),
+        Provider::Github => Some(std::sync::Arc::new(crate::github_provider::GithubProvider::new()?)),
+        Provider::Dex => Some(std::sync::Arc::new(crate::dex_provider::DexProvider::new()?)),
+        Provider::Oauth2 => Some(std::sync::Arc::new(crate::oauth2_provider::Oauth2Provider::new()?)),
         _ => None,
     }
 }
@@ -129,6 +131,15 @@ mod tests {
     #[test]
     fn placeholder_provider_types_have_no_implementation() {
         for p in [Provider::Gitlab, Provider::Google, Provider::Apple, Provider::Okta, Provider::Facebook, Provider::Azure, Provider::Auth0] {
+            assert!(provider_for(p).is_none(), "{p:?}");
+        }
+    }
+
+    #[test]
+    fn provider_missing_from_the_providers_file_has_no_implementation() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        std::env::set_var("OAUTH2_CONFIG_FILE", file.path());
+        for p in [Provider::Github, Provider::Dex, Provider::Oauth2] {
             assert!(provider_for(p).is_none(), "{p:?}");
         }
     }

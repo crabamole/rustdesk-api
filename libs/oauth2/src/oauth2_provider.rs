@@ -47,9 +47,9 @@ fn get_authorization_header(provider_config: &ProviderConfig) -> String {
 }
 
 impl OAuthProviderFactory for Oauth2Provider {
-    fn new() -> Self {
-        let provider_config = Self::get_provider_config(Provider::Oauth2);
-        Self { provider_config }
+    fn new() -> Option<Self> {
+        let provider_config = Self::get_provider_config(Provider::Oauth2)?;
+        Some(Self { provider_config })
     }
 }
 impl OAuthProvider for Oauth2Provider {
