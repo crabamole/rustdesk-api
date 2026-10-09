@@ -37,8 +37,10 @@ its status against RustDesk Pro.
 - PostgreSQL only. The api-server owns the schema: its migrations run at startup.
   hbbs uses the same database for its `peer` table and calls the api-server to check
   login tokens and to mint audit references.
-- Sessions are stored in Postgres and survive restarts. OIDC logins in progress are kept
-  in memory, so run one replica.
+- Sessions, OIDC logins in progress and the legacy address book live in Postgres only, so
+  several replicas can run behind one Service. `GET /livez` and `GET /readyz` (database
+  reachable, not shutting down) are the Kubernetes probes. Each replica opens up to
+  `MAX_DATABASE_CONNECTIONS` connections.
 
 ## Deploying
 
