@@ -162,21 +162,7 @@ impl ApiState {
         self.db.update_legacy_address_books(vec![(user_id, address_book)]).await
     }
 
-    /// Log out the given user from the state.
-    ///
-    /// This function is used to log out a user when the user's session is
-    /// invalidated (e.g. when the user changes their password).
-    ///
-    /// This function removes the user's access token and session from the
-    /// state, and decrements the number of sessions for the user. If the number
-    /// of sessions for the user reaches 0, the user is removed from the state
-    /// entirely.
-    ///
-    /// # Returns
-    ///
-    /// This function returns `None` if the user is not present in the state,
-    /// or if removing their session and access token from the state fails.
-    /// If the function returns `Some(())`, the logout was successful.
+    /// Log out the given user by deleting their session.
     pub async fn user_logout(&self, user: &AuthenticatedUserInfo) -> Option<()> {
         let token_id = user.access_token.to_base64();
         self.db.delete_session(&token_id).await;

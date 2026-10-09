@@ -400,7 +400,6 @@ async fn ab_get_handler(
         data: abi.ab,
     };
 
-
     // Debug log the reply
     log::debug!("ab get reply: {:?}", Json(&reply));
 
@@ -432,7 +431,6 @@ async fn ab(
         .await
         .ok_or(Err(status::Unauthorized::<()>(()))));
 
-
     Ok(())
 }
 
@@ -452,7 +450,7 @@ async fn ab(
 ///
 /// ## Errors
 ///
-/// This function will return an error if the system is in maintenance mode, or if the user is not authorized.
+/// This function will return an error if the user is not authorized.
 #[openapi(tag = "user")]
 #[post("/api/currentUser", format = "application/json", data = "<request>")]
 async fn current_user(
@@ -767,7 +765,7 @@ async fn audits_login(
 ///
 /// ## Errors
 ///
-/// This function will return an error if the system is in maintenance mode, or if the user is not authorized.
+/// This function will return an error if the user is not authorized.
 ///
 #[openapi(tag = "login")]
 #[post("/api/logout", format = "application/json", data = "<request>")]
@@ -787,7 +785,6 @@ async fn logout(
         data: String::new(),
     };
 
-
     Ok(Json(reply))
 }
 
@@ -804,10 +801,6 @@ async fn logout(
 /// ## Returns
 ///
 /// the device policy when the device's `modified_at` differs from it.  <br>
-///
-/// ## Errors
-///
-/// This function will return an error if the system is in maintenance mode.
 #[openapi(tag = "peer")]
 #[post("/api/heartbeat", format = "application/json", data = "<request>")]
 async fn heartbeat(state: &State<ApiState>, request: Json<HeartbeatRequest>) -> Json<HeartbeatResponse> {
@@ -835,7 +828,7 @@ async fn heartbeat(state: &State<ApiState>, request: Json<HeartbeatRequest>) -> 
 ///
 /// ## Errors
 ///
-/// This function will return an error if the system is in maintenance mode, or if the system info is not found.
+/// This function will return an error if the system info is not found.
 ///
 #[openapi(tag = "peer")]
 #[post("/api/sysinfo", format = "application/json", data = "<request>")]
@@ -872,7 +865,7 @@ async fn sysinfo(state: &State<ApiState>, request: Json<utils::SystemInfo>) -> S
 ///
 /// ## Errors
 ///
-/// This function will return an error if the system is in maintenance mode, or if no users are found.
+/// This function will return an error if no users are found.
 ///
 /// # Example
 ///
@@ -928,7 +921,7 @@ async fn users(
 ///
 /// ## Errors
 ///
-/// This function will return an error if the system is in maintenance mode, or if no groups are found.
+/// This function will return an error if no groups are found.
 ///
 /// # Example
 ///
@@ -1007,7 +1000,7 @@ async fn group_get(
 ///
 /// ## Errors
 ///
-/// This function will return an error if the system is in maintenance mode, or if the admin is not authorized.
+/// This function will return an error if the admin is not authorized.
 ///
 /// # Example
 ///
@@ -1114,7 +1107,7 @@ async fn group_delete(
 ///
 /// ## Errors
 ///
-/// This function will return an error if the system is in maintenance mode, or if no peers are found.
+/// This function will return an error if no peers are found.
 ///
 /// # Example
 ///
@@ -1174,7 +1167,6 @@ async fn viewers(
 /// ## Returns
 ///
 /// If successful, this function returns a `Json<PeersCountResponse>` object, which includes the total number of peers for the specified platform.  <br>
-///
 #[openapi(tag = "peer")]
 #[get("/api/peers/count/<platform>", format = "application/json")]
 async fn peers_count(
@@ -1258,7 +1250,7 @@ async fn peers_cpus(
 ///
 /// ## Errors
 ///
-/// This function will return an error if the system is in maintenance mode, or if the config file is not found or cannot be read.
+/// This function will return an error if the config file is not found or cannot be read.
 ///
 /// # Example
 ///
@@ -1306,7 +1298,7 @@ async fn login_options(
 ///
 /// ## Errors
 ///
-/// This function will return an error if the system is in maintenance mode, or if the UUID is invalid or the OAuth2 provider is not found.
+/// This function will return an error if the UUID is invalid or the OAuth2 provider is not found.
 ///
 /// # Example
 ///
@@ -1613,7 +1605,7 @@ async fn oidc_token(
 ///
 /// ## Errors
 ///
-/// This function will return an error if the system is in maintenance mode, or if the user is not authorized to access their personal address book.
+/// This function will return an error if the user is not authorized to access their personal address book.
 ///
 /// # Example
 ///
@@ -1668,7 +1660,7 @@ async fn require_ab_rule(
 ///
 /// ## Errors
 ///
-/// This function will return an error if the system is in maintenance mode, or if the address book does not exist or the user is not authorized to access it.
+/// This function will return an error if the address book does not exist or the user is not authorized to access it.
 ///
 /// # Example
 ///
@@ -1707,7 +1699,7 @@ async fn ab_tags(
 ///
 /// ## Errors
 ///
-/// This function will return an error if the system is in maintenance mode, or if the tag already exists or the user is not authorized to add it.
+/// This function will return an error if the tag already exists or the user is not authorized to add it.
 ///
 /// # Example
 ///
@@ -1752,7 +1744,7 @@ async fn ab_tag_add(
 ///
 /// ## Errors
 ///
-/// This function will return an error if the system is in maintenance mode, or if the tag does not exist or the user is not authorized to update it.
+/// This function will return an error if the tag does not exist or the user is not authorized to update it.
 ///
 /// # Example
 ///
@@ -1797,7 +1789,7 @@ async fn ab_tag_update(
 ///
 /// ## Errors
 ///
-/// This function will return an error if the system is in maintenance mode, or if the tag does not exist or the user is not authorized to access it.
+/// This function will return an error if the tag does not exist or the user is not authorized to access it.
 ///
 /// # Example
 ///
@@ -1851,7 +1843,7 @@ async fn ab_tag_rename(
 ///
 /// ## Errors
 ///
-/// This function will return an error if the system is in maintenance mode, or if the request is empty or the user is not authorized to access it.
+/// This function will return an error if the request is empty or the user is not authorized to access it.
 ///
 /// # Example
 ///
@@ -1893,7 +1885,7 @@ async fn ab_tag_delete(
 ///
 /// ## Errors
 ///
-/// This function will return an error if the system is in maintenance mode, or if the address book does not exist or the user is not authorized to access it.
+/// This function will return an error if the address book does not exist or the user is not authorized to access it.
 ///
 /// # Example
 ///
@@ -1957,7 +1949,7 @@ async fn ab_settings(
 ///
 /// ## Errors
 ///
-/// This function will return an error if the system is in maintenance mode, or if the address book does not exist or the user is not authorized to access it.
+/// This function will return an error if the address book does not exist or the user is not authorized to access it.
 ///
 #[openapi(tag = "address book")]
 #[post("/api/ab/peers?<current>&<pageSize>&<ab>")]
@@ -2501,7 +2493,7 @@ async fn software_download() -> Redirect {
 ///
 /// ## Errors
 ///
-/// This function will return an error if the system is in maintenance mode, or if the address book does not exist or the user is not authorized to access it.
+/// This function will return an error if the address book does not exist or the user is not authorized to access it.
 ///
 #[openapi(tag = "address book")]
 #[get("/api/ab/rules?<current>&<pageSize>&<ab>", format = "application/json")]
@@ -2539,11 +2531,6 @@ async fn ab_rules(
 /// ## Returns
 ///
 /// If successful, this function returns an `ActionResponse::Empty` indicating that the rule was successfully added. <br>
-/// If the system is in maintenance mode, this function returns a `status::Unauthorized` error.
-///
-/// ## Errors
-///
-/// This function will return an error if the system is in maintenance mode.
 #[openapi(tag = "address book")]
 #[post("/api/ab/rule", format = "application/json", data = "<request>")]
 async fn ab_rule_add(
@@ -2573,11 +2560,6 @@ async fn ab_rule_add(
 /// ## Returns
 ///
 /// If successful, this function returns an `ActionResponse::Empty` indicating that the rule was successfully deleted. <br>
-/// If the system is in maintenance mode, this function returns a `status::Unauthorized` error.
-///
-/// ## Errors
-///
-/// This function will return an error if the system is in maintenance mode.
 #[openapi(tag = "address book")]
 #[delete("/api/ab/rule", format = "application/json", data = "<request>")]
 async fn ab_rule_delete(
