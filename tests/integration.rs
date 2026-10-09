@@ -701,6 +701,30 @@ async fn test_ab_legacy_get_set() {
 }
 
 #[rocket::async_test]
+async fn test_ab_legacy_write_is_seen_by_another_pod() {
+    let (a, b) = two_pods().await;
+    let token = login_admin(&a).await;
+    let resp = a
+        .post("/api/ab")
+        .header(ContentType::JSON)
+        .header(auth_header(&token))
+        .body(r#"{"data":"{\"peers\":[],\"tags\":[\"t1\"]}"}"#)
+        .dispatch()
+        .await;
+    assert_eq!(resp.status(), Status::Ok);
+    let body: Value = b
+        .get("/api/ab")
+        .header(ContentType::JSON)
+        .header(auth_header(&token))
+        .dispatch()
+        .await
+        .into_json()
+        .await
+        .unwrap();
+    assert_eq!(body["data"], r#"{"peers":[],"tags":["t1"]}"#);
+}
+
+#[rocket::async_test]
 async fn test_ab_peer_crud() {
     let (client, _dir) = test_client().await;
     let token = login_admin(&client).await;

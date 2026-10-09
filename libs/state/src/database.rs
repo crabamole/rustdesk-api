@@ -1656,23 +1656,6 @@ impl Database {
         Some(())
     }
 
-    pub async fn count_user_sessions(&self, user_id: &[u8]) -> i64 {
-        let now_expr = "NOW()::text";
-        let query = format!(
-            "SELECT COUNT(*) as count FROM session WHERE \"user\" = $1 AND expiry_at > {}",
-            now_expr
-        );
-        let row = sqlx::query(&query)
-            .bind(user_id)
-            .fetch_one(&self.pool)
-            .await
-            .ok();
-        match row {
-            Some(r) => r.try_get::<i64, _>("count").unwrap_or(0),
-            None => 0,
-        }
-    }
-
     pub async fn get_user_info_by_id(&self, user_id: &[u8]) -> Option<(String, bool)> {
         let row = sqlx::query(
             "SELECT name, role FROM \"user\" WHERE guid = $1 AND status = 1",

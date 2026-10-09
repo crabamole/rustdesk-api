@@ -331,8 +331,6 @@ async fn ab_get_handler(
         data: abi.ab,
     };
 
-    // Check if the server is in maintenance mode
-    state.check_maintenance().await;
 
     // Debug log the reply
     log::debug!("ab get reply: {:?}", Json(&reply));
@@ -365,7 +363,6 @@ async fn ab(
         .await
         .ok_or(Err(status::Unauthorized::<()>(()))));
 
-    state.check_maintenance().await;
 
     Ok(())
 }
@@ -420,9 +417,8 @@ async fn current_user(
 /// Audit (legacy endpoint, delegates to conn handler)
 #[openapi(tag = "audit")]
 #[post("/api/audit", format = "application/json", data = "<request>")]
-async fn audit(state: &State<ApiState>, request: Json<AuditRequest>) {
+async fn audit(_state: &State<ApiState>, request: Json<AuditRequest>) {
     log::debug!("audit: {:?}", request);
-    state.check_maintenance().await;
 }
 
 /// Audit connection events
@@ -437,7 +433,6 @@ async fn audit_conn(
 ) -> String {
     log::debug!("audit_conn: {:?}", request);
     let stored = state.audit_conn(&request).await;
-    state.check_maintenance().await;
     match stored {
         Some(()) => String::new(),
         None => r#"{"error":"audit record not stored"}"#.to_owned(),
@@ -472,7 +467,6 @@ async fn audit_note(
     user: AuthenticatedUser,
     request: Json<utils::AuditNoteRequest>,
 ) -> Result<(), Status> {
-    state.check_maintenance().await;
     match state.set_audit_note(&request.guid, &request.note, &user.info.user_id).await {
         Ok(()) => Ok(()),
         Err(state::AuditNoteError::BadGuid) => Err(Status::BadRequest),
@@ -493,7 +487,6 @@ async fn audit_file(
 ) -> String {
     log::debug!("audit_file: {:?}", request);
     let stored = state.audit_file(&request).await;
-    state.check_maintenance().await;
     match stored {
         Some(()) => String::new(),
         None => r#"{"error":"audit record not stored"}"#.to_owned(),
@@ -512,7 +505,6 @@ async fn audit_alarm(
 ) -> String {
     log::debug!("audit_alarm: {:?}", request);
     let stored = state.audit_alarm(&request).await;
-    state.check_maintenance().await;
     match stored {
         Some(()) => String::new(),
         None => r#"{"error":"audit record not stored"}"#.to_owned(),
@@ -532,7 +524,6 @@ async fn audit_ref(
     user: AuthenticatedUser,
     target: &str,
 ) -> Result<Json<utils::AuditRefResponse>, Status> {
-    state.check_maintenance().await;
     if target.is_empty() {
         return Err(Status::BadRequest);
     }
@@ -596,7 +587,6 @@ async fn audits_conn(
     remote: Option<String>,
     conn_type: Option<i16>,
 ) -> Result<Json<utils::AuditPage<utils::AuditConnLog>>, (Status, String)> {
-    state.check_maintenance().await;
     let q = audit_query(current, pageSize, created_at, remote, conn_type)?;
     state
         .list_audit_conns(&q)
@@ -619,7 +609,6 @@ async fn audits_file(
     created_at: Option<String>,
     remote: Option<String>,
 ) -> Result<Json<utils::AuditPage<utils::AuditFileLog>>, (Status, String)> {
-    state.check_maintenance().await;
     let q = audit_query(current, pageSize, created_at, remote, None)?;
     state
         .list_audit_files(&q)
@@ -642,7 +631,6 @@ async fn audits_alarm(
     created_at: Option<String>,
     device: Option<String>,
 ) -> Result<Json<utils::AuditPage<utils::AuditAlarmLog>>, (Status, String)> {
-    state.check_maintenance().await;
     let q = audit_query(current, pageSize, created_at, device, None)?;
     state
         .list_audit_alarms(&q)
@@ -659,14 +647,13 @@ async fn audits_alarm(
 #[allow(non_snake_case)]
 #[get("/api/audits/console?<current>&<pageSize>&<created_at>&<operator>")]
 async fn audits_console(
-    state: &State<ApiState>,
+    _state: &State<ApiState>,
     _user: AuthenticatedAdmin,
     current: Option<i64>,
     pageSize: Option<i64>,
     created_at: Option<String>,
     operator: Option<String>,
 ) -> Result<Json<utils::AuditPage<utils::AuditConsoleLog>>, (Status, String)> {
-    state.check_maintenance().await;
     audit_query(current, pageSize, created_at, operator, None)?;
     Ok(Json(utils::AuditPage { total: 0, data: Vec::new() }))
 }
@@ -687,7 +674,6 @@ async fn audits_login(
     user: Option<String>,
     outcome: Option<String>,
 ) -> Result<Json<utils::AuditPage<utils::AuditLoginLog>>, (Status, String)> {
-    state.check_maintenance().await;
     let q = audit_query(current, pageSize, created_at, user, None)?;
     state
         .list_audit_logins(&q, outcome.as_deref())
@@ -732,7 +718,6 @@ async fn logout(
         data: String::new(),
     };
 
-    state.check_maintenance().await;
 
     Ok(Json(reply))
 }
@@ -837,7 +822,6 @@ async fn users(
     name: Option<&str>,
 ) -> Result<Json<UserList>, status::NotFound<()>> {
     log::debug!("users");
-    state.check_maintenance().await;
 
     let email = if email.is_some() && email.unwrap().is_empty() {
         None
@@ -889,7 +873,6 @@ async fn groups(
     #[allow(non_snake_case, unused_variables)] pageSize: u32,
 ) -> Result<Json<GroupsResponse>, status::NotFound<()>> {
     log::debug!("groups");
-    state.check_maintenance().await;
     let page_size = if pageSize < 1 {
         u32::max_value()
     } else {
@@ -931,7 +914,6 @@ async fn group_get(
     guid: String,
 ) -> Result<Json<utils::Group>, status::NotFound<()>> {
     log::debug!("group_get");
-    state.check_maintenance().await;
     let group = state.get_group(guid.as_str()).await;
     if group.is_none() {
         return Err(status::NotFound::<()>(()));
@@ -970,7 +952,6 @@ async fn group_add(
     request: Json<AddGoupRequest>,
 ) -> Result<Json<UsersResponse>, status::Unauthorized<()>> {
     log::debug!("create_group");
-    state.check_maintenance().await;
 
     let request = request.into_inner();
     let _res = state
@@ -1005,7 +986,6 @@ async fn group_update(
     request: Json<UpdateGoupRequest>,
 ) -> Result<Json<UsersResponse>, status::Unauthorized<()>> {
     log::debug!("update_group");
-    state.check_maintenance().await;
 
     let request = request.into_inner();
     let _res = state
@@ -1045,7 +1025,6 @@ async fn group_delete(
     guid: &str,
 ) -> Result<(), status::Unauthorized<()>> {
     log::debug!("group_delete");
-    state.check_maintenance().await;
     let _res = state.delete_group(guid).await;
     Ok(())
 }
@@ -1078,7 +1057,6 @@ async fn peers(
     _user: AuthenticatedUser,
 ) -> Result<Json<PeersResponse>, status::NotFound<()>> {
     log::debug!("peers");
-    state.check_maintenance().await;
     let peers = state.get_all_peers().await;
 
     if peers.is_none() {
@@ -1106,7 +1084,6 @@ async fn viewers(
     current: Option<i64>,
     pageSize: Option<i64>,
 ) -> Result<Json<utils::ViewerList>, (Status, String)> {
-    state.check_maintenance().await;
     let limit = pageSize.unwrap_or(10).clamp(1, 1000);
     let offset = current.unwrap_or(1).max(1).saturating_sub(1).saturating_mul(limit);
     state
@@ -1578,7 +1555,6 @@ async fn ab_personal(
     state: &State<ApiState>,
     user: AuthenticatedUser,
 ) -> Result<Json<AbPersonal>, status::Unauthorized<()>> {
-    state.check_maintenance().await;
     let guid = state.get_ab_personal_guid(user.info.user_id.clone()).await;
     if guid.is_none() {
         return Err(status::Unauthorized::<()>(()));
@@ -1636,7 +1612,6 @@ async fn ab_tags(
     ab: &str,
 ) -> Result<Json<Vec<AbTag>>, Status> {
     require_ab_rule(state, &user, ab, 1).await?;
-    state.check_maintenance().await;
     let ab_tags = state.get_ab_tags(ab).await;
     if ab_tags.is_none() {
         return Err(Status::NotFound);
@@ -1684,7 +1659,6 @@ async fn ab_tag_add(
     request: Json<AbTag>,
 ) -> Result<ActionResponse, Status> {
     require_ab_rule(state, &user, ab, 2).await?;
-    state.check_maintenance().await;
     let ab_tag = request.0;
     log::debug!("ab_tag_add: {:?}", ab_tag);
     state.add_ab_tag(ab, ab_tag).await;
@@ -1730,7 +1704,6 @@ async fn ab_tag_update(
     request: Json<AbTag>,
 ) -> Result<ActionResponse, Status> {
     require_ab_rule(state, &user, ab, 2).await?;
-    state.check_maintenance().await;
     let ab_tag = request.0;
     log::debug!("ab_tag_update: {:?}", ab_tag);
     state.add_ab_tag(ab, ab_tag).await;
@@ -1776,7 +1749,6 @@ async fn ab_tag_rename(
     request: Json<AbTagRenameRequest>,
 ) -> Result<ActionResponse, Status> {
     require_ab_rule(state, &user, ab, 2).await?;
-    state.check_maintenance().await;
     let ab_tag_old_name = request.0.old;
     let ab_tag_new_name = request.0.new;
 
@@ -1831,7 +1803,6 @@ async fn ab_tag_delete(
         return Err(Status::Unauthorized);
     }
     let tags_to_delete = request.0;
-    state.check_maintenance().await;
     state.delete_ab_tags(ab, tags_to_delete).await;
     Ok(ActionResponse::Empty)
 }
@@ -1864,7 +1835,6 @@ async fn ab_shared(
     state: &State<ApiState>,
     user: AuthenticatedUser,
 ) -> Result<Json<AbSharedProfilesResponse>, status::Unauthorized<()>> {
-    state.check_maintenance().await;
     let shared_address_books = state.get_shared_address_books(user.info.user_id).await;
     let mut ab_shared_profiles = AbSharedProfilesResponse::default();
     for ab in shared_address_books.expect("shared_address_books is None") {
@@ -1888,10 +1858,9 @@ async fn ab_shared(
 #[openapi(tag = "address book")]
 #[post("/api/ab/settings")]
 async fn ab_settings(
-    state: &State<ApiState>,
+    _state: &State<ApiState>,
     _user: AuthenticatedUser,
 ) -> Result<Json<AbSettingsResponse>, status::Unauthorized<()>> {
-    state.check_maintenance().await;
     let ab_settings = AbSettingsResponse {
         error: None,
         max_peer_one_ab: std::u32::MAX,
@@ -1931,7 +1900,6 @@ async fn ab_peers(
     ab: &str,
 ) -> Result<Json<AbPeersResponse>, Status> {
     require_ab_rule(state, &user, ab, 1).await?;
-    state.check_maintenance().await;
     let ab_peers = state.get_ab_peers(ab).await;
     if ab_peers.is_none() {
         return Err(Status::Unauthorized);
@@ -1972,7 +1940,6 @@ async fn ab_peer_add(
 ) -> Result<ActionResponse, Status> {
     require_ab_rule(state, &user, ab, 2).await?;
     let ab_peer = request.0;
-    state.check_maintenance().await;
     state.add_ab_peer(ab, ab_peer).await;
     Ok(ActionResponse::Empty)
 }
@@ -2023,7 +1990,6 @@ async fn ab_peer_update(
     ab_peer.rdp_username = ab_peer.rdp_username.or(old_ab_peer.rdp_username);
     ab_peer.login_name = ab_peer.login_name.or(old_ab_peer.login_name);
     ab_peer.same_server = ab_peer.same_server.or(old_ab_peer.same_server);
-    state.check_maintenance().await;
     state.add_ab_peer(ab, ab_peer).await;
     Ok(ActionResponse::Empty)
 }
@@ -2054,7 +2020,6 @@ async fn ab_peer_delete(
         return Err(Status::Unauthorized);
     }
     let peers_to_delete = request.0;
-    state.check_maintenance().await;
     state.delete_ab_peer(ab, peers_to_delete).await;
     Ok(ActionResponse::Empty)
 }
@@ -2087,7 +2052,6 @@ async fn strategies(
     state: &State<ApiState>,
     _user: AuthenticatedAdmin,
 ) -> Result<Json<Vec<StrategySummary>>, (Status, String)> {
-    state.check_maintenance().await;
     state
         .list_strategies()
         .await
@@ -2107,7 +2071,6 @@ async fn strategy_get(
     _user: AuthenticatedAdmin,
     guid: &str,
 ) -> Result<Json<Strategy>, (Status, String)> {
-    state.check_maintenance().await;
     load_strategy(state, guid).await
 }
 
@@ -2123,7 +2086,6 @@ async fn strategy_update(
     guid: &str,
     request: Json<UpdateStrategyRequest>,
 ) -> Result<Json<Strategy>, (Status, String)> {
-    state.check_maintenance().await;
     let options = request.into_inner().options;
     utils::policy::validate_options(&options).map_err(|e| (Status::BadRequest, e))?;
     state
@@ -2146,7 +2108,6 @@ async fn strategy_repush(
     user: AuthenticatedAdmin,
     guid: &str,
 ) -> Result<Json<Strategy>, (Status, String)> {
-    state.check_maintenance().await;
     state
         .bump_strategy(guid)
         .await
@@ -2174,7 +2135,6 @@ async fn user_add(
     request: Json<AddUserRequest>,
 ) -> Result<Json<UsersResponse>, status::Unauthorized<()>> {
     log::debug!("create_user");
-    state.check_maintenance().await;
 
     let user_parameters = request.0;
     let res = state.add_user(user_parameters).await;
@@ -2209,7 +2169,6 @@ async fn user_delete(
     request: Json<DeleteUserRequest>,
 ) -> Result<Json<UsersResponse>, status::Unauthorized<()>> {
     log::debug!("create_user");
-    state.check_maintenance().await;
 
     let delete_users = request.0;
 
@@ -2248,7 +2207,6 @@ async fn user_enable(
     request: Json<EnableUserRequest>,
 ) -> Result<Json<UsersResponse>, status::Unauthorized<()>> {
     log::debug!("create_user");
-    state.check_maintenance().await;
 
     let enable_users = request.0;
 
@@ -2290,7 +2248,6 @@ async fn user_update(
     request: Json<UpdateUserRequest>,
 ) -> Result<Json<UsersResponse>, status::Unauthorized<()>> {
     log::debug!("update_user");
-    state.check_maintenance().await;
     let mut guid = uuid_into_guid(request.0.uuid.as_str());
     if guid.is_none() {
         guid = Some(user.info.user_id.clone());
@@ -2331,12 +2288,11 @@ async fn user_update(
 #[openapi(tag = "todo")]
 #[put("/api/oidc/settings", format = "application/json", data = "<_request>")]
 async fn oidc_add(
-    state: &State<ApiState>,
+    _state: &State<ApiState>,
     _user: AuthenticatedAdmin,
     _request: Json<EnableUserRequest>,
 ) -> Result<Json<EnableUserRequest>, status::Unauthorized<()>> {
     log::debug!("Add OIDC Provider");
-    state.check_maintenance().await;
 
     Err(status::Unauthorized::<()>(()))
 }
@@ -2349,11 +2305,10 @@ async fn oidc_add(
 #[openapi(tag = "todo")]
 #[get("/api/oidc/settings", format = "application/json")]
 async fn oidc_get(
-    state: &State<ApiState>,
+    _state: &State<ApiState>,
     _user: AuthenticatedAdmin,
 ) -> Result<Json<OidcSettingsResponse>, status::Unauthorized<()>> {
     log::debug!("create_user");
-    state.check_maintenance().await;
     Err(status::Unauthorized::<()>(()))
 }
 
@@ -2388,7 +2343,6 @@ async fn users_client(
     #[allow(unused_variables)] status: Option<u32>,
 ) -> Result<Json<UserList>, status::NotFound<()>> {
     log::debug!("users");
-    state.check_maintenance().await;
 
     let res = state.get_all_users(None, None, current, pageSize).await;
     if res.is_none() {
@@ -2490,7 +2444,6 @@ async fn ab_rules(
     ab: &str,
 ) -> Result<Json<AbRulesResponse>, Status> {
     require_ab_rule(state, &user, ab, 3).await?;
-    state.check_maintenance().await;
     let current = if current < 1 { 0 } else { current - 1 };
     let rules = state.get_ab_rules(current, pageSize, ab).await;
     if rules.is_none() {
@@ -2529,7 +2482,6 @@ async fn ab_rule_add(
     _user: AuthenticatedAdmin,
     request: Json<AbRuleAddRequest>,
 ) -> Result<ActionResponse, status::Unauthorized<()>> {
-    state.check_maintenance().await;
     let rule = AbRule {
         guid: request.0.guid,
         user: request.0.user,
@@ -2564,7 +2516,6 @@ async fn ab_rule_delete(
     _user: AuthenticatedAdmin,
     request: Json<AbRuleDeleteRequest>,
 ) -> Result<ActionResponse, status::Unauthorized<()>> {
-    state.check_maintenance().await;
     let rule = request.0.guid;
     state.delete_ab_rule(rule.as_str()).await;
     Ok(ActionResponse::Empty)
@@ -2589,7 +2540,6 @@ async fn ab_shared_add(
     user: AuthenticatedAdmin,
     request: Json<AbSharedAddRequest>,
 ) -> Result<Json<AbSharedProfilesResponse>, status::Unauthorized<()>> {
-    state.check_maintenance().await;
     let name = request.0.name;
     let note = request.0.note;
     let owner = guid_into_uuid(user.info.user_id.clone()).unwrap();
@@ -2630,7 +2580,6 @@ async fn ab_shared_delete(
     _user: AuthenticatedAdmin,
     request: Json<Vec<String>>,
 ) -> Result<ActionResponse, status::Unauthorized<()>> {
-    state.check_maintenance().await;
     let shared_profiles_to_delete = request.0;
     state.delete_shared_address_books(shared_profiles_to_delete).await;
     Ok(ActionResponse::Empty)
@@ -2655,7 +2604,6 @@ async fn ab_shared_name(
     user: AuthenticatedAdmin,
     request: Json<AbSharedNameRequest>,
 ) -> Result<Json<AbSharedProfilesResponse>, status::Unauthorized<()>> {
-    state.check_maintenance().await;
     let shared_profile = request.0;
     let name = shared_profile.name.expect("Currently name is required");
     state.update_shared_address_book(shared_profile.guid.as_str(), name.as_str()).await;

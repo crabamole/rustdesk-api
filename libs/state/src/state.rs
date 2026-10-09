@@ -20,10 +20,8 @@ use crate::{
     UserId,
 };
 use std::{
-    collections::{HashMap, BTreeMap},
+    collections::BTreeMap,
     default::Default,
-    sync::atomic::{AtomicU64, Ordering},
-    time::SystemTime,
 };
 
 use base64::Engine as _;
@@ -38,11 +36,9 @@ use utils::{
 };
 
 pub struct ApiState {
-    last_maintenance_time: AtomicU64,
-    address_books: RwLock<HashMap<UserId, AddressBookInfo>>,
     /// IdP stand-ins by login code, on this instance only. Test-only.
     #[cfg(any(test, feature = "test-util"))]
-    test_providers: std::sync::Mutex<HashMap<String, Arc<dyn OAuthProvider>>>,
+    test_providers: std::sync::Mutex<std::collections::HashMap<String, Arc<dyn OAuthProvider>>>,
     pub(crate) db: Database,
     oauth2_providers: RwLock<Vec<ProviderConfig>>,
 }
@@ -59,13 +55,6 @@ pub struct UserInfo {
     pub admin: bool,
 }
 
-#[derive(Debug, Clone)]
-pub struct AddressBookInfo {
-    modified: bool,
-    remove_after_flush: bool,
-    pub address_book: AddressBook,
-}
-
 /// `set_audit_note` failure modes (spec §8).
 #[derive(Debug, PartialEq, Eq)]
 pub enum AuditNoteError {
@@ -74,63 +63,16 @@ pub enum AuditNoteError {
     Db,
 }
 
-const MAINTENANCE_INTERVAL_IN_SECS: u64 = 60;
 const VIEWER_FIELD_MAX_CHARS: usize = 255;
-
-fn secs_from_epoch() -> u64 {
-    SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap()
-        .as_secs()
-}
 
 impl ApiState {
     pub async fn new_with_db(db_url: &str) -> Self {
         let db = Database::connect_with_retry(db_url).await;
         Self {
-            last_maintenance_time: AtomicU64::new(0),
-            address_books: Default::default(),
             db,
             #[cfg(any(test, feature = "test-util"))]
             test_providers: Default::default(),
             oauth2_providers: Default::default(),
-        }
-    }
-
-    pub async fn maintenance_flush_address_books(&self) {
-        let mut state_address_books = self.address_books.write().await;
-
-        let mut values: Vec<(UserId, AddressBook)> = vec![];
-
-        for (user_id, address_book_info) in state_address_books.iter_mut() {
-            if !address_book_info.modified {
-                continue;
-            }
-            let user_id_clone = user_id.clone();
-            values.push((user_id_clone, address_book_info.address_book.clone()));
-            address_book_info.modified = false;
-        }
-
-        if !values.is_empty() {
-            log::debug!("Need to update_address_books");
-            self.db.update_legacy_address_books(values).await;
-        }
-    }
-
-    pub async fn maintenance(&self) {
-        self.maintenance_flush_address_books().await;
-    }
-
-    pub async fn check_maintenance(&self) {
-        log::debug!("check_maintenance...");
-
-        let now = secs_from_epoch();
-        let last_mt = self.last_maintenance_time.load(Ordering::Relaxed);
-
-        if now >= (last_mt + MAINTENANCE_INTERVAL_IN_SECS) {
-            self.last_maintenance_time.store(now, Ordering::Relaxed);
-            log::debug!("check_maintenance NOW");
-            self.maintenance().await;
         }
     }
 
@@ -188,11 +130,6 @@ impl ApiState {
 
         self.db.insert_session(&token_id, &user_id, 2592000).await;
 
-        let mut state_address_books = self.address_books.write().await;
-        if let Some(abi) = state_address_books.get_mut(&user_id) {
-            abi.remove_after_flush = false;
-        }
-
         access_token
     }
 
@@ -206,58 +143,11 @@ impl ApiState {
     }
 
     pub async fn get_user_address_book(&self, user_id: UserId) -> Option<AddressBook> {
-        let state_address_books = self.address_books.read().await;
-
-        let opt_ab = state_address_books
-            .get(&user_id)
-            .map(|abi| abi.address_book.clone());
-
-        if opt_ab.is_some() {
-            return opt_ab;
-        }
-
-        drop(state_address_books);
-
-        let ab = self.db.get_legacy_address_book(user_id.clone()).await?;
-        let abi = AddressBookInfo {
-            modified: false,
-            remove_after_flush: false,
-            address_book: ab.clone(),
-        };
-
-        let mut state_address_books = self.address_books.write().await;
-        state_address_books.insert(user_id, abi.clone());
-
-        Some(ab)
+        self.db.get_legacy_address_book(user_id).await
     }
 
-    pub async fn set_user_address_book(
-        &self,
-        user_id: UserId,
-        address_book: AddressBook,
-    ) -> Option<()> {
-        log::debug!("set_user_ab()");
-        let mut state_address_books = self.address_books.write().await;
-
-        if let Some(abi) = state_address_books.get_mut(&user_id) {
-            if abi.address_book != address_book {
-                abi.modified = true;
-                abi.address_book = address_book;
-            };
-        } else {
-            let abi = AddressBookInfo {
-                modified: false,
-                remove_after_flush: false,
-                address_book,
-            };
-            state_address_books.insert(user_id, abi);
-        }
-        // log::debug!("set_user_ab() 2");
-
-        // let _ = self.db.update_ab( user_id, &abi.ab ).await;
-
-        log::debug!("ab done!");
-        Some(())
+    pub async fn set_user_address_book(&self, user_id: UserId, address_book: AddressBook) -> Option<()> {
+        self.db.update_legacy_address_books(vec![(user_id, address_book)]).await
     }
 
     /// Log out the given user from the state.
@@ -278,14 +168,6 @@ impl ApiState {
     pub async fn user_logout(&self, user: &AuthenticatedUserInfo) -> Option<()> {
         let token_id = user.access_token.to_base64();
         self.db.delete_session(&token_id).await;
-
-        let remaining = self.db.count_user_sessions(&user.user_id).await;
-        if remaining == 0 {
-            let mut state_address_books = self.address_books.write().await;
-            if let Some(abi) = state_address_books.get_mut(&user.user_id) {
-                abi.remove_after_flush = true;
-            }
-        }
 
         Some(())
     }
@@ -1205,42 +1087,37 @@ mod tests {
         assert_eq!(name, Some("admin".to_string()));
     }
 
-    #[tokio::test]
-    async fn address_book_set_and_get() {
-        let state = test_state().await;
-        let user_id: UserId = vec![1, 2, 3];
-        let ab = AddressBook {
-            ab: "test data".to_string(),
-            ..Default::default()
-        };
-        state
-            .set_user_address_book(user_id.clone(), ab)
-            .await;
-        let result = state.get_user_address_book(user_id).await;
-        assert!(result.is_some());
-        assert_eq!(result.unwrap().ab, "test data");
+    async fn admin_id(state: &ApiState) -> UserId {
+        state.db.find_user_by_name("admin").await.1.unwrap().0
+    }
+
+    fn book(ab: &str) -> AddressBook {
+        AddressBook { ab: ab.to_string(), ..Default::default() }
     }
 
     #[tokio::test]
-    async fn address_book_update_marks_modified() {
+    async fn address_book_set_and_get() {
         let state = test_state().await;
-        let user_id: UserId = vec![1, 2, 3];
-        let ab1 = AddressBook {
-            ab: "v1".to_string(),
-            ..Default::default()
-        };
-        state
-            .set_user_address_book(user_id.clone(), ab1)
-            .await;
-        let ab2 = AddressBook {
-            ab: "v2".to_string(),
-            ..Default::default()
-        };
-        state
-            .set_user_address_book(user_id.clone(), ab2)
-            .await;
-        let result = state.get_user_address_book(user_id).await;
-        assert_eq!(result.unwrap().ab, "v2");
+        let user = admin_id(&state).await;
+        state.set_user_address_book(user.clone(), book("test data")).await.unwrap();
+        assert_eq!(state.get_user_address_book(user).await.unwrap().ab, "test data");
+    }
+
+    #[tokio::test]
+    async fn address_book_writes_are_seen_by_another_pod_at_once() {
+        let (a, b) = two_pods().await;
+        let user = admin_id(&a).await;
+        a.set_user_address_book(user.clone(), book("v1")).await.unwrap();
+        assert_eq!(b.get_user_address_book(user.clone()).await.unwrap().ab, "v1", "the first write is saved");
+        assert_eq!(a.get_user_address_book(user.clone()).await.unwrap().ab, "v1");
+        b.set_user_address_book(user.clone(), book("v2")).await.unwrap();
+        assert_eq!(a.get_user_address_book(user).await.unwrap().ab, "v2");
+    }
+
+    #[tokio::test]
+    async fn address_book_write_failure_is_reported() {
+        let state = test_state().await;
+        assert!(state.set_user_address_book(vec![1, 2, 3], book("x")).await.is_none());
     }
 
     #[tokio::test]
@@ -1384,13 +1261,6 @@ mod tests {
         assert_eq!(state.oidc_complete_callback("c", "code").await, Some(("/ui/login".to_string(), None)));
         assert!(state.get_oidc_session("c".into()).await.is_none());
         assert!(state.oidc_complete_callback("missing", "code").await.is_none());
-    }
-
-    #[tokio::test]
-    async fn maintenance_runs_without_error() {
-        let state = test_state().await;
-        state.maintenance().await;
-        state.check_maintenance().await;
     }
 
     #[tokio::test]
