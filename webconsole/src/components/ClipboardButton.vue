@@ -15,7 +15,7 @@ This website use:
         :id="`btn${uniqueId}`">
         <img :id="`img${uniqueId}`" class="inline-block w-5 h-5 ml-2 cursor-pointer" src="@/assets/clippy.svg"
             :alt="props.altMsg" />
-        <div :id="`tp${uniqueId}`" role="tooltip"
+        <div ref="tooltipRef" :id="`tp${uniqueId}`" role="tooltip"
             class="absolute z-10 invisible inline-block px-3 py-2 text-sm font-medium text-white transition-opacity duration-300 bg-gray-900 rounded-lg shadow-sm opacity-0 tooltip dark:bg-gray-700">
             {{ props.msg }}
             <div class="tooltip-arrow" data-popper-arrow></div>
@@ -25,7 +25,7 @@ This website use:
 <script setup lang="ts">
 import { onMounted, ref } from 'vue';
 import { generateUniqueId } from '@/utilities/viteHelper';
-import { initFlowbite } from 'flowbite'
+import { Tooltip } from 'flowbite'
 import ClipboardJS from 'clipboard';
 export interface Props {
     msg?: string
@@ -39,9 +39,17 @@ const props = withDefaults(defineProps<Props>(), {
 const uniqueId = generateUniqueId();
 const spanRef = ref<HTMLSpanElement | null>(null);
 const btnRef = ref<HTMLButtonElement | null>(null);
+const tooltipRef = ref<HTMLDivElement | null>(null);
+
+let tooltip: Tooltip | null = null;
 
 onMounted(() => {
-    initFlowbite();
+    // Created on first click: initFlowbite() or a Popper per row at mount stalls long tables.
+    btnRef.value?.addEventListener('click', () => {
+        if (tooltip) return;
+        tooltip = new Tooltip(tooltipRef.value, btnRef.value, { triggerType: 'click' });
+        tooltip.show();
+    });
     let clipboard = new ClipboardJS(btnRef.value);
     clipboard.on('success', function (e) {
         console.log('Copied !');
