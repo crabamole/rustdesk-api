@@ -102,6 +102,19 @@ fn is_migrate_error(e: &DbError) -> bool {
     e.downcast_ref::<sqlx::migrate::MigrateError>().is_some()
 }
 
+/// Runs one audit write without waiting for the WAL flush: a database crash may lose the last
+/// audit rows, never corrupt them, and connection setup no longer waits on the disk.
+async fn execute_async_commit<'q>(
+    pool: &PgPool,
+    query: sqlx::query::Query<'q, sqlx::Postgres, sqlx::postgres::PgArguments>,
+) -> Result<sqlx::postgres::PgQueryResult, sqlx::Error> {
+    let mut tx = pool.begin().await?;
+    sqlx::query("SET LOCAL synchronous_commit = off").execute(&mut *tx).await?;
+    let res = query.execute(&mut *tx).await?;
+    tx.commit().await?;
+    Ok(res)
+}
+
 impl Database {
     /// One attempt: connect and apply migrations.
     pub async fn new(url: &str) -> Result<Self, DbError> {
@@ -1753,7 +1766,7 @@ impl Database {
         note: Option<&str>,
         info: &str,
     ) -> Option<bool> {
-        let res = sqlx::query(
+        let res = execute_async_commit(&self.pool, sqlx::query(
             "INSERT INTO audit_conn (guid, type, remote, local, note, info) VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT DO NOTHING",
         )
         .bind(guid)
@@ -1762,7 +1775,7 @@ impl Database {
         .bind(local)
         .bind(note)
         .bind(info)
-        .execute(&self.pool)
+        )
         .await
         .ok()?;
         Some(res.rows_affected() == 1)
@@ -1792,9 +1805,9 @@ impl Database {
             "UPDATE audit_conn SET end_time = {} WHERE guid = $1",
             now_expr
         );
-        sqlx::query(&sql)
+        execute_async_commit(&self.pool, sqlx::query(&sql)
             .bind(guid)
-            .execute(&self.pool)
+            )
             .await
             .ok()?;
         Some(())
@@ -1802,14 +1815,14 @@ impl Database {
 
     /// Spec §4: the random session id is the viewer's only proof of participation.
     pub async fn set_audit_conn_note_by_session(&self, id: &str, session_id: u64, note: &str) -> Option<()> {
-        let res = sqlx::query(
+        let res = execute_async_commit(&self.pool, sqlx::query(
             "UPDATE audit_conn SET note = $3 WHERE guid = (SELECT guid FROM audit_conn \
              WHERE remote = $1 AND info::jsonb->>'session_id' = $2 ORDER BY created_at DESC LIMIT 1)",
         )
         .bind(id.as_bytes())
         .bind(session_id.to_string())
         .bind(note)
-        .execute(&self.pool)
+        )
         .await
         .map_err(|e| log::error!("set_audit_conn_note_by_session error: {e:?}"))
         .ok()?;
@@ -1842,11 +1855,11 @@ impl Database {
     }
 
     pub async fn set_audit_conn_note_by_guid(&self, guid: &[u8], note: &str, caller: &[u8]) -> Result<bool, sqlx::Error> {
-        let res = sqlx::query("UPDATE audit_conn SET note = $2 WHERE guid = $1 AND (\"user\" IS NULL OR \"user\" = $3)")
+        let res = execute_async_commit(&self.pool, sqlx::query("UPDATE audit_conn SET note = $2 WHERE guid = $1 AND (\"user\" IS NULL OR \"user\" = $3)")
             .bind(guid)
             .bind(note)
             .bind(caller)
-            .execute(&self.pool)
+            )
             .await?;
         Ok(res.rows_affected() > 0)
     }
@@ -1879,7 +1892,7 @@ impl Database {
     }
 
     pub async fn end_open_audit_conns(&self, id: &str, uuid: &str, conn_id: i64, except: &[u8]) -> Option<()> {
-        sqlx::query(
+        execute_async_commit(&self.pool, sqlx::query(
             "UPDATE audit_conn SET end_time = to_char(NOW(), 'YYYY-MM-DD HH24:MI:SS.MS') \
              WHERE remote = $1 AND end_time IS NULL \
              AND info::jsonb->>'uuid' = $2 AND (info::jsonb->>'conn_id')::bigint = $3 AND guid <> $4",
@@ -1888,7 +1901,7 @@ impl Database {
         .bind(uuid)
         .bind(conn_id)
         .bind(except)
-        .execute(&self.pool)
+        )
         .await
         .ok()?;
         Some(())
@@ -1897,7 +1910,7 @@ impl Database {
     /// Ends the device's open rows whose connection is not in its heartbeat's `alive` list
     /// (spec §10); rows younger than `grace_secs` may predate the heartbeat's snapshot.
     pub async fn end_audit_conns_not_alive(&self, id: &str, uuid: &str, alive: &[i64], grace_secs: i64) -> Option<()> {
-        sqlx::query(
+        execute_async_commit(&self.pool, sqlx::query(
             "UPDATE audit_conn SET end_time = to_char(NOW(), 'YYYY-MM-DD HH24:MI:SS.MS') \
              WHERE remote = $1 AND end_time IS NULL AND info::jsonb->>'uuid' = $2 \
              AND NOT ((info::jsonb->>'conn_id')::bigint = ANY($3)) \
@@ -1907,7 +1920,7 @@ impl Database {
         .bind(uuid)
         .bind(alive)
         .bind(grace_secs as f64)
-        .execute(&self.pool)
+        )
         .await
         .map_err(|e| log::error!("end_audit_conns_not_alive error: {e:?}"))
         .ok()?;
@@ -1922,14 +1935,14 @@ impl Database {
         controller_id: Option<&str>,
         patch: &str,
     ) -> Option<()> {
-        sqlx::query(
+        execute_async_commit(&self.pool, sqlx::query(
             "UPDATE audit_conn SET type = $2, local = $3, info = (info::jsonb || $4::jsonb)::text WHERE guid = $1",
         )
         .bind(guid)
         .bind(conn_type)
         .bind(controller_id.map(str::as_bytes))
         .bind(patch)
-        .execute(&self.pool)
+        )
         .await
         .ok()?;
         Some(())
@@ -1963,7 +1976,7 @@ impl Database {
         user: Option<&[u8]>,
     ) -> Option<()> {
         let is_file_i: i8 = if is_file { 1 } else { 0 };
-        sqlx::query(
+        execute_async_commit(&self.pool, sqlx::query(
             "INSERT INTO audit_file (guid, remote, local, type, path, is_file, info, \"user\") VALUES ($1, $2, $3, $4, $5, $6, $7, $8) ON CONFLICT DO NOTHING",
         )
         .bind(guid)
@@ -1974,7 +1987,7 @@ impl Database {
         .bind(is_file_i as i16)
         .bind(info)
         .bind(user)
-        .execute(&self.pool)
+        )
         .await
         .ok()?;
         Some(())
@@ -2037,10 +2050,10 @@ impl Database {
     }
 
     pub async fn set_audit_conn_user(&self, guid: &[u8], user: &[u8]) -> Option<()> {
-        sqlx::query("UPDATE audit_conn SET \"user\" = $2 WHERE guid = $1")
+        execute_async_commit(&self.pool, sqlx::query("UPDATE audit_conn SET \"user\" = $2 WHERE guid = $1")
             .bind(guid)
             .bind(user)
-            .execute(&self.pool)
+            )
             .await
             .map_err(|e| log::error!("set_audit_conn_user error: {e:?}"))
             .ok()?;
@@ -2055,7 +2068,7 @@ impl Database {
         user: Option<&[u8]>,
         device: Option<&[u8]>,
     ) -> Option<()> {
-        sqlx::query(
+        execute_async_commit(&self.pool, sqlx::query(
             "INSERT INTO audit_alarm (guid, type, info, \"user\", device) VALUES ($1, $2, $3, $4, $5) ON CONFLICT DO NOTHING",
         )
         .bind(guid)
@@ -2063,7 +2076,7 @@ impl Database {
         .bind(info)
         .bind(user)
         .bind(device)
-        .execute(&self.pool)
+        )
         .await
         .ok()?;
         Some(())
@@ -2085,16 +2098,16 @@ impl Database {
 
     /// Stores a ref minted for `user`; refs a day old are dropped, a connection uses its ref within seconds.
     pub async fn insert_audit_conn_ref(&self, conn_ref: &str, user: &[u8], target: &str) -> Option<()> {
-        sqlx::query("DELETE FROM audit_conn_ref WHERE created_at < now() - interval '1 day'")
-            .execute(&self.pool)
+        execute_async_commit(&self.pool, sqlx::query("DELETE FROM audit_conn_ref WHERE created_at < now() - interval '1 day'")
+            )
             .await
             .map_err(|e| log::error!("insert_audit_conn_ref purge error: {e:?}"))
             .ok()?;
-        sqlx::query("INSERT INTO audit_conn_ref (ref, \"user\", target) VALUES ($1, $2, $3)")
+        execute_async_commit(&self.pool, sqlx::query("INSERT INTO audit_conn_ref (ref, \"user\", target) VALUES ($1, $2, $3)")
             .bind(conn_ref)
             .bind(user)
             .bind(target)
-            .execute(&self.pool)
+            )
             .await
             .map_err(|e| log::error!("insert_audit_conn_ref error: {e:?}"))
             .ok()?;
@@ -2149,7 +2162,7 @@ impl Database {
     }
 
     pub async fn insert_audit_login(&self, r: &utils::LoginRecord) -> Option<()> {
-        sqlx::query(
+        execute_async_commit(&self.pool, sqlx::query(
             "INSERT INTO audit_login (outcome, detail, client, \"user\", user_name, rustdesk_id, hostname, os, ip) \
              VALUES ($1, $2, $3, (SELECT guid FROM \"user\" WHERE oidc_sub = $4), $5, $6, $7, $8, $9)",
         )
@@ -2162,7 +2175,7 @@ impl Database {
         .bind(&r.hostname)
         .bind(&r.os)
         .bind(&r.ip)
-        .execute(&self.pool)
+        )
         .await
         .map_err(|e| log::error!("insert_audit_login error: {e:?}"))
         .ok()?;
@@ -3379,6 +3392,20 @@ mod tests {
             .await
             .unwrap();
     }
+
+    db_test!(audit_writes_skip_the_wal_flush_without_leaking_it, |db| {
+        sqlx::query("CREATE TABLE commit_mode (v text)").execute(&db.pool).await.unwrap();
+        super::execute_async_commit(&db.pool, sqlx::query("INSERT INTO commit_mode SELECT current_setting('synchronous_commit')"))
+            .await
+            .unwrap();
+        let used: String = sqlx::query_scalar("SELECT v FROM commit_mode").fetch_one(&db.pool).await.unwrap();
+        assert_eq!(used, "off");
+        // SET LOCAL ends with the transaction: other writes on these connections stay synchronous.
+        for _ in 0..5 {
+            let now: String = sqlx::query_scalar("SHOW synchronous_commit").fetch_one(&db.pool).await.unwrap();
+            assert_eq!(now, "on");
+        }
+    });
 
     db_test!(get_peers_empty, |db| {
         let (total, peers) = db.get_peers(None, None, 0, 100).await.unwrap();

@@ -42,7 +42,9 @@ its status against RustDesk Pro.
   probes; `/readyz` does not check the database, which every pod shares: while it is down, requests
   fail fast and recover with it. On SIGTERM the server fails `/readyz` but keeps
   serving until no request has arrived for 5 s (at most 25 s), then finishes in-flight
-  requests and exits; a second SIGTERM or SIGINT stops it at once. Each replica opens up to
+  requests and exits; a second SIGTERM or SIGINT stops it at once. Audit records
+  are committed without waiting for the disk flush, so a database crash can lose the last few of
+  them; everything else is committed normally. Each replica opens up to
   `MAX_DATABASE_CONNECTIONS` connections.
 
 ## Deploying
