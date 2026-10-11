@@ -38,6 +38,12 @@ use utils::UserListResponse;
 
 use base64::prelude::{Engine as _, BASE64_STANDARD};
 
+/// `%q%` for LIKE/ILIKE, with the user's own `%`, `_` and `\` matched literally.
+fn like_contains(q: &str) -> String {
+    let escaped = q.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_");
+    format!("%{escaped}%")
+}
+
 use uuid::Uuid;
 
 #[derive(Clone)]
@@ -963,20 +969,32 @@ impl Database {
         Some(())
     }
 
+    /// One page of users ordered by name; `name`/`email` are LIKE patterns, `q` a substring of either.
     pub async fn get_all_users(
         &self,
         name: Option<&str>,
         email: Option<&str>,
-        current: u32,
-        page_size: u32,
-    ) -> Option<Vec<UserListResponse>> {
-        let email_filter = email.unwrap_or("%").to_string();
-        let name_filter = name.unwrap_or("%").to_string();
-        let current = if current < 1 { 1 } else { current };
-        let offset = ((current - 1) * page_size) as i32;
-        let page_size = page_size as i32;
-
-        let res = sqlx::query(
+        q: Option<&str>,
+        status: Option<i16>,
+        offset: i64,
+        limit: i64,
+    ) -> Option<(i64, Vec<UserListResponse>)> {
+        const WHERE: &str = r#"WHERE "user".name LIKE $1
+                AND ($2::text IS NULL OR "user".email LIKE $2)
+                AND ($3::text IS NULL OR "user".name ILIKE $3 OR "user".email ILIKE $3)
+                AND ($4::smallint IS NULL OR "user".status = $4)"#;
+        let name_filter = name.unwrap_or("%");
+        let q = q.map(like_contains);
+        let total: i64 = sqlx::query_scalar(&format!(r#"SELECT count(*) FROM "user" {WHERE}"#))
+            .bind(name_filter)
+            .bind(email)
+            .bind(&q)
+            .bind(status)
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|e| log::error!("get_all_users count error: {e:?}"))
+            .ok()?;
+        let res = sqlx::query(&format!(
             r#"SELECT
                 "user".guid as id,
                 "user".status,
@@ -989,15 +1007,16 @@ impl Database {
                 "user"
                 LEFT JOIN grp
                     ON "user".grp = grp.guid
-            WHERE
-                "user".name LIKE $1
-                AND "user".email LIKE $2
-            LIMIT $3
-            OFFSET $4"#,
-        )
-        .bind(&name_filter)
-        .bind(&email_filter)
-        .bind(page_size)
+            {WHERE}
+            ORDER BY "user".name, "user".guid
+            LIMIT $5
+            OFFSET $6"#
+        ))
+        .bind(name_filter)
+        .bind(email)
+        .bind(&q)
+        .bind(status)
+        .bind(limit)
         .bind(offset)
         .fetch_all(&self.pool)
         .await;
@@ -1033,7 +1052,7 @@ impl Database {
             };
             users.push(user);
         }
-        Some(users)
+        Some((total, users))
     }
 
     pub async fn user_update(
@@ -1094,22 +1113,40 @@ impl Database {
         Some(())
     }
 
-    pub async fn get_all_peers(&self) -> Option<Vec<Peer>> {
-        let res = sqlx::query(
-            "SELECT guid, id, uuid, status, info, last_online FROM peer",
-        )
+    /// One page of peers ordered by ID; `q` is a substring of the ID or the reported hostname.
+    pub async fn get_peers(&self, q: Option<&str>, status: Option<i16>, offset: i64, limit: i64) -> Option<(i64, Vec<Peer>)> {
+        const WHERE: &str = "WHERE ($1::text IS NULL OR id ILIKE $1 \
+               OR COALESCE(NULLIF(info, ''), '{}')::jsonb->>'hostname' ILIKE $1) \
+             AND ($2::smallint IS NULL OR status = $2)";
+        let q = q.map(like_contains);
+        let total: i64 = sqlx::query_scalar(&format!("SELECT count(*) FROM peer {WHERE}"))
+            .bind(&q)
+            .bind(status)
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|e| log::error!("get_peers count error: {e:?}"))
+            .ok()?;
+        let res = sqlx::query(&format!(
+            "SELECT guid, id, uuid, status, info, last_online FROM peer {WHERE} ORDER BY id, guid LIMIT $3 OFFSET $4"
+        ))
+        .bind(&q)
+        .bind(status)
+        .bind(limit)
+        .bind(offset)
         .fetch_all(&self.pool)
         .await
+        .map_err(|e| log::error!("get_peers query error: {e:?}"))
         .ok()?;
 
         let mut peers: Vec<Peer> = Vec::new();
         for row in res {
             let guid_bytes: Vec<u8> = row.try_get::<Vec<u8>, _>("guid").unwrap_or_default();
             let uuid = guid_into_uuid(guid_bytes).unwrap_or("".to_string());
-            let info_str: String = row.try_get::<String, _>("info").unwrap_or("{}".to_string());
+            let info_str: String = row.try_get::<String, _>("info").unwrap_or_default();
+            let info_str = if info_str.is_empty() { "{}".to_string() } else { info_str };
             let peer_info = serde_json::from_str::<utils::PeerInfo>(&info_str);
             if peer_info.is_err() {
-                log::error!("get_all_peers error: {:?}", peer_info);
+                log::error!("get_peers error: {:?}", peer_info);
                 return None;
             }
             let peer_info = peer_info.unwrap();
@@ -1126,15 +1163,25 @@ impl Database {
                 strategy_name: "-".to_string(),
             });
         }
-        Some(peers)
+        Some((total, peers))
     }
 
-    pub async fn get_groups(&self, offset: u32, page_size: u32) -> Option<Vec<Group>> {
-        let res = sqlx::query(
-            "SELECT guid, team, name, note, created_at, info FROM grp ORDER BY created_at, guid LIMIT $1 OFFSET $2",
-        )
-        .bind(page_size as i32)
-        .bind(offset as i32)
+    /// One page of groups ordered by name; `q` is a substring of the name.
+    pub async fn get_groups(&self, q: Option<&str>, offset: i64, limit: i64) -> Option<(i64, Vec<Group>)> {
+        const WHERE: &str = "WHERE ($1::text IS NULL OR name ILIKE $1)";
+        let q = q.map(like_contains);
+        let total: i64 = sqlx::query_scalar(&format!("SELECT count(*) FROM grp {WHERE}"))
+            .bind(&q)
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|e| log::error!("get_groups count error: {e:?}"))
+            .ok()?;
+        let res = sqlx::query(&format!(
+            "SELECT guid, team, name, note, created_at, info FROM grp {WHERE} ORDER BY name, guid LIMIT $2 OFFSET $3"
+        ))
+        .bind(&q)
+        .bind(limit)
+        .bind(offset)
         .fetch_all(&self.pool)
         .await;
         if res.is_err() {
@@ -1162,7 +1209,7 @@ impl Database {
                 info: row.try_get::<String, _>("info").unwrap_or("{}".to_string()),
             });
         }
-        Some(groups)
+        Some((total, groups))
     }
 
     pub async fn delete_shared_address_book(&self, guid: &str) -> Option<()> {
@@ -3009,42 +3056,61 @@ mod tests {
     });
 
     db_test!(get_all_users_with_pagination, |db| {
-        db.add_user(
-            "user1".to_string(),
-            "u1@e.com".to_string(),
-            false,
-            "Default".to_string(),
-        )
-        .await;
-        db.add_user(
-            "user2".to_string(),
-            "u2@e.com".to_string(),
-            false,
-            "Default".to_string(),
-        )
-        .await;
-        let all = db.get_all_users(None, None, 1, 100).await;
-        assert!(all.is_some());
-        assert!(all.unwrap().len() >= 3);
+        for i in 1..=3 {
+            db.add_user(format!("user{i}"), format!("u{i}@e.com"), false, "Default".to_string()).await;
+        }
+        let (total, all) = db.get_all_users(None, None, None, None, 0, 100).await.unwrap();
+        assert_eq!(total, all.len() as i64);
+        assert!(total >= 4);
 
-        let page = db.get_all_users(None, None, 1, 1).await;
-        assert!(page.is_some());
-        assert_eq!(page.unwrap().len(), 1);
+        // Pages are disjoint, ordered by name, and each reports the full total.
+        let (t1, p1) = db.get_all_users(None, None, None, None, 0, 2).await.unwrap();
+        let (t2, p2) = db.get_all_users(None, None, None, None, 2, 2).await.unwrap();
+        assert_eq!((t1, t2), (total, total));
+        assert_eq!(p1.len(), 2);
+        let names: Vec<_> = p1.iter().chain(p2.iter()).map(|u| u.name.clone()).collect();
+        let expected: Vec<_> = all.iter().take(names.len()).map(|u| u.name.clone()).collect();
+        assert_eq!(names, expected);
+        let mut sorted = expected.clone();
+        sorted.sort();
+        assert_eq!(expected, sorted);
     });
 
     db_test!(get_all_users_with_name_filter, |db| {
-        let filtered = db.get_all_users(Some("admin"), None, 1, 100).await;
-        assert!(filtered.is_some());
-        let filtered = filtered.unwrap();
+        let (total, filtered) = db.get_all_users(Some("admin"), None, None, None, 0, 100).await.unwrap();
+        assert_eq!(total, 1);
         assert_eq!(filtered.len(), 1);
         // Seeded admin in 0001_initial.sql: status=1 (active), role=1 (admin).
         assert_eq!(filtered[0].status, 1);
         assert!(filtered[0].is_admin);
     });
 
-    db_test!(get_all_users_current_zero_defaults_to_one, |db| {
-        let result = db.get_all_users(None, None, 0, 100).await;
-        assert!(result.is_some());
+    db_test!(get_all_users_search_and_status, |db| {
+        db.add_user("Alice_Smith".to_string(), "alice@corp.example".to_string(), false, "Default".to_string()).await;
+        db.add_user("bob".to_string(), "bob@corp.example".to_string(), false, "Default".to_string()).await;
+        let (total, found) = db.get_all_users(None, None, Some("ALICE"), None, 0, 100).await.unwrap();
+        assert_eq!((total, found[0].name.as_str()), (1, "Alice_Smith"));
+        // `q` matches the email too, and its `_` is literal rather than a wildcard.
+        assert_eq!(db.get_all_users(None, None, Some("corp.example"), None, 0, 100).await.unwrap().0, 2);
+        assert_eq!(db.get_all_users(None, None, Some("e_S"), None, 0, 100).await.unwrap().0, 1);
+        assert_eq!(db.get_all_users(None, None, Some("e%S"), None, 0, 100).await.unwrap().0, 0);
+
+        let (_, bob) = db.find_user_by_name("bob").await;
+        db.user_change_status(&guid_into_uuid(bob.unwrap().0).unwrap(), 0).await;
+        let (_, enabled) = db.get_all_users(None, None, None, Some(1), 0, 100).await.unwrap();
+        assert!(enabled.iter().all(|u| u.status == 1));
+        assert!(!enabled.iter().any(|u| u.name == "bob"));
+        let (_, disabled) = db.get_all_users(None, None, None, Some(0), 0, 100).await.unwrap();
+        assert_eq!(disabled.iter().map(|u| u.name.as_str()).collect::<Vec<_>>(), ["bob"]);
+    });
+
+    db_test!(get_all_users_includes_users_without_email, |db| {
+        sqlx::query(r#"UPDATE "user" SET email = NULL WHERE name = 'admin'"#)
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        let (_, users) = db.get_all_users(None, None, None, None, 0, 100).await.unwrap();
+        assert!(users.iter().any(|u| u.name == "admin"));
     });
 
     db_test!(get_ab_personal_guid_for_admin, |db| {
@@ -3056,9 +3122,9 @@ mod tests {
     });
 
     db_test!(get_groups_returns_default, |db| {
-        let groups = db.get_groups(0, 100).await;
+        let groups = db.get_groups(None, 0, 100).await;
         assert!(groups.is_some());
-        let groups = groups.unwrap();
+        let groups = groups.unwrap().1;
         assert!(!groups.is_empty());
         assert!(groups.iter().any(|g| g.name == "Default"));
     });
@@ -3066,7 +3132,7 @@ mod tests {
     db_test!(create_and_get_group, |db| {
         let result = db.create_group("TestGroup", "Default", "A note").await;
         assert!(result.is_some());
-        let groups = db.get_groups(0, 100).await.unwrap();
+        let groups = db.get_groups(None, 0, 100).await.unwrap().1;
         let found = groups.iter().find(|g| g.name == "TestGroup");
         assert!(found.is_some());
         assert_eq!(found.unwrap().note, Some("A note".to_string()));
@@ -3074,7 +3140,7 @@ mod tests {
 
     db_test!(update_group, |db| {
         db.create_group("OldName", "Default", "old").await;
-        let groups = db.get_groups(0, 100).await.unwrap();
+        let groups = db.get_groups(None, 0, 100).await.unwrap().1;
         let group = groups.iter().find(|g| g.name == "OldName").unwrap();
         let result = db
             .update_group(&group.guid, "NewName", "Default", "new")
@@ -3087,7 +3153,7 @@ mod tests {
 
     db_test!(delete_group, |db| {
         db.create_group("ToDelete", "Default", "").await;
-        let groups = db.get_groups(0, 100).await.unwrap();
+        let groups = db.get_groups(None, 0, 100).await.unwrap().1;
         let group = groups.iter().find(|g| g.name == "ToDelete").unwrap();
         let result = db.delete_group(&group.guid).await;
         assert!(result.is_some());
@@ -3310,31 +3376,76 @@ mod tests {
         assert!(cpus.is_empty());
     });
 
-    db_test!(get_all_peers_empty, |db| {
-        let peers = db.get_all_peers().await;
-        assert!(peers.is_some());
-        assert!(peers.unwrap().is_empty());
+    async fn insert_peer(db: &Database, id: &str, status: i16, hostname: &str) {
+        let guid = Uuid::new_v4();
+        sqlx::query("INSERT INTO peer(guid, id, uuid, pk, status, info) VALUES ($1, $2, $1, ''::bytea, $3, $4)")
+            .bind(guid.as_bytes().to_vec())
+            .bind(id)
+            .bind(status)
+            .bind(serde_json::json!({ "hostname": hostname }).to_string())
+            .execute(&db.pool)
+            .await
+            .unwrap();
+    }
+
+    db_test!(get_peers_empty, |db| {
+        let (total, peers) = db.get_peers(None, None, 0, 100).await.unwrap();
+        assert_eq!(total, 0);
+        assert!(peers.is_empty());
     });
 
-    db_test!(get_all_peers_returns_status, |db| {
-        let guid = Uuid::new_v4();
-        sqlx::query(
-            "INSERT INTO peer(guid, id, uuid, pk, status, info) \
-             VALUES ($1, 'peer-status-test', $1, ''::bytea, 2, '{}')",
-        )
-        .bind(guid.as_bytes().to_vec())
-        .execute(&db.pool)
-        .await
-        .unwrap();
-
-        let peers = db.get_all_peers().await;
-        assert!(peers.is_some());
-        let peers = peers.unwrap();
+    db_test!(get_peers_returns_status, |db| {
+        insert_peer(&db, "peer-status-test", 2, "h").await;
+        let (_, peers) = db.get_peers(None, None, 0, 100).await.unwrap();
         let peer = peers
             .iter()
             .find(|p| p.id == "peer-status-test")
             .expect("inserted peer should be returned");
         assert_eq!(peer.status, 2, "status must round-trip from the smallint column");
+    });
+
+    db_test!(get_peers_pages_by_id, |db| {
+        for i in (0..25).rev() {
+            insert_peer(&db, &format!("p{i:02}"), 1, &format!("host-{i:02}")).await;
+        }
+        let mut seen = Vec::new();
+        for offset in (0..25).step_by(10) {
+            let (total, page) = db.get_peers(None, None, offset, 10).await.unwrap();
+            assert_eq!(total, 25);
+            seen.extend(page.into_iter().map(|p| p.id));
+        }
+        let expected: Vec<_> = (0..25).map(|i| format!("p{i:02}")).collect();
+        assert_eq!(seen, expected);
+        let (total, past_end) = db.get_peers(None, None, 30, 10).await.unwrap();
+        assert_eq!((total, past_end.len()), (25, 0));
+    });
+
+    db_test!(get_peers_search_and_status, |db| {
+        insert_peer(&db, "111", 1, "Finance-Laptop").await;
+        insert_peer(&db, "222", 1, "dev-box").await;
+        insert_peer(&db, "333", 0, "finance-desktop").await;
+        sqlx::query("INSERT INTO peer(guid, id, uuid, pk, info) VALUES ($1, '444', $1, ''::bytea, '')")
+            .bind(Uuid::new_v4().as_bytes().to_vec())
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        let ids = |r: Option<(i64, Vec<Peer>)>| r.unwrap().1.into_iter().map(|p| p.id).collect::<Vec<_>>();
+        assert_eq!(ids(db.get_peers(Some("finance"), None, 0, 100).await), ["111", "333"]);
+        assert_eq!(ids(db.get_peers(Some("22"), None, 0, 100).await), ["222"]);
+        assert_eq!(ids(db.get_peers(Some("finance"), Some(1), 0, 100).await), ["111"]);
+        // An empty `info` (no sysinfo yet) is listed, not an error.
+        assert_eq!(ids(db.get_peers(None, Some(1), 0, 100).await), ["111", "222", "444"]);
+    });
+
+    db_test!(get_groups_pages_and_search, |db| {
+        for name in ["Sales", "Finance", "Engineering"] {
+            db.create_group(name, "Default", "").await;
+        }
+        let (total, first) = db.get_groups(None, 0, 2).await.unwrap();
+        assert_eq!(total, 4);
+        assert_eq!(first.iter().map(|g| g.name.as_str()).collect::<Vec<_>>(), ["Default", "Engineering"]);
+        let (total, found) = db.get_groups(Some("nan"), 0, 10).await.unwrap();
+        assert_eq!((total, found[0].name.as_str()), (1, "Finance"));
     });
 
     db_test!(get_shared_address_books_for_admin, |db| {

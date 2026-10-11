@@ -2295,3 +2295,86 @@ issuer = "https://idp.example.com"
     let exit = tokio::time::timeout(std::time::Duration::from_secs(10), child.wait()).await;
     assert!(exit.is_ok(), "SIGTERM must stop the process during startup");
 }
+
+/// Pages through a list the way the native client does (`group_model.dart`): 100 per page until
+/// `current * pageSize >= total`, with `total` read from the first page.
+async fn client_pages(client: &Client, token: &str, path: &str, key: &str) -> Vec<String> {
+    let (mut current, mut total, mut items) = (0, 0, Vec::new());
+    loop {
+        current += 1;
+        let body: Value = client
+            .get(format!("{path}?current={current}&pageSize=100&accessible=&status=1"))
+            .header(auth_header(token))
+            .dispatch()
+            .await
+            .into_json()
+            .await
+            .unwrap();
+        if total == 0 {
+            total = body["total"].as_i64().unwrap();
+        }
+        items.extend(body["data"].as_array().unwrap().iter().map(|v| v[key].as_str().unwrap().to_string()));
+        if current * 100 >= total {
+            return items;
+        }
+    }
+}
+
+#[rocket::async_test]
+async fn test_peers_page_like_the_native_client() {
+    let (client, pool) = client_and_pool().await;
+    let token = login_admin(&client).await;
+    sqlx::query(
+        "INSERT INTO peer(guid, id, uuid, pk, status, info) \
+         SELECT decode(md5(i::text), 'hex'), 'dev' || lpad(i::text, 3, '0'), ''::bytea, ''::bytea, \
+                CASE WHEN i % 10 = 0 THEN 0 ELSE 1 END, json_build_object('hostname', 'host-' || i)::text \
+         FROM generate_series(1, 250) i",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let ids = client_pages(&client, &token, "/api/peers", "id").await;
+    let mut expected: Vec<String> = (1..=250).filter(|i| i % 10 != 0).map(|i| format!("dev{i:03}")).collect();
+    expected.sort();
+    assert_eq!(ids, expected, "every enabled peer exactly once, in ID order");
+
+    let body: Value = client.get("/api/peers?pageSize=5000&q=HOST-12").header(auth_header(&token))
+        .dispatch().await.into_json().await.unwrap();
+    // host-12 and host-120..129; pageSize is capped, total is not.
+    assert_eq!(body["total"], 11);
+    let body: Value = client.get("/api/peers?pageSize=5000").header(auth_header(&token))
+        .dispatch().await.into_json().await.unwrap();
+    assert_eq!((body["total"].as_i64(), body["data"].as_array().unwrap().len()), (Some(250), 250));
+    let body: Value = client.get("/api/peers").header(auth_header(&token))
+        .dispatch().await.into_json().await.unwrap();
+    assert_eq!(body["data"].as_array().unwrap().len(), 10, "10 per page by default");
+}
+
+#[rocket::async_test]
+async fn test_users_page_like_the_native_client() {
+    let (client, pool) = client_and_pool().await;
+    let token = login_admin(&client).await;
+    sqlx::query(
+        "INSERT INTO \"user\"(guid, name, email, status, grp, team, role) \
+         SELECT decode(md5('u' || i), 'hex'), 'user' || lpad(i::text, 3, '0'), 'user' || i || '@example.org', \
+                CASE WHEN i % 10 = 0 THEN 0 ELSE 1 END, g.guid, g.team, 0 \
+         FROM generate_series(1, 150) i, (SELECT guid, team FROM grp WHERE name = 'Default') g",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let names = client_pages(&client, &token, "/api/users", "name").await;
+    assert_eq!(names.len(), 136, "135 enabled users plus admin: {names:?}");
+    assert!(!names.iter().any(|n| n == "user010"), "disabled users are left out");
+    let mut unique = names.clone();
+    unique.dedup();
+    assert_eq!(unique, names);
+
+    let body: Value = client.get("/api/user-list?current=2&pageSize=100&q=USER1").header(auth_header(&token))
+        .dispatch().await.into_json().await.unwrap();
+    // user1, user10..19, user100..150 by name or email, disabled ones included.
+    assert_eq!(body["total"], 62);
+    assert_eq!(body["data"].as_array().unwrap().len(), 0, "page 2 of 1");
+}

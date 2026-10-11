@@ -483,15 +483,17 @@ impl ApiState {
         self.db.user_change_status(user, (!disable) as u32).await
     }
 
-    /// Get all users
+    /// One page of users and the total matching
     pub async fn get_all_users(
         &self,
         name: Option<&str>,
         email: Option<&str>,
-        current: u32,
-        page_size: u32,
-    ) -> Option<Vec<UserListResponse>> {
-        self.db.get_all_users(name, email, current, page_size).await
+        q: Option<&str>,
+        status: Option<i16>,
+        offset: i64,
+        limit: i64,
+    ) -> Option<(i64, Vec<UserListResponse>)> {
+        self.db.get_all_users(name, email, q, status, offset, limit).await
     }
 
     /// Update a user
@@ -503,14 +505,14 @@ impl ApiState {
         self.db.user_update(user_id, user_parameters).await
     }
 
-    /// Get all peers
-    pub async fn get_all_peers(&self) -> Option<Vec<Peer>> {
-        self.db.get_all_peers().await
+    /// One page of peers and the total matching
+    pub async fn get_peers(&self, q: Option<&str>, status: Option<i16>, offset: i64, limit: i64) -> Option<(i64, Vec<Peer>)> {
+        self.db.get_peers(q, status, offset, limit).await
     }
 
-    /// Get groups
-    pub async fn get_groups(&self, offset: u32, page_size: u32) -> Option<Vec<Group>> {
-        self.db.get_groups(offset, page_size).await
+    /// One page of groups and the total matching
+    pub async fn get_groups(&self, q: Option<&str>, offset: i64, limit: i64) -> Option<(i64, Vec<Group>)> {
+        self.db.get_groups(q, offset, limit).await
     }
 
     /// Get shared address books
@@ -1295,7 +1297,7 @@ mod tests {
     #[tokio::test]
     async fn get_groups() {
         let state = test_state().await;
-        let groups = state.get_groups(0, 100).await;
+        let groups = state.get_groups(None, 0, 100).await;
         assert!(groups.is_some());
     }
 
@@ -1303,7 +1305,7 @@ mod tests {
     async fn group_crud() {
         let state = test_state().await;
         state.create_group("G1", "Default", "note").await;
-        let groups = state.get_groups(0, 100).await.unwrap();
+        let groups = state.get_groups(None, 0, 100).await.unwrap().1;
         let g = groups.iter().find(|g| g.name == "G1").unwrap();
         state.update_group(&g.guid, "G2", "Default", "n2").await;
         let g2 = state.get_group(&g.guid).await.unwrap();
@@ -1313,11 +1315,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn get_all_peers_empty() {
+    async fn get_peers_empty() {
         let state = test_state().await;
-        let peers = state.get_all_peers().await;
-        assert!(peers.is_some());
-        assert!(peers.unwrap().is_empty());
+        let (total, peers) = state.get_peers(None, None, 0, 100).await.unwrap();
+        assert_eq!(total, 0);
+        assert!(peers.is_empty());
     }
 
     #[tokio::test]
@@ -1516,7 +1518,7 @@ mod tests {
     async fn get_all_users() {
         let state = test_state().await;
         let users = state
-            .get_all_users(None, None, 1, 100)
+            .get_all_users(None, None, None, None, 0, 100)
             .await;
         assert!(users.is_some());
     }

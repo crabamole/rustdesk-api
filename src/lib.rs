@@ -25,7 +25,6 @@ use std::path::PathBuf;
 use api::ActionResponse;
 use extended_json::ExtendedJson;
 use rocket::fairing::{Fairing, Info, Kind};
-use rocket::form::validate::Len;
 use rocket::http::{ContentType, Header, Status};
 use rocket::response::{Redirect, Responder};
 use rocket::{async_trait, delete, options, put, routes, uri};
@@ -597,6 +596,17 @@ fn is_valid_audit_created_at(s: &str) -> bool {
         && (20..23).all(digit)
 }
 
+/// `(offset, limit)` for the Pro paging parameters: pages from 1, 10 rows by default, at most 1000.
+fn page(current: Option<i64>, page_size: Option<i64>) -> (i64, i64) {
+    let limit = page_size.unwrap_or(10).clamp(1, 1000);
+    (current.unwrap_or(1).max(1).saturating_sub(1).saturating_mul(limit), limit)
+}
+
+/// An empty query parameter means no filter.
+fn non_empty(v: Option<&str>) -> Option<&str> {
+    v.filter(|v| !v.is_empty())
+}
+
 /// Shared `current`/`pageSize`/`created_at` handling for `GET /api/audits/*` (audit-api-spec.md §9.1).
 fn audit_query(
     current: Option<i64>,
@@ -610,9 +620,9 @@ fn audit_query(
             return Err((Status::BadRequest, format!("invalid created_at {t:?}")));
         }
     }
-    let limit = page_size.unwrap_or(10).clamp(1, 1000);
+    let (offset, limit) = page(current, page_size);
     Ok(utils::AuditQuery {
-        offset: current.unwrap_or(1).max(1).saturating_sub(1).saturating_mul(limit),
+        offset,
         limit,
         created_at,
         pattern,
@@ -826,114 +836,71 @@ async fn sysinfo(state: &State<ApiState>, request: Json<utils::SystemInfo>) -> S
 
 /// # Get the List of Users
 ///
-/// This function is an API endpoint that allows an authenticated admin to retrieve a paginated list of users.
-/// It is tagged with "user" for OpenAPI documentation.
+/// Admin-only. One page of users ordered by name.
 ///
 /// ## Parameters
 ///
-/// - `current`: The current page number.  
+/// - `current`: page number, from 1 (default 1).
+/// - `pageSize`: users per page (default 10, at most 1000).
+/// - `email`: exact email.
+/// - `name`: exact name.
+/// - `q`: case-insensitive substring of the name or email.
 ///
-/// - `pageSize`: The number of users per page.  
+/// `total` counts every matching user, not just this page.
 ///
-/// - `email`: The email to filter the users by.  
-///
-/// - `name`: The name to filter the users by.  
-///
-/// ## Returns
-///
-/// If successful, this function returns a `Json<UserList>` object, which includes a success message, the total number of users, and the list of users.  <br>
-/// If no users are found, this function returns a `status::NotFound` error.  <br>
-///
-/// ## Errors
-///
-/// This function will return an error if no users are found.
-///
-/// # Example
-///
-/// GET /api/user-list?current=1&pageSize=10&email=test@test.com&name=Test
+/// GET /api/user-list?current=1&pageSize=10&q=alice
 #[openapi(tag = "user")]
 #[get(
-    "/api/user-list?<current>&<pageSize>&<email>&<name>",
+    "/api/user-list?<current>&<pageSize>&<email>&<name>&<q>",
     format = "application/json"
 )]
 async fn users(
     state: &State<ApiState>,
     _user: AuthenticatedAdmin,
-    current: u32,
-    #[allow(non_snake_case)] pageSize: u32,
+    current: Option<i64>,
+    #[allow(non_snake_case)] pageSize: Option<i64>,
     email: Option<&str>,
     name: Option<&str>,
+    q: Option<&str>,
 ) -> Result<Json<UserList>, status::NotFound<()>> {
     log::debug!("users");
-
-    let email = if email.is_some() && email.unwrap().is_empty() {
-        None
-    } else {
-        email
-    };
-    let res = state.get_all_users(name, email, current, pageSize).await;
-    if res.is_none() {
-        return Err(status::NotFound::<()>(()));
-    }
-    let response = UserList {
-        msg: "success".to_string(),
-        total: res.len() as u32,
-        data: res.unwrap(),
-    };
-
-    Ok(Json(response))
+    let (offset, limit) = page(current, pageSize);
+    let (total, data) = state
+        .get_all_users(non_empty(name), non_empty(email), non_empty(q), None, offset, limit)
+        .await
+        .ok_or(status::NotFound::<()>(()))?;
+    Ok(Json(UserList { msg: "success".to_string(), total: total as u32, data }))
 }
 
 /// # Get the List of Groups
 ///
-/// This function is an API endpoint that allows an authenticated admin to retrieve a paginated list of groups.
-/// It is tagged with "group" for OpenAPI documentation.
+/// Admin-only. One page of groups ordered by name.
 ///
 /// ## Parameters
 ///
-/// - `current`: The current page number.  
+/// - `current`: page number, from 1 (default 1).
+/// - `pageSize`: groups per page (default 10, at most 1000).
+/// - `q`: case-insensitive substring of the name.
 ///
-/// - `pageSize`: The number of groups per page.  
-///
-/// ## Returns
-///
-/// If successful, this function returns a `Json<GroupsResponse>` object, which includes a success message, the total number of groups, and the list of groups.  <br>
-/// If no groups are found, this function returns a `status::NotFound` error.  <br>
-///
-/// ## Errors
-///
-/// This function will return an error if no groups are found.
-///
-/// # Example
+/// `total` counts every matching group, not just this page.
 ///
 /// GET /api/groups?current=1&pageSize=10
 #[openapi(tag = "group")]
-#[get("/api/groups?<current>&<pageSize>", format = "application/json")]
+#[get("/api/groups?<current>&<pageSize>&<q>", format = "application/json")]
 async fn groups(
     state: &State<ApiState>,
     _user: AuthenticatedAdmin,
-    #[allow(unused_variables)] current: u32,
-    #[allow(non_snake_case, unused_variables)] pageSize: u32,
+    current: Option<i64>,
+    #[allow(non_snake_case)] pageSize: Option<i64>,
+    q: Option<&str>,
 ) -> Result<Json<GroupsResponse>, status::NotFound<()>> {
     log::debug!("groups");
-    let page_size = if pageSize < 1 {
-        u32::max_value()
-    } else {
-        pageSize
-    };
-    let offset = current.saturating_sub(1).saturating_mul(page_size);
-    let groups = state.get_groups(offset, page_size).await;
-    if groups.is_none() {
-        return Err(status::NotFound::<()>(()));
-    }
-    let groups = groups.unwrap();
-    let response = GroupsResponse {
-        msg: "success".to_string(),
-        total: groups.len() as u32,
-        data: groups,
-    };
-
-    Ok(Json(response))
+    let (offset, limit) = page(current, pageSize);
+    let (total, data) = state
+        .get_groups(non_empty(q), offset, limit)
+        .await
+        .ok_or(status::NotFound::<()>(()))?;
+    Ok(Json(GroupsResponse { msg: "success".to_string(), total: total as u32, data }))
 }
 
 /// # Get a Group
@@ -1074,42 +1041,36 @@ async fn group_delete(
 
 /// # Get Peers
 ///
-/// This function is an API endpoint that retrieves the list of all peers in the network.
-/// It is tagged with "peer" for OpenAPI documentation.
+/// One page of devices ordered by ID, for clients and the console.
 ///
 /// ## Parameters
 ///
-/// - none
+/// - `current`: page number, from 1 (default 1).
+/// - `pageSize`: devices per page (default 10, at most 1000).
+/// - `status`: only devices with this status (`1` = enabled).
+/// - `q`: case-insensitive substring of the ID or hostname.
 ///
-/// ## Returns
+/// `total` counts every matching device, not just this page.
 ///
-/// If successful, this function returns a `Json<PeersResponse>` object, which includes a success message, the total number of peers, and the list of peers.  <br>
-/// If no peers are found, this function returns a `status::NotFound` error.  <br>
-///
-/// ## Errors
-///
-/// This function will return an error if no peers are found.
-///
-/// # Example
-///
-/// GET /api/peers
+/// GET /api/peers?current=1&pageSize=100&status=1
 #[openapi(tag = "peer")]
-#[get("/api/peers", format = "application/json")]
+#[allow(non_snake_case)]
+#[get("/api/peers?<current>&<pageSize>&<status>&<q>", format = "application/json")]
 async fn peers(
     state: &State<ApiState>,
     _user: AuthenticatedUser,
+    current: Option<i64>,
+    pageSize: Option<i64>,
+    status: Option<i16>,
+    q: Option<&str>,
 ) -> Result<Json<PeersResponse>, status::NotFound<()>> {
     log::debug!("peers");
-    let peers = state.get_all_peers().await;
-
-    if peers.is_none() {
-        return Err(status::NotFound::<()>(()));
-    }
-    Ok(Json(PeersResponse {
-        msg: "success".to_string(),
-        total: peers.len() as u32,
-        data: peers.unwrap(),
-    }))
+    let (offset, limit) = page(current, pageSize);
+    let (total, data) = state
+        .get_peers(non_empty(q), status, offset, limit)
+        .await
+        .ok_or(status::NotFound::<()>(()))?;
+    Ok(Json(PeersResponse { msg: "success".to_string(), total: total as u32, data }))
 }
 
 /// # List viewer machines
@@ -1127,8 +1088,7 @@ async fn viewers(
     current: Option<i64>,
     pageSize: Option<i64>,
 ) -> Result<Json<utils::ViewerList>, (Status, String)> {
-    let limit = pageSize.unwrap_or(10).clamp(1, 1000);
-    let offset = current.unwrap_or(1).max(1).saturating_sub(1).saturating_mul(limit);
+    let (offset, limit) = page(current, pageSize);
     state
         .list_viewer_devices(offset, limit)
         .await
@@ -2360,47 +2320,33 @@ async fn oidc_get(
 
 /// # Get Users for client
 ///
-/// This function is an API endpoint that retrieves all users.
+/// One page of users ordered by name, for clients.
 ///
 /// ## Parameters
 ///
-/// - `current`: The current page number for pagination. This parameter is currently unused.
+/// - `current`: page number, from 1 (default 1).
+/// - `pageSize`: users per page (default 10, at most 1000).
+/// - `status`: only users with this status (`1` = enabled).
 ///
-/// - `pageSize`: The number of items per page for pagination. This parameter is currently unused.
+/// `total` counts every matching user, not just this page.
 ///
-/// - `accessible`: A boolean value indicating whether the user is accessible. This parameter is currently unused.
-///
-/// - `status`: The status of the user. This parameter is currently unused.
-///
-/// ## Returns
-///
-/// If successful, this function returns a `Json<UserList>` object containing the users.
+/// GET /api/users?current=1&pageSize=100&status=1
 #[openapi(tag = "user")]
-#[get(
-    "/api/users?<current>&<pageSize>&<accessible>&<status>",
-    format = "application/json"
-)]
+#[get("/api/users?<current>&<pageSize>&<status>", format = "application/json")]
 async fn users_client(
     state: &State<ApiState>,
     _user: AuthenticatedUser,
-    current: u32,
-    #[allow(non_snake_case, unused_variables)] pageSize: u32,
-    #[allow(unused_variables)] accessible: Option<bool>,
-    #[allow(unused_variables)] status: Option<u32>,
+    current: Option<i64>,
+    #[allow(non_snake_case)] pageSize: Option<i64>,
+    status: Option<i16>,
 ) -> Result<Json<UserList>, status::NotFound<()>> {
     log::debug!("users");
-
-    let res = state.get_all_users(None, None, current, pageSize).await;
-    if res.is_none() {
-        return Err(status::NotFound::<()>(()));
-    }
-    let response = UserList {
-        msg: "success".to_string(),
-        total: res.len() as u32,
-        data: res.unwrap(),
-    };
-
-    Ok(Json(response))
+    let (offset, limit) = page(current, pageSize);
+    let (total, data) = state
+        .get_all_users(None, None, None, status, offset, limit)
+        .await
+        .ok_or(status::NotFound::<()>(()))?;
+    Ok(Json(UserList { msg: "success".to_string(), total: total as u32, data }))
 }
 
 /// # Retrieve the server version
