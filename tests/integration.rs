@@ -2326,26 +2326,26 @@ async fn test_peers_page_like_the_native_client() {
     let token = login_admin(&client).await;
     sqlx::query(
         "INSERT INTO peer(guid, id, uuid, pk, status, info) \
-         SELECT decode(md5(i::text), 'hex'), 'dev' || lpad(i::text, 3, '0'), ''::bytea, ''::bytea, \
+         SELECT decode(md5(i::text), 'hex'), 'dev' || lpad(i::text, 4, '0'), ''::bytea, ''::bytea, \
                 CASE WHEN i % 10 = 0 THEN 0 ELSE 1 END, json_build_object('hostname', 'host-' || i)::text \
-         FROM generate_series(1, 250) i",
+         FROM generate_series(1, 5000) i",
     )
     .execute(&pool)
     .await
     .unwrap();
 
     let ids = client_pages(&client, &token, "/api/peers", "id").await;
-    let mut expected: Vec<String> = (1..=250).filter(|i| i % 10 != 0).map(|i| format!("dev{i:03}")).collect();
+    let mut expected: Vec<String> = (1..=5000).filter(|i| i % 10 != 0).map(|i| format!("dev{i:04}")).collect();
     expected.sort();
     assert_eq!(ids, expected, "every enabled peer exactly once, in ID order");
 
     let body: Value = client.get("/api/peers?pageSize=5000&q=HOST-12").header(auth_header(&token))
         .dispatch().await.into_json().await.unwrap();
-    // host-12 and host-120..129; pageSize is capped, total is not.
-    assert_eq!(body["total"], 11);
+    // host-12, host-120..129 and host-1200..1299; pageSize is capped, total is not.
+    assert_eq!(body["total"], 111);
     let body: Value = client.get("/api/peers?pageSize=5000").header(auth_header(&token))
         .dispatch().await.into_json().await.unwrap();
-    assert_eq!((body["total"].as_i64(), body["data"].as_array().unwrap().len()), (Some(250), 250));
+    assert_eq!((body["total"].as_i64(), body["data"].as_array().unwrap().len()), (Some(5000), 1000));
     let body: Value = client.get("/api/peers").header(auth_header(&token))
         .dispatch().await.into_json().await.unwrap();
     assert_eq!(body["data"].as_array().unwrap().len(), 10, "10 per page by default");
