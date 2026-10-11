@@ -10,11 +10,17 @@ async fn fresh_db() -> String {
     state::testing::fresh_database_url().await
 }
 
+/// Test server config; PUBLIC_URL is required, as in production.
+fn base_figment() -> rocket::figment::Figment {
+    rocket::Config::figment()
+        .merge(("port", 0))
+        .merge(("public_url", "https://rustdesk.example.com"))
+        .merge(("secret_key", "hPRYyVRiMyxpw5sBB1XeCMN1kFsDCqKvBi2QJxBVHQk="))
+}
+
 async fn test_client() -> (Client, ()) {
     let db_url = fresh_db().await;
-    let figment = rocket::Config::figment()
-        .merge(("port", 0))
-        .merge(("secret_key", "hPRYyVRiMyxpw5sBB1XeCMN1kFsDCqKvBi2QJxBVHQk="));
+    let figment = base_figment();
     let rocket = build_rocket_with_db(figment, &db_url).await;
     (Client::tracked(rocket).await.unwrap(), ())
 }
@@ -1283,18 +1289,14 @@ impl oauth2::oauth_provider::OAuthProvider for FailingIdp {
 /// A client on a fresh database that keeps no cookies between requests.
 async fn untracked_client() -> Client {
     let db_url = fresh_db().await;
-    let figment = rocket::Config::figment()
-        .merge(("port", 0))
-        .merge(("secret_key", "hPRYyVRiMyxpw5sBB1XeCMN1kFsDCqKvBi2QJxBVHQk="));
+    let figment = base_figment();
     Client::untracked(build_rocket_with_db(figment, &db_url).await).await.unwrap()
 }
 
 /// A client plus a way to run SQL on its database.
 async fn client_and_pool() -> (Client, sqlx::PgPool) {
     let db_url = fresh_db().await;
-    let figment = rocket::Config::figment()
-        .merge(("port", 0))
-        .merge(("secret_key", "hPRYyVRiMyxpw5sBB1XeCMN1kFsDCqKvBi2QJxBVHQk="));
+    let figment = base_figment();
     let client = Client::untracked(build_rocket_with_db(figment, &db_url).await).await.unwrap();
     (client, sqlx::PgPool::connect(&db_url).await.unwrap())
 }
@@ -1303,9 +1305,7 @@ async fn client_and_pool() -> (Client, sqlx::PgPool) {
 async fn two_pods() -> (Client, Client) {
     let db_url = fresh_db().await;
     let figment = || {
-        rocket::Config::figment()
-            .merge(("port", 0))
-            .merge(("secret_key", "hPRYyVRiMyxpw5sBB1XeCMN1kFsDCqKvBi2QJxBVHQk="))
+        base_figment()
     };
     let a = Client::untracked(build_rocket_with_db(figment(), &db_url).await).await.unwrap();
     let b = Client::untracked(build_rocket_with_db(figment(), &db_url).await).await.unwrap();
@@ -1314,10 +1314,7 @@ async fn two_pods() -> (Client, Client) {
 
 async fn public_url_client(public_url: &str) -> Client {
     let db_url = fresh_db().await;
-    let figment = rocket::Config::figment()
-        .merge(("port", 0))
-        .merge(("public_url", public_url))
-        .merge(("secret_key", "hPRYyVRiMyxpw5sBB1XeCMN1kFsDCqKvBi2QJxBVHQk="));
+    let figment = base_figment().merge(("public_url", public_url));
     Client::untracked(build_rocket_with_db(figment, &db_url).await).await.unwrap()
 }
 
@@ -1343,10 +1340,38 @@ fn idp_redirect_uri(body: &Value) -> String {
 }
 
 #[rocket::async_test]
-async fn test_oidc_callback_url_keeps_host_port() {
+async fn test_oidc_callback_url_ignores_request_host_headers() {
     let client = untracked_client().await;
-    let body = oidc_auth_as(&client, "rustdesk.example.com:30080", LOOPBACK).await;
-    assert_eq!(idp_redirect_uri(&body), "http://rustdesk.example.com:30080/api/oidc/callback");
+    let uuid = base64::Engine::encode(&base64::prelude::BASE64_STANDARD, "device-uuid");
+    let challenge = oauth2::pkce::s256_challenge(VERIFIER);
+    let body: Value = client
+        .post("/api/oidc/auth")
+        .header(ContentType::JSON)
+        .header(Header::new("Host", "evil.example.net"))
+        .header(Header::new("X-Forwarded-Host", "evil.example.net"))
+        .header(Header::new("X-Forwarded-Proto", "http"))
+        .body(format!(r#"{{"op":"dex","id":"123456789","uuid":"{uuid}","deviceInfo":{{"name":"d","os":"windows","type":"client"}},"returnTo":"https://evil.example.net/ui/login","codeChallenge":"{challenge}"}}"#))
+        .dispatch()
+        .await
+        .into_json()
+        .await
+        .unwrap();
+    assert_eq!(body["code"], "RETURN_TO_ERROR", "a page on the forged host is not our login page");
+    let body = oidc_auth_as(&client, "evil.example.net", LOOPBACK).await;
+    assert_eq!(idp_redirect_uri(&body), "https://rustdesk.example.com/api/oidc/callback");
+}
+
+#[rocket::async_test]
+async fn test_server_without_public_url_does_not_start() {
+    let figment = rocket::Config::figment()
+        .merge(("port", 0))
+        .merge(("secret_key", "hPRYyVRiMyxpw5sBB1XeCMN1kFsDCqKvBi2QJxBVHQk="));
+    let rocket = build_rocket_with_db(figment, &fresh_db().await).await;
+    match Client::untracked(rocket).await {
+        Ok(_) => panic!("ignition must fail without PUBLIC_URL"),
+        // Reading the kind also marks the error handled, which Rocket requires.
+        Err(e) => assert!(matches!(e.kind(), rocket::error::ErrorKind::FailedFairings(f) if f.iter().any(|f| f.name == "PUBLIC_URL")), "{e:?}"),
+    }
 }
 
 #[rocket::async_test]
@@ -2285,6 +2310,7 @@ issuer = "https://idp.example.com"
         .args(["serve", "--address", "127.0.0.1", "--port", &port.to_string(), "--log_level", "off"])
         .env("DATABASE_URL", "postgres://u:p@127.0.0.1:1/db")
         .env("OAUTH2_CONFIG_FILE", &providers)
+        .env("PUBLIC_URL", "https://rustdesk.example.com")
         .kill_on_drop(true)
         .spawn()
         .unwrap();
@@ -2385,4 +2411,34 @@ async fn test_users_page_like_the_native_client() {
     // user1, user10..19, user100..150 by name or email, disabled ones included.
     assert_eq!(body["total"], 62);
     assert_eq!(body["data"].as_array().unwrap().len(), 0, "page 2 of 1");
+}
+
+#[tokio::test]
+async fn test_serve_without_public_url_exits() {
+    let providers = std::env::temp_dir().join(format!("oauth2-{}.toml", uuid::Uuid::new_v4()));
+    std::fs::write(
+        &providers,
+        r#"[[provider]]
+provider = "Oauth2"
+authorization_url = "https://idp.example.com/authorize"
+token_exchange_url = "http://127.0.0.1:1/token"
+app_id = "rustdesk"
+app_secret = "s3cret"
+scope = "openid email profile"
+op_auth_string = "oidc/corp"
+op = "corp"
+issuer = "https://idp.example.com"
+"#,
+    )
+    .unwrap();
+    let out = tokio::process::Command::new(env!("CARGO_BIN_EXE_rustdesk-api"))
+        .args(["serve", "--address", "127.0.0.1", "--port", &free_port().to_string(), "--log_level", "off"])
+        .env("DATABASE_URL", "postgres://u:p@127.0.0.1:1/db")
+        .env("OAUTH2_CONFIG_FILE", &providers)
+        .env_remove("PUBLIC_URL")
+        .output()
+        .await
+        .unwrap();
+    assert_eq!(out.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("PUBLIC_URL is required"), "{out:?}");
 }

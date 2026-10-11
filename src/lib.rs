@@ -49,7 +49,7 @@ use utils::PeersCountResponse;
 use utils::Platform;
 use utils::UpdateGoupRequest;
 use utils::{
-    self, get_host::{get_host, parse_public_url}, AbPeer, AbPeersResponse, AbPersonal, AbSettingsResponse,
+    self, get_host::parse_public_url, AbPeer, AbPeersResponse, AbPersonal, AbSettingsResponse,
     AbSharedProfilesResponse, AbTag, BearerAuthToken, OidcAuthRequest, OidcAuthUrl, OidcResponse,
     OidcState, OidcUser, OidcUserInfo, OidcUserStatus,
 };
@@ -245,8 +245,8 @@ pub async fn build_rocket(figment: Figment, db_url: &str) -> Rocket<Build> {
     build_rocket_with_db(figment, db_url).await
 }
 
-/// The server's external origin from `PUBLIC_URL`; `None` derives it from request headers.
-pub struct PublicUrl(pub Option<String>);
+/// The server's external origin from `PUBLIC_URL`; required, since request headers can be forged.
+pub struct PublicUrl(pub String);
 
 pub async fn build_rocket_with_db(figment: Figment, db_path: &str) -> Rocket<Build> {
     let state = ApiState::new_with_db(db_path).await;
@@ -263,8 +263,14 @@ pub async fn build_rocket_with_db(figment: Figment, db_path: &str) -> Rocket<Bui
             livez,
             readyz,
         ])
-        .manage(state)
-        .manage(PublicUrl(public_url));
+        .manage(state);
+    let rocket = match public_url {
+        Some(url) => rocket.manage(PublicUrl(url)),
+        None => rocket.attach(rocket::fairing::AdHoc::try_on_ignite("PUBLIC_URL", |r| async {
+            log::error!("PUBLIC_URL is required: the origin clients reach this server at, e.g. https://rustdesk.example.com");
+            Err(r)
+        })),
+    };
 
     #[cfg(feature = "ui")]
     {
@@ -1273,7 +1279,7 @@ async fn oidc_auth(
     }
     let uuid_decoded = uuid_decoded.unwrap();
     let uuid_client = String::from_utf8(uuid_decoded).unwrap();
-    let host = public_url.0.clone().unwrap_or_else(|| get_host(headers.clone()));
+    let host = public_url.0.clone();
     if !is_loopback_return(&request.return_to) && !is_own_login_page(&request.return_to, &host) {
         log::warn!("oidc_auth: rejected returnTo {:?}", request.return_to);
         return Json(OidcAuthUrl { url: "".to_string(), code: "RETURN_TO_ERROR".to_string() });
@@ -2812,6 +2818,7 @@ mod tests {
     async fn test_client() -> Client {
         let db_url = state::testing::fresh_database_url().await;
         let figment = rocket::Config::figment()
+            .merge(("public_url", "https://rustdesk.example.com"))
             .merge(("secret_key", "wJq+s/xvwZjmMX3ev0p4gQTs9Ej5wt0brsk3ZGhoBTg="));
         let rocket = build_rocket_with_db(figment, &db_url).await;
         Client::tracked(rocket).await.unwrap()

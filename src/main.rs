@@ -62,12 +62,16 @@ async fn main() -> Result<(), rocket::Error> {
         eprintln!("{msg}");
         std::process::exit(2);
     }
+    // Callback URLs and login-page checks use this origin; request headers can be forged.
     let public_url = match std::env::var("PUBLIC_URL").ok().filter(|v| !v.is_empty()) {
-        Some(v) => Some(utils::get_host::parse_public_url(&v).unwrap_or_else(|msg| {
+        Some(v) => utils::get_host::parse_public_url(&v).unwrap_or_else(|msg| {
             eprintln!("{msg}");
             std::process::exit(2);
-        })),
-        None => None,
+        }),
+        None => {
+            eprintln!("PUBLIC_URL is required: the origin clients reach this server at, e.g. https://rustdesk.example.com");
+            std::process::exit(2);
+        }
     };
     let log_level = match log_level.to_lowercase().as_str() {
         "off" => LogLevel::Off,
@@ -90,10 +94,7 @@ async fn main() -> Result<(), rocket::Error> {
         .merge(("shutdown.grace", 15))
         .merge(("ident", format!("rustdesk-api/{}", env!("CARGO_PKG_VERSION"))))
         .merge(("limits", Limits::new().limit("json", 2.mebibytes())));
-    let figment = match public_url {
-        Some(url) => figment.merge(("public_url", url)),
-        None => figment,
-    };
+    let figment = figment.merge(("public_url", public_url));
 
     #[cfg(all(unix, feature = "coverage"))]
     {
