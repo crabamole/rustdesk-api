@@ -57,7 +57,7 @@ The image is `ghcr.io/crabamole/rustdesk-api`.
 | `OAUTH2_CONFIG_FILE` | OIDC provider file (default `./oauth2.toml`); the server refuses to start if it is missing or invalid |
 | `OAUTH2_CREATE_USER` | `1`: new OIDC users are active at once. Otherwise they wait for an admin to activate them |
 | `PUBLIC_URL` | The origin users open (e.g. `https://rustdesk.example.com`, no path). Set it behind a proxy that rewrites `Host`; otherwise the origin comes from the request headers |
-| `TRUSTED_PROXIES` | Comma-separated CIDRs whose `X-Real-IP` / `X-Forwarded-For` are believed. Empty trusts every peer; an invalid value stops startup |
+| `TRUSTED_PROXIES` | Comma-separated CIDRs of the proxies whose `X-Forwarded-For` is believed (the ingress gateway's pods and any proxy in front of it). Empty trusts none, so the connecting address is recorded; `X-Real-IP` is not read. An invalid value stops startup |
 | `MAX_DATABASE_CONNECTIONS` | Pool size (default 4 per CPU) |
 
 ### OIDC provider

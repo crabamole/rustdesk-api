@@ -1422,8 +1422,7 @@ fn is_s256_challenge(c: &str) -> bool {
     c.len() == 43 && c.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
 }
 
-/// Proxies whose forwarded headers are believed; empty trusts every peer, as before the setting existed.
-/// `None` (an invalid setting) trusts no peer, so a typo cannot open header spoofing.
+/// Proxies whose X-Forwarded-For is believed; empty trusts none. `None` (an invalid setting) trusts none too.
 fn trusted_proxies() -> Option<&'static [ipnetwork::IpNetwork]> {
     static NETS: std::sync::OnceLock<Option<Vec<ipnetwork::IpNetwork>>> = std::sync::OnceLock::new();
     NETS.get_or_init(|| {
@@ -1453,19 +1452,16 @@ fn client_ip(
     let Some(trusted) = trusted else {
         return peer.map(|ip| ip.to_string());
     };
-    let is_trusted = |ip: std::net::IpAddr| trusted.is_empty() || trusted.iter().any(|n| n.contains(ip));
-    if peer.map_or(trusted.is_empty(), is_trusted) {
+    let is_trusted = |ip: std::net::IpAddr| trusted.iter().any(|n| n.contains(ip));
+    if peer.is_some_and(is_trusted) {
         let parse = |v: &str| v.trim().parse::<std::net::IpAddr>().ok();
-        if let Some(ip) = headers.get("x-real-ip").and_then(|v| parse(v)) {
-            return Some(ip.to_string());
-        }
         // Proxies append; the last entry not added by a trusted proxy is the client.
         if let Some(chain) = headers.get("x-forwarded-for") {
             let mut last_trusted = None;
             for entry in chain.split(',').rev() {
                 // Entries left of an unparsable hop were not written by a proxy we can vouch for.
                 let Some(ip) = parse(entry) else { break };
-                if trusted.is_empty() || !is_trusted(ip) {
+                if !is_trusted(ip) {
                     return Some(ip.to_string());
                 }
                 last_trusted = Some(ip);
@@ -2718,23 +2714,23 @@ mod tests {
     }
 
     #[test]
-    fn client_ip_prefers_x_real_ip() {
-        let h = headers(&[("x-real-ip", "203.0.113.5"), ("x-forwarded-for", "198.51.100.1, 10.0.0.1")]);
-        assert_eq!(client_ip(&h, Some("10.244.1.2:4000".parse().unwrap()), Some(&[])).as_deref(), Some("203.0.113.5"));
+    fn client_ip_ignores_x_real_ip_even_from_a_trusted_peer() {
+        let h = headers(&[("x-real-ip", "203.0.113.5")]);
+        let peer = Some("10.244.1.2:4000".parse().unwrap());
+        assert_eq!(client_ip(&h, peer, Some(&nets(&["10.244.0.0/16"]))).as_deref(), Some("10.244.1.2"));
     }
 
     #[test]
     fn client_ip_ignores_headers_from_an_untrusted_peer() {
-        let h = headers(&[("x-real-ip", "203.0.113.5")]);
+        let h = headers(&[("x-forwarded-for", "203.0.113.5")]);
         let peer = Some("192.0.2.9:4000".parse().unwrap());
         assert_eq!(client_ip(&h, peer, Some(&nets(&["10.244.0.0/16"]))).as_deref(), Some("192.0.2.9"));
     }
 
     #[test]
-    fn client_ip_trusts_headers_from_a_trusted_peer() {
-        let h = headers(&[("x-real-ip", "203.0.113.5")]);
-        let peer = Some("10.244.1.2:4000".parse().unwrap());
-        assert_eq!(client_ip(&h, peer, Some(&nets(&["10.244.0.0/16"]))).as_deref(), Some("203.0.113.5"));
+    fn client_ip_with_an_empty_trusted_list_trusts_no_peer() {
+        let h = headers(&[("x-forwarded-for", "203.0.113.5")]);
+        assert_eq!(client_ip(&h, Some("10.244.1.2:4000".parse().unwrap()), Some(&[])).as_deref(), Some("10.244.1.2"));
     }
 
     #[test]
@@ -2747,7 +2743,7 @@ mod tests {
     #[test]
     fn client_ip_falls_back_to_the_peer() {
         assert_eq!(client_ip(&headers(&[]), Some("192.0.2.9:4000".parse().unwrap()), Some(&[])).as_deref(), Some("192.0.2.9"));
-        assert_eq!(client_ip(&headers(&[("x-real-ip", "not an ip")]), Some("192.0.2.9:4000".parse().unwrap()), Some(&[])).as_deref(), Some("192.0.2.9"));
+        assert_eq!(client_ip(&headers(&[("x-forwarded-for", "not an ip")]), Some("192.0.2.9:4000".parse().unwrap()), Some(&[])).as_deref(), Some("192.0.2.9"));
     }
 
     #[test]
@@ -2775,9 +2771,9 @@ mod tests {
 
     #[test]
     fn client_ip_without_a_remote_ignores_headers_when_proxies_are_configured() {
-        let h = headers(&[("x-real-ip", "203.0.113.5")]);
+        let h = headers(&[("x-forwarded-for", "203.0.113.5")]);
         assert_eq!(client_ip(&h, None, Some(&nets(&["10.244.0.0/16"]))), None);
-        assert_eq!(client_ip(&h, None, Some(&[])).as_deref(), Some("203.0.113.5"));
+        assert_eq!(client_ip(&h, None, Some(&[])), None);
     }
 
     #[test]

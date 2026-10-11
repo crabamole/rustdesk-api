@@ -3,8 +3,15 @@ use rocket::local::asynchronous::Client;
 use rustdesk_api::build_rocket_with_db;
 use serde_json::Value;
 
+/// A fresh database; also trusts the test peer as a proxy, set before any request reads TRUSTED_PROXIES.
+async fn fresh_db() -> String {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| std::env::set_var("TRUSTED_PROXIES", "10.244.0.0/16"));
+    state::testing::fresh_database_url().await
+}
+
 async fn test_client() -> (Client, ()) {
-    let db_url = state::testing::fresh_database_url().await;
+    let db_url = fresh_db().await;
     let figment = rocket::Config::figment()
         .merge(("port", 0))
         .merge(("secret_key", "hPRYyVRiMyxpw5sBB1XeCMN1kFsDCqKvBi2QJxBVHQk="));
@@ -1275,7 +1282,7 @@ impl oauth2::oauth_provider::OAuthProvider for FailingIdp {
 
 /// A client on a fresh database that keeps no cookies between requests.
 async fn untracked_client() -> Client {
-    let db_url = state::testing::fresh_database_url().await;
+    let db_url = fresh_db().await;
     let figment = rocket::Config::figment()
         .merge(("port", 0))
         .merge(("secret_key", "hPRYyVRiMyxpw5sBB1XeCMN1kFsDCqKvBi2QJxBVHQk="));
@@ -1284,7 +1291,7 @@ async fn untracked_client() -> Client {
 
 /// A client plus a way to run SQL on its database.
 async fn client_and_pool() -> (Client, sqlx::PgPool) {
-    let db_url = state::testing::fresh_database_url().await;
+    let db_url = fresh_db().await;
     let figment = rocket::Config::figment()
         .merge(("port", 0))
         .merge(("secret_key", "hPRYyVRiMyxpw5sBB1XeCMN1kFsDCqKvBi2QJxBVHQk="));
@@ -1294,7 +1301,7 @@ async fn client_and_pool() -> (Client, sqlx::PgPool) {
 
 /// Two api-server instances on one database, as two pods behind one Service.
 async fn two_pods() -> (Client, Client) {
-    let db_url = state::testing::fresh_database_url().await;
+    let db_url = fresh_db().await;
     let figment = || {
         rocket::Config::figment()
             .merge(("port", 0))
@@ -1306,7 +1313,7 @@ async fn two_pods() -> (Client, Client) {
 }
 
 async fn public_url_client(public_url: &str) -> Client {
-    let db_url = state::testing::fresh_database_url().await;
+    let db_url = fresh_db().await;
     let figment = rocket::Config::figment()
         .merge(("port", 0))
         .merge(("public_url", public_url))
@@ -1374,7 +1381,8 @@ async fn start_login_as(client: &Client, device_name: &str, device_type: &str, r
         .header(ContentType::JSON)
         .header(Header::new("Host", "rustdesk.example.com"))
         .header(Header::new("X-Forwarded-Proto", "https"))
-        .header(Header::new("X-Real-IP", "198.51.100.20"))
+        .header(Header::new("X-Forwarded-For", "198.51.100.20"))
+        .remote("10.244.1.2:4000".parse().unwrap())
         .body(format!(r#"{{"op":"dex","id":"123456789","uuid":"{uuid}","deviceInfo":{{"name":"{device_name}","os":"windows","type":"{device_type}"}},"returnTo":"{return_to}","codeChallenge":"{challenge}"}}"#))
         .dispatch()
         .await;
