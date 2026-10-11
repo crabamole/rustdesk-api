@@ -31,26 +31,22 @@ Machines whose RustDesk client logged in but never registered: they can connect 
           </tbody>
         </table>
       </div>
-      <div v-if="total > PAGE_SIZE" class="mt-3 flex items-center justify-end gap-3 text-sm">
-        <button :disabled="current <= 1" class="px-3 py-1 border rounded disabled:opacity-40" @click="load(current - 1)">Previous</button>
-        <span>Page {{ current }} of {{ pages }}</span>
-        <button :disabled="current >= pages" class="px-3 py-1 border rounded disabled:opacity-40" @click="load(current + 1)">Next</button>
-      </div>
+      <ListPager :current="current" :total="total" :page-size="PAGE_SIZE" @go="load" />
     </div>
   </section>
 </template>
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue';
+import { onMounted, ref } from 'vue';
 import { PeerApi, ViewerDevice } from '@/api';
 import { useUserStore } from '@/stores/sctgDeskStore';
 import { formatTime } from '@/utilities/audit';
+import ListPager from './ListPager.vue';
 
 const PAGE_SIZE = 20;
 const userStore = useUserStore();
 const viewers = ref([] as ViewerDevice[]);
 const total = ref(0);
 const current = ref(1);
-const pages = computed(() => Math.max(1, Math.ceil(total.value / PAGE_SIZE)));
 
 function load(page: number) {
   new PeerApi(userStore.api_configuration).viewers(page, PAGE_SIZE).then((response) => {

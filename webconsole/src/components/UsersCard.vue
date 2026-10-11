@@ -12,6 +12,8 @@ This website use:
         <div class="container mx-auto">
             <div class="flex flex-wrap -mx-4">
                 <div class="w-full px-4">
+                    <input v-model="list.q.value" type="search" placeholder="Search name or email"
+                    class="mb-3 block w-full max-w-sm rounded-md border border-gray-300 p-2 text-sm" />
                     <div class="max-w-full overflow-x-auto">
                         <table class="w-full table-auto">
                             <thead class="bg-slate-400">
@@ -74,7 +76,7 @@ This website use:
                                 </tr>
                             </thead>
                             <tbody>
-                                <tr v-for="(user, index) in users" :key="user.guid">
+                                <tr v-for="user in list.items.value" :key="user.guid">
                                     <td
                                         class="text-dark border-b border-l border-[#E8E8E8] bg-[#F3F6FF] dark:bg-dark-3 dark:border-dark dark:text-dark-7 py-5 px-2 text-center text-base font-medium">
                                         <ClipboardButton msg="Copied !">{{ user.guid }}</ClipboardButton>
@@ -117,6 +119,7 @@ This website use:
                             </tbody>
                         </table>
                     </div>
+                    <ListPager :current="list.current.value" :total="list.total.value" :page-size="list.pageSize" @go="list.load" />
                 </div>
             </div>
         </div>
@@ -130,28 +133,22 @@ This website use:
 import { Menu, MenuButton, MenuItem, MenuItems } from '@headlessui/vue'
 import { UserApi, EnableUserRequest, DeleteUserRequest } from '@/api';
 import { useUserStore } from '@/stores/sctgDeskStore';
-import { onBeforeMount, onMounted, onUpdated, ref } from 'vue';
+import { onBeforeMount, ref } from 'vue';
 import AddUser from '@/components/AddUser.vue';
 import EditUser from '@/components/EditUser.vue';
-import { getUsers } from '@/utilities/api';
+import { listUsers } from '@/utilities/api';
+import { usePagedList } from '@/utilities/paged';
 import ClipboardButton from './ClipboardButton.vue';
+import ListPager from './ListPager.vue';
 const userStore = useUserStore();
-const users = ref([]);
+const list = usePagedList(listUsers);
 const bModalAddUser = ref(false);
 const bModalEditUser = ref(false);
 const editUserName = ref("");
 const editUserUuid = ref("");
 
 onBeforeMount(() => {
-    refresh_users();
-});
-
-onUpdated(() => {
-
-});
-
-onMounted(() => {
-
+    list.load(1);
 });
 
 /**
@@ -205,9 +202,7 @@ function toggle_user(username: string, uuid: string, activate: boolean): void {
  * @return {void} This function does not return anything directly but updates the users value asynchronously.
  */
 function refresh_users(): void {
-    getUsers().then((data) => {
-        users.value = data;
-    });
+    list.load();
 }
 
 /**

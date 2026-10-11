@@ -39,12 +39,7 @@ This website use:
         <div>
             <label for="grp" class="block text-sm font-medium leading-6 text-gray-900">Group</label>
             <div class="mt-2">
-                <select v-model="grp" id="grp" name="grp" required
-                    class="block w-full rounded-md border-0 py-1.5 text-gray-900 shadow-sm ring-1 ring-inset ring-gray-300 placeholder:text-gray-400 focus:ring-2 focus:ring-inset focus:ring-indigo-600 sm:text-sm sm:leading-6">
-                    <option v-for="group in groups" :key="group.guid" :value="group.name">
-                        {{ group.name }}
-                    </option>
-                </select>
+                <SearchSelect v-model="grp" id="grp" :search="searchGroupNames" />
             </div>
         </div>
     </Modal>
@@ -52,7 +47,9 @@ This website use:
 <script setup lang="ts">
 import { onMounted } from 'vue';
 import { ref } from 'vue';
-import { UpdateUserRequest, UserApi, GroupApi, Group, UserListResponse } from '@/api';
+import { UpdateUserRequest, UserApi, UserListResponse } from '@/api';
+import { searchGroupNames } from '@/utilities/api';
+import SearchSelect from './SearchSelect.vue';
 import Modal from '@/components/Modal.vue';
 import { useUserStore } from '@/stores/sctgDeskStore';
 
@@ -62,8 +59,6 @@ const email = ref("");
 const note = ref("");
 const is_admin = ref(false);
 const grp = ref("");
-const groups = ref([] as Group[]);
-const groupApi = new GroupApi(userStore.api_configuration);
 
 /**
  * Props
@@ -85,10 +80,6 @@ const props = withDefaults(defineProps<{
     })
 
 onMounted(() => {
-    groupApi.groups(1, 4294967295).then((response) => {
-        groups.value = response.data.data;
-        grp.value = groups.value[0].name;
-    });
     getUser(props.username).then((data) => {
         console.log(data);
         if (data.length > 0) {
@@ -137,7 +128,7 @@ function getUser(username: string): Promise<UserListResponse[]> {
     console.log(`getUser: ${username}`);
     const userApi = new UserApi(userStore.api_configuration);
     return new Promise<UserListResponse[]>((resolve, reject) => {
-        userApi.users(1, 4294967295, undefined, username).then((response) => {
+        userApi.users(1, 1, undefined, username).then((response) => {
             if (response.status == 200 && response.data.msg == "success") {
                 resolve(response.data.data);
             }

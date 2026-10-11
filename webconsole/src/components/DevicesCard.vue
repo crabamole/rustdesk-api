@@ -12,6 +12,8 @@ This website use:
           <div class="container mx-auto">
             <div class="flex flex-wrap -mx-4">
               <div class="w-full px-4">
+                <input v-model="list.q.value" type="search" placeholder="Search ID or hostname"
+                  class="mb-3 block w-full max-w-sm rounded-md border border-gray-300 p-2 text-sm" />
                 <div class="max-w-full overflow-x-auto">
                   <table class="w-full table-auto">
                     <thead class="bg-slate-400">
@@ -40,7 +42,7 @@ This website use:
                       </tr>
                     </thead>
                     <tbody>
-                      <tr v-for="peer in peers" :key="peer.guid">
+                      <tr v-for="peer in list.items.value" :key="peer.guid">
                         <td
                           class="text-dark border-b border-l border-[#E8E8E8] bg-[#F3F6FF] dark:bg-dark-3 dark:border-dark dark:text-dark-7 py-5 px-2 text-center text-base font-medium">
                           <ClipboardButton>{{ peer.id }}</ClipboardButton>
@@ -76,6 +78,7 @@ This website use:
                     </tbody>
                   </table>
                 </div>
+                <ListPager :current="list.current.value" :total="list.total.value" :page-size="list.pageSize" @go="list.load" />
               </div>
             </div>
           </div>
@@ -83,42 +86,13 @@ This website use:
         <!-- ====== Table Section End -->
 </template>
 <script setup lang="ts">
-import { Peer, PeerApi } from '@/api';
-import { useUserStore } from '@/stores/sctgDeskStore';
-import { onMounted, ref } from 'vue';
-import { useRouter } from 'vue-router';
+import { onMounted } from 'vue';
 import ClipboardButton from './ClipboardButton.vue';
+import ListPager from './ListPager.vue';
+import { listPeers } from '@/utilities/api';
+import { usePagedList } from '@/utilities/paged';
 
-const userStore = useUserStore();
-const router = useRouter();
+const list = usePagedList(listPeers);
 
-const peers = ref([] as Peer[]);
-
-onMounted(() => {
-  getPeers().then((data) => {
-    peers.value = data;
-  });
-});
-
-/**
- * Retrieves a list of peers from the PeerApi.
- *
- * @return {Promise<Peer[]>} A promise that resolves to an array of Peer objects.
- */
-function getPeers(): Promise<Peer[]> {
-  const peerApi = new PeerApi(userStore.api_configuration);
-  return new Promise<Peer[]>((resolve, reject) => {
-    peerApi.peers().then((response) => {
-      if (response.status == 200 && response.data.msg == "success") {
-        resolve(response.data.data);
-      }
-      else {
-        resolve([] as Peer[]);
-      }
-    }).catch((error) => {
-      console.error(error);
-      resolve([] as Peer[]);
-    });
-  });
-}
+onMounted(() => list.load(1));
 </script>

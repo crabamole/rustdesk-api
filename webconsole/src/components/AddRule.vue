@@ -9,15 +9,9 @@ This website use:
 <template>
     <Modal @modal-ok="addRule()" @modal-cancel="cancel" :title="`Add rule for ${props.ab}`">
         <label for="selectedUser" class="block text-sm font-medium text-gray-700">User</label>
-        <select id="selectedUser" v-model="selectedUser" class="w-full p-2 border border-gray-300 rounded-md">
-            <option selected value="">Null</option>
-            <option v-for="user in users" :key="user.guid" :value="user.guid">{{ user.name }}</option>
-        </select>
+        <SearchSelect id="selectedUser" v-model="selectedUser" null-label="Null" :search="searchUsers" />
         <label for="selectedGroup" class="block text-sm font-medium text-gray-700">Group</label>
-        <select id="selectedGroup" v-model="selectedGroup" class="w-full p-2 border border-gray-300 rounded-md">
-            <option selected value="">Null</option>
-            <option v-for="group in groups" :key="group.guid" :value="group.guid">{{ group.name }}</option>
-        </select>
+        <SearchSelect id="selectedGroup" v-model="selectedGroup" null-label="Null" :search="searchGroups" />
         <label for="selectedRights" class="block text-sm font-medium text-gray-700">Rights</label>
         <select if="selectedRights" v-model="selectedRights" class="w-full p-2 border border-gray-300 rounded-md">
             <option v-for="right in rights" :key="right.value" :value="right.value">{{ right.name }}</option>
@@ -27,11 +21,12 @@ This website use:
     </Modal>
 </template>
 <script setup lang="ts">
-import { onMounted, ref } from 'vue';
+import { ref } from 'vue';
 import Modal from './Modal.vue';
 import { useUserStore } from '@/stores/sctgDeskStore';
-import { getGroups, getUsers } from '@/utilities/api';
-import { AddressBookApi, Group, UserListResponse, AbRuleAddRequest } from '@/api';
+import { listGroups, listUsers, type Option } from '@/utilities/api';
+import { AddressBookApi, AbRuleAddRequest } from '@/api';
+import SearchSelect from './SearchSelect.vue';
 
 const errorSpan = ref<HTMLSpanElement | null>(null);
 const berrorSpanVisible = ref(false);
@@ -49,8 +44,6 @@ const rights = [
 const configuration = useUserStore().api_configuration;
 
 const emit = defineEmits(['addRuleOK', 'addRuleCancel'])
-const users = ref<UserListResponse[]>([]);
-const groups = ref<Group[]>([]);
 const selectedUser = ref<string>('');
 const selectedGroup = ref<string>('');
 const selectedRights = ref<string>('0');
@@ -86,13 +79,12 @@ function cancel(): void {
     emit('addRuleCancel');
 }
 
-onMounted(() => {
-    getUsers().then((_users) => {
-        users.value = _users;
-    });
-    getGroups().then((_groups) => {
-        groups.value = _groups;
-    });
-});
+function searchUsers(q: string): Promise<Option[]> {
+    return listUsers(1, 50, q).then((page) => page.data.map((u) => ({ value: u.guid, label: u.name })));
+}
+
+function searchGroups(q: string): Promise<Option[]> {
+    return listGroups(1, 50, q).then((page) => page.data.map((g) => ({ value: g.guid, label: g.name })));
+}
 
 </script>

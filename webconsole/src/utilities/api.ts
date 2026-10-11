@@ -8,7 +8,7 @@ This website use:
 */
 
 import { Configuration, SoftwareApi, UserApi, UserListResponse } from "@/api";
-import { GroupApi, Group } from '@/api';
+import { GroupApi, Group, PeerApi, Peer } from '@/api';
 import { useUserStore } from "@/stores/sctgDeskStore";
 
 /**
@@ -18,51 +18,44 @@ import { useUserStore } from "@/stores/sctgDeskStore";
  */
 export const basePath = window.location.origin == "http://localhost:5173" ? "http://127.0.0.1:21114" : window.location.origin;
 
-/**
- * Retrieves the list of users from the API.
- *
- * @return {Promise<UserListResponse[]>} A promise that resolves to the list of users.
- */
-export function getUsers(): Promise<UserListResponse[]> {
-    const userStore = useUserStore();
-    const userApi = new UserApi(userStore.api_configuration);
-    return new Promise<UserListResponse[]>((resolve, reject) => {
-        userApi.usersClient(1, 4294967295).then((response) => {
-            if (response.status == 200 && response.data.msg == "success") {
-                resolve(response.data.data);
-            }
-            else {
-                resolve([] as UserListResponse[]);
-            }
-        }).catch((error) => {
-            console.error(error);
-            resolve([] as UserListResponse[]);
-        });
-    });
+/** One page of a list endpoint; `total` counts every match. */
+export interface Page<T> {
+    total: number;
+    data: T[];
 }
 
-/**
- * Retrieves a list of groups from the server.
- *
- * @return {Promise<Group[]>} A promise that resolves with an array of Group objects representing the groups.
- */
-export function getGroups(): Promise<Group[]> {
-    const userStore = useUserStore();
-    const groupApi = new GroupApi(userStore.api_configuration);
-    return new Promise<Group[]>((resolve, reject) => {
-        groupApi.groups(1, 4294967295).then((response) => {
-            if (response.status == 200 && response.data.msg == "success") {
-                resolve(response.data.data);
-            }
-            else {
-                resolve([] as Group[]);
-            }
-        }).catch((error) => {
+function page<T>(request: Promise<{ data: { total: number, data: T[] } }>): Promise<Page<T>> {
+    return request.then((response) => ({ total: response.data.total, data: response.data.data }))
+        .catch((error) => {
             console.error(error);
-            resolve([] as Group[]);
+            return { total: 0, data: [] as T[] };
         });
-    }
-    );
+}
+
+/** One page of users ordered by name; `q` matches the name or email. */
+export function listUsers(current: number, pageSize: number, q = ""): Promise<Page<UserListResponse>> {
+    return page(new UserApi(useUserStore().api_configuration).users(current, pageSize, undefined, undefined, q || undefined));
+}
+
+/** One page of groups ordered by name; `q` matches the name. */
+export function listGroups(current: number, pageSize: number, q = ""): Promise<Page<Group>> {
+    return page(new GroupApi(useUserStore().api_configuration).groups(current, pageSize, q || undefined));
+}
+
+/** A choice in a search-backed select. */
+export interface Option {
+    value: string;
+    label: string;
+}
+
+/** Up to 50 groups matching `q`, valued by name as user requests expect. */
+export function searchGroupNames(q: string): Promise<Option[]> {
+    return listGroups(1, 50, q).then((page) => page.data.map((g) => ({ value: g.name, label: g.name })));
+}
+
+/** One page of devices ordered by ID; `q` matches the ID or hostname. */
+export function listPeers(current: number, pageSize: number, q = ""): Promise<Page<Peer>> {
+    return page(new PeerApi(useUserStore().api_configuration).peers(current, pageSize, undefined, q || undefined));
 }
 
 /**
