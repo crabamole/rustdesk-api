@@ -13,10 +13,7 @@
 //
 // You should have received a copy of the Affero General Public License
 // along with SCTGDesk. If not, see <https://www.gnu.org/licenses/agpl-3.0.html>.
-use rocket::{
-    config::LogLevel,
-    data::{Limits, ToByteUnit},
-};
+use rocket::data::{Limits, ToByteUnit};
 use rustdesk_api::cli::{providers_file, run_admin, run_policy, run_oidc_check, run_openapi, Cli, Command, OidcCommand};
 use rustdesk_api::{build_rocket, database_url_from_env};
 use clap::Parser;
@@ -46,13 +43,15 @@ fn db_url_or_exit() -> String {
 
 #[rocket::main]
 async fn main() -> Result<(), rocket::Error> {
-    let (address, port, log_level) = match Cli::parse().command {
-        Command::Serve { address, port, log_level } => (address, port, log_level),
+    let (address, port) = match Cli::parse().command {
+        Command::Serve { address, port } => (address, port),
         Command::Admin(cmd) => finish(run_admin(&cmd, &db_url_or_exit()).await),
         Command::Policy(cmd) => finish(run_policy(&cmd, &db_url_or_exit()).await),
         Command::Oidc(OidcCommand::Check { file }) => finish(run_oidc_check(&providers_file(file.as_deref())).await),
         Command::Openapi => finish(run_openapi()),
     };
+    // Installed before Rocket's own logger, which then stays out; RUST_LOG overrides the filter.
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(rustdesk_api::DEFAULT_LOG_FILTER)).init();
     if let Err(msg) = rustdesk_api::parse_trusted_proxies(&std::env::var("TRUSTED_PROXIES").unwrap_or_default()) {
         eprintln!("{msg}");
         std::process::exit(2);
@@ -73,13 +72,6 @@ async fn main() -> Result<(), rocket::Error> {
             std::process::exit(2);
         }
     };
-    let log_level = match log_level.to_lowercase().as_str() {
-        "off" => LogLevel::Off,
-        "critical" => LogLevel::Critical,
-        "normal" => LogLevel::Normal,
-        "debug" => LogLevel::Debug,
-        _ => LogLevel::Debug,
-    };
     let mut key_bytes = [0u8; 32];
     getrandom(&mut key_bytes).expect("failed to generate random secret key");
     let secret_key = BASE64.encode(key_bytes);
@@ -88,7 +80,6 @@ async fn main() -> Result<(), rocket::Error> {
     let figment = rocket::Config::figment()
         .merge(("address", address))
         .merge(("port", port))
-        .merge(("log_level", log_level))
         .merge(("secret_key", secret_key))
         // Lets an OIDC callback waiting on the IdP finish during a rolling restart.
         .merge(("shutdown.grace", 15))

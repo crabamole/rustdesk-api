@@ -168,6 +168,40 @@ impl Drain {
     }
 }
 
+/// Our info logs and the `access` lines; Rocket only for warnings and errors (its launch line is a warning).
+pub const DEFAULT_LOG_FILTER: &str = "info,rocket=warn";
+
+fn is_probe(path: &str) -> bool {
+    matches!(path, "/livez" | "/readyz")
+}
+
+/// One `access` log line per request, without the query string (it can carry tokens); probes are skipped.
+fn access_line(method: &str, path: &str, status: u16, elapsed: std::time::Duration) -> Option<String> {
+    (!is_probe(path)).then(|| format!("{method} {path} {status} {}ms", elapsed.as_millis()))
+}
+
+struct RequestStart(std::time::Instant);
+
+struct AccessLog;
+
+#[async_trait]
+impl Fairing for AccessLog {
+    fn info(&self) -> Info {
+        Info { name: "access log", kind: Kind::Request | Kind::Response }
+    }
+
+    async fn on_request(&self, req: &mut Request<'_>, _data: &mut rocket::Data<'_>) {
+        req.local_cache(|| RequestStart(std::time::Instant::now()));
+    }
+
+    async fn on_response<'r>(&self, req: &'r Request<'_>, res: &mut Response<'r>) {
+        let start = req.local_cache(|| RequestStart(std::time::Instant::now())).0;
+        if let Some(line) = access_line(req.method().as_str(), req.uri().path().as_str(), res.status().code, start.elapsed()) {
+            log::info!(target: "access", "{line}");
+        }
+    }
+}
+
 /// Records request times and turns SIGTERM into a drain.
 struct DrainFairing(Arc<Drain>);
 
@@ -178,7 +212,7 @@ impl Fairing for DrainFairing {
     }
 
     async fn on_request(&self, req: &mut Request<'_>, _data: &mut rocket::Data<'_>) {
-        if !matches!(req.uri().path().as_str(), "/livez" | "/readyz") {
+        if !is_probe(req.uri().path().as_str()) {
             self.0.last_request_ms.store(self.0.now_ms(), Ordering::Relaxed);
         }
     }
@@ -352,6 +386,7 @@ pub async fn build_rocket_with_db(figment: Figment, db_path: &str) -> Rocket<Bui
     let drain = Arc::new(Drain::new());
     let rocket = rocket::custom(figment)
         .attach(CORS)
+        .attach(AccessLog)
         .attach(DrainFairing(drain.clone()))
         .mount("/", api_routes().0)
         .mount("/",routes![
@@ -2807,7 +2842,7 @@ async fn webconsole_vue(path: PathBuf) -> Option<StaticFileResponse> {
 
 #[cfg(test)]
 mod tests {
-    use super::Drain;
+    use super::{access_line, Drain};
     use std::sync::atomic::Ordering;
     use std::time::{Duration, Instant};
 
@@ -4231,5 +4266,16 @@ mod tests {
         let resp = client.get("/ui/index.html").dispatch().await;
         // Returns the static file or fallback
         assert!(resp.status() == Status::Ok || resp.status() == Status::NotFound);
+    }
+
+    #[test]
+    fn access_line_has_method_path_status_and_time() {
+        assert_eq!(access_line("POST", "/api/heartbeat", 200, Duration::from_millis(7)).as_deref(), Some("POST /api/heartbeat 200 7ms"));
+    }
+
+    #[test]
+    fn access_line_skips_probes() {
+        assert_eq!(access_line("GET", "/readyz", 200, Duration::ZERO), None);
+        assert_eq!(access_line("GET", "/livez", 200, Duration::ZERO), None);
     }
 }

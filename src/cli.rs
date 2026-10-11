@@ -24,9 +24,6 @@ pub enum Command {
         /// Port to listen on
         #[arg(long, default_value_t = 21114)]
         port: u16,
-        /// off, critical, normal or debug
-        #[arg(long = "log_level", default_value = "debug")]
-        log_level: String,
     },
     /// Manage admins directly in the database (needs DATABASE_URL)
     #[command(subcommand)]
@@ -155,8 +152,8 @@ mod tests {
     fn serve_takes_the_server_flags() {
         let cli = Cli::try_parse_from(["rustdesk-api", "serve", "--address", "0.0.0.0", "--port", "21120"]).unwrap();
         match cli.command {
-            Command::Serve { address, port, log_level } => {
-                assert_eq!((address.as_str(), port, log_level.as_str()), ("0.0.0.0", 21120, "debug"));
+            Command::Serve { address, port } => {
+                assert_eq!((address.as_str(), port), ("0.0.0.0", 21120));
             }
             other => panic!("expected serve, got {other:?}"),
         }

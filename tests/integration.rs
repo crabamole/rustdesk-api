@@ -2307,7 +2307,8 @@ issuer = "https://idp.example.com"
     )
     .unwrap();
     let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_rustdesk-api"))
-        .args(["serve", "--address", "127.0.0.1", "--port", &port.to_string(), "--log_level", "off"])
+        .args(["serve", "--address", "127.0.0.1", "--port", &port.to_string()])
+        .env("RUST_LOG", "off")
         .env("DATABASE_URL", "postgres://u:p@127.0.0.1:1/db")
         .env("OAUTH2_CONFIG_FILE", &providers)
         .env("PUBLIC_URL", "https://rustdesk.example.com")
@@ -2432,7 +2433,8 @@ issuer = "https://idp.example.com"
     )
     .unwrap();
     let out = tokio::process::Command::new(env!("CARGO_BIN_EXE_rustdesk-api"))
-        .args(["serve", "--address", "127.0.0.1", "--port", &free_port().to_string(), "--log_level", "off"])
+        .args(["serve", "--address", "127.0.0.1", "--port", &free_port().to_string()])
+        .env("RUST_LOG", "off")
         .env("DATABASE_URL", "postgres://u:p@127.0.0.1:1/db")
         .env("OAUTH2_CONFIG_FILE", &providers)
         .env_remove("PUBLIC_URL")
@@ -2445,6 +2447,11 @@ issuer = "https://idp.example.com"
 
 /// Starts the real server on `port` against a fresh database; returns once `/readyz` answers 200.
 async fn serve_binary(port: u16) -> tokio::process::Child {
+    serve_binary_logging(port, "off").await
+}
+
+/// `serve_binary` with `RUST_LOG=rust_log` and stderr piped.
+async fn serve_binary_logging(port: u16, rust_log: &str) -> tokio::process::Child {
     let providers = std::env::temp_dir().join(format!("oauth2-{}.toml", uuid::Uuid::new_v4()));
     std::fs::write(
         &providers,
@@ -2462,7 +2469,9 @@ issuer = "https://idp.example.com"
     )
     .unwrap();
     let child = tokio::process::Command::new(env!("CARGO_BIN_EXE_rustdesk-api"))
-        .args(["serve", "--address", "127.0.0.1", "--port", &port.to_string(), "--log_level", "off"])
+        .args(["serve", "--address", "127.0.0.1", "--port", &port.to_string()])
+        .env("RUST_LOG", rust_log)
+        .stderr(std::process::Stdio::piped())
         .env("DATABASE_URL", fresh_db().await)
         .env("OAUTH2_CONFIG_FILE", &providers)
         .env("PUBLIC_URL", "https://rustdesk.example.com")
@@ -2522,4 +2531,19 @@ async fn test_readyz_ignores_the_shared_database() {
     // Every pod sees the same database; routing away from this one would not help.
     assert_eq!(client.get("/readyz").dispatch().await.status(), Status::Ok);
     assert_eq!(client.get("/livez").dispatch().await.status(), Status::Ok);
+}
+
+#[rocket::async_test]
+async fn test_serve_logs_one_access_line_per_request_without_query_or_probes() {
+    use tokio::io::AsyncReadExt;
+    let port = free_port();
+    let mut child = serve_binary_logging(port, rustdesk_api::DEFAULT_LOG_FILTER).await;
+    assert_eq!(http_status(port, "/api/login-options?token=s3cret").await, Some(200));
+    child.start_kill().unwrap();
+    let mut err = String::new();
+    child.stderr.take().unwrap().read_to_string(&mut err).await.unwrap();
+    let access: Vec<&str> = err.lines().filter(|l| l.contains(" access]")).collect();
+    assert_eq!(access.len(), 1, "{err}");
+    assert!(access[0].contains("GET /api/login-options 200 "), "{err}");
+    assert!(!err.contains("s3cret") && !err.contains("Matched:"), "{err}");
 }
