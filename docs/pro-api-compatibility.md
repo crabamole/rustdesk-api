@@ -50,8 +50,8 @@ Update this file with every API change.
 | PUT | /api/ab/tag/rename/{guid} | [C] `flutter/lib/models/ab_model.dart` | implemented | |
 | PUT | /api/ab/tag/update/{guid} | [C] `flutter/lib/models/ab_model.dart` | implemented | |
 | DELETE | /api/ab/tag/{guid} | [C] `flutter/lib/models/ab_model.dart` | implemented | |
-| GET | /api/users | [C] `flutter/lib/models/group_model.dart` | implemented | client-facing list, paginated |
-| GET | /api/peers | [C] `flutter/lib/models/group_model.dart` | implemented | `info` never carries the device `uuid` |
+| GET | /api/users | [C] `flutter/lib/models/group_model.dart` | implemented | client-facing list, paged by `current`/`pageSize` (default 10, at most 1000), `total` counts every match; `status=1` lists enabled users only; `accessible` is ignored |
+| GET | /api/peers | [C] `flutter/lib/models/group_model.dart` | implemented | paged like `/api/users`; `status=1` lists enabled devices only; `q` (ours) matches the ID or hostname; `accessible` is ignored: every logged-in user sees every device; `info` never carries the device `uuid` |
 | GET | /api/device-group/accessible | [C] `flutter/lib/models/group_model.dart` | missing | no `/api/device-group*` route exists |
 
 Upstream clients log in by polling `GET /api/oidc/auth-query`; that login is not supported, since a login is bound to the client that started it.
@@ -163,8 +163,8 @@ Upstream clients log in by polling `GET /api/oidc/auth-query`; that login is not
 | POST | /api/group | create group (Pro uses `POST /api/user-groups`) |
 | PUT | /api/group | update group by guid in body (Pro uses `PATCH /api/user-groups/{guid}`) |
 | DELETE | /api/group/{guid} | delete group (Pro uses `DELETE /api/user-groups/{guid}`) |
-| GET | /api/groups | list groups, paginated (Pro uses `GET /api/user-groups`) |
-| GET | /api/user-list | admin-only paginated user list with email/name filters (separate from client-facing `GET /api/users`) |
+| GET | /api/groups | list groups, paged by `current`/`pageSize`, ordered by name, `q` matches the name (Pro uses `GET /api/user-groups`) |
+| GET | /api/user-list | admin-only paged user list ordered by name; `email`/`name` filters, `q` matches the name or email (separate from client-facing `GET /api/users`) |
 | GET | /api/peers/count/{platform} | peer count by platform |
 | GET | /api/peers/cpus | cpu count per peer |
 | GET | /api/audits/login | admin-only login audit: one row per OIDC login that reached the callback, with its outcome; `user` (LIKE) and `outcome` filters, per audit-api-spec.md §9 |
