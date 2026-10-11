@@ -109,13 +109,14 @@ fn livez() -> Status {
     Status::Ok
 }
 
-/// Readiness probe: the database answers and the server is not draining.
+/// Readiness probe: started and not draining. Every pod shares the database, so its health is
+/// no reason to route away from this one; requests fail fast while it is down.
 #[get("/readyz")]
-async fn readyz(state: &State<ApiState>, drain: &State<Arc<Drain>>) -> Status {
-    if !drain.draining.load(Ordering::Relaxed) && state.ready().await {
-        Status::Ok
-    } else {
+fn readyz(drain: &State<Arc<Drain>>) -> Status {
+    if drain.draining.load(Ordering::Relaxed) {
         Status::ServiceUnavailable
+    } else {
+        Status::Ok
     }
 }
 

@@ -76,9 +76,10 @@ impl ApiState {
         }
     }
 
-    /// For `/readyz`: the database answers within 2 s.
-    pub async fn ready(&self) -> bool {
-        self.db.ping(std::time::Duration::from_secs(2)).await
+    /// Closes the database pool, as an unreachable database looks to requests. Test-only.
+    #[cfg(any(test, feature = "test-util"))]
+    pub async fn test_close_database(&self) {
+        self.db.test_close().await;
     }
 
     /// Simulates a successful OIDC login whose `sub` and `name` are `username`
@@ -883,11 +884,6 @@ mod tests {
             .unwrap();
         state.set_admin("admin@example.org", true).await.unwrap();
         state
-    }
-
-    #[tokio::test]
-    async fn ready_while_the_database_answers() {
-        assert!(test_state().await.ready().await);
     }
 
     /// Two instances on one database, as two api-server pods.

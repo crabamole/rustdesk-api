@@ -2442,3 +2442,84 @@ issuer = "https://idp.example.com"
     assert_eq!(out.status.code(), Some(2));
     assert!(String::from_utf8_lossy(&out.stderr).contains("PUBLIC_URL is required"), "{out:?}");
 }
+
+/// Starts the real server on `port` against a fresh database; returns once `/readyz` answers 200.
+async fn serve_binary(port: u16) -> tokio::process::Child {
+    let providers = std::env::temp_dir().join(format!("oauth2-{}.toml", uuid::Uuid::new_v4()));
+    std::fs::write(
+        &providers,
+        r#"[[provider]]
+provider = "Oauth2"
+authorization_url = "https://idp.example.com/authorize"
+token_exchange_url = "http://127.0.0.1:1/token"
+app_id = "rustdesk"
+app_secret = "s3cret"
+scope = "openid email profile"
+op_auth_string = "oidc/corp"
+op = "corp"
+issuer = "https://idp.example.com"
+"#,
+    )
+    .unwrap();
+    let child = tokio::process::Command::new(env!("CARGO_BIN_EXE_rustdesk-api"))
+        .args(["serve", "--address", "127.0.0.1", "--port", &port.to_string(), "--log_level", "off"])
+        .env("DATABASE_URL", fresh_db().await)
+        .env("OAUTH2_CONFIG_FILE", &providers)
+        .env("PUBLIC_URL", "https://rustdesk.example.com")
+        .kill_on_drop(true)
+        .spawn()
+        .unwrap();
+    for _ in 0..300 {
+        if http_status(port, "/readyz").await == Some(200) {
+            return child;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    panic!("server on port {port} never became ready");
+}
+
+fn sigterm(child: &tokio::process::Child) {
+    let pid = child.id().unwrap().to_string();
+    assert!(std::process::Command::new("kill").args(["-TERM", &pid]).status().unwrap().success());
+}
+
+#[tokio::test]
+async fn test_sigterm_reports_unready_but_serves_until_requests_stop() {
+    let port = free_port();
+    let mut child = serve_binary(port).await;
+    sigterm(&child);
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    assert_eq!(http_status(port, "/readyz").await, Some(503), "draining pods leave load balancers");
+    // Proxies that have not noticed yet keep sending requests: each is still served, well past the quiet period.
+    let start = std::time::Instant::now();
+    while start.elapsed() < std::time::Duration::from_secs(8) {
+        assert_eq!(http_status(port, "/api/software/version/server").await, Some(200), "at {:?}", start.elapsed());
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+    }
+    assert!(child.try_wait().unwrap().is_none(), "still serving while requests arrive");
+    let stopped = std::time::Instant::now();
+    let exit = tokio::time::timeout(std::time::Duration::from_secs(15), child.wait()).await;
+    assert!(exit.is_ok(), "exits once requests stop");
+    assert!(stopped.elapsed() >= std::time::Duration::from_secs(4), "waits for a quiet period: {:?}", stopped.elapsed());
+}
+
+#[tokio::test]
+async fn test_second_sigterm_exits_at_once() {
+    let port = free_port();
+    let mut child = serve_binary(port).await;
+    sigterm(&child);
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    sigterm(&child);
+    let exit = tokio::time::timeout(std::time::Duration::from_secs(3), child.wait()).await;
+    assert!(exit.is_ok(), "a second SIGTERM does not wait for the quiet period");
+}
+
+#[rocket::async_test]
+async fn test_readyz_ignores_the_shared_database() {
+    let (client, _) = test_client().await;
+    let state = client.rocket().state::<state::ApiState>().unwrap();
+    state.test_close_database().await;
+    // Every pod sees the same database; routing away from this one would not help.
+    assert_eq!(client.get("/readyz").dispatch().await.status(), Status::Ok);
+    assert_eq!(client.get("/livez").dispatch().await.status(), Status::Ok);
+}
