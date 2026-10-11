@@ -21,6 +21,9 @@ use std::collections::HashMap;
 use std::env;
 use std::io::Cursor;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use api::ActionResponse;
 use extended_json::ExtendedJson;
@@ -106,10 +109,10 @@ fn livez() -> Status {
     Status::Ok
 }
 
-/// Readiness probe: the database answers.
+/// Readiness probe: the database answers and the server is not draining.
 #[get("/readyz")]
-async fn readyz(state: &State<ApiState>) -> Status {
-    if state.ready().await {
+async fn readyz(state: &State<ApiState>, drain: &State<Arc<Drain>>) -> Status {
+    if !drain.draining.load(Ordering::Relaxed) && state.ready().await {
         Status::Ok
     } else {
         Status::ServiceUnavailable
@@ -119,6 +122,97 @@ async fn readyz(state: &State<ApiState>) -> Status {
 #[get("/readyz")]
 fn startup_readyz() -> Status {
     Status::ServiceUnavailable
+}
+
+/// Quiet time after SIGTERM before the server stops: proxies route to a stopping pod until they notice.
+const DRAIN_QUIET: Duration = Duration::from_secs(5);
+/// Upper bound on draining, so a client that never stops calling cannot hold the pod.
+const DRAIN_MAX: Duration = Duration::from_secs(25);
+
+/// SIGTERM state: `/readyz` fails while requests are still served, until none arrived for `DRAIN_QUIET`.
+pub struct Drain {
+    draining: AtomicBool,
+    started: Instant,
+    /// Milliseconds since `started` of the last request other than a probe.
+    last_request_ms: AtomicU64,
+}
+
+impl Drain {
+    fn new() -> Self {
+        Drain { draining: AtomicBool::new(false), started: Instant::now(), last_request_ms: AtomicU64::new(0) }
+    }
+
+    fn now_ms(&self) -> u64 {
+        u64::try_from(self.started.elapsed().as_millis()).unwrap_or(u64::MAX)
+    }
+
+    /// Waits until requests stop for `quiet`, at most `max`, or until `stop` resolves.
+    async fn wait_quiet(&self, quiet: Duration, max: Duration, stop: impl std::future::Future<Output = ()>) {
+        self.draining.store(true, Ordering::Relaxed);
+        let begun = Instant::now();
+        let quiet_ms = u64::try_from(quiet.as_millis()).unwrap_or(u64::MAX);
+        let wait = async {
+            loop {
+                tokio::time::sleep(Duration::from_millis(200)).await;
+                let idle = self.now_ms().saturating_sub(self.last_request_ms.load(Ordering::Relaxed));
+                if (idle >= quiet_ms && begun.elapsed() >= quiet) || begun.elapsed() >= max {
+                    break;
+                }
+            }
+        };
+        tokio::select! {
+            _ = wait => {}
+            _ = stop => log::info!("second signal: stopping now"),
+        }
+    }
+}
+
+/// Records request times and turns SIGTERM into a drain.
+struct DrainFairing(Arc<Drain>);
+
+#[async_trait]
+impl Fairing for DrainFairing {
+    fn info(&self) -> Info {
+        Info { name: "drain on SIGTERM", kind: Kind::Request | Kind::Liftoff }
+    }
+
+    async fn on_request(&self, req: &mut Request<'_>, _data: &mut rocket::Data<'_>) {
+        if !matches!(req.uri().path().as_str(), "/livez" | "/readyz") {
+            self.0.last_request_ms.store(self.0.now_ms(), Ordering::Relaxed);
+        }
+    }
+
+    async fn on_liftoff(&self, rocket: &Rocket<rocket::Orbit>) {
+        #[cfg(unix)]
+        {
+            use tokio::signal::unix::{signal, SignalKind};
+            let (Ok(mut term), Ok(mut int)) = (signal(SignalKind::terminate()), signal(SignalKind::interrupt())) else {
+                log::error!("cannot listen for SIGTERM; stopping on signals is left to the OS");
+                return;
+            };
+            let shutdown = rocket.shutdown();
+            let drain = self.0.clone();
+            tokio::spawn(async move {
+                tokio::select! {
+                    _ = term.recv() => {}
+                    _ = int.recv() => {
+                        shutdown.notify();
+                        return;
+                    }
+                }
+                log::info!("SIGTERM: draining, /readyz fails until requests stop");
+                let again = async {
+                    tokio::select! {
+                        _ = term.recv() => {}
+                        _ = int.recv() => {}
+                    }
+                };
+                drain.wait_quiet(DRAIN_QUIET, DRAIN_MAX, again).await;
+                log::info!("drained: stopping");
+                shutdown.notify();
+            });
+        }
+    }
 }
 
 /// Answers probes on the API port while the database connects and migrates.
@@ -252,8 +346,12 @@ pub async fn build_rocket_with_db(figment: Figment, db_path: &str) -> Rocket<Bui
     let state = ApiState::new_with_db(db_path).await;
     let public_url = figment.extract_inner::<String>("public_url").ok().and_then(|v| parse_public_url(&v).ok());
 
+    // SIGTERM is handled by `Drain`, which stops Rocket once proxies have moved on.
+    let figment = figment.merge(("shutdown.ctrlc", false)).merge(("shutdown.signals", Vec::<String>::new()));
+    let drain = Arc::new(Drain::new());
     let rocket = rocket::custom(figment)
         .attach(CORS)
+        .attach(DrainFairing(drain.clone()))
         .mount("/", api_routes().0)
         .mount("/",routes![
             favicon,
@@ -263,7 +361,8 @@ pub async fn build_rocket_with_db(figment: Figment, db_path: &str) -> Rocket<Bui
             livez,
             readyz,
         ])
-        .manage(state);
+        .manage(state)
+        .manage(drain);
     let rocket = match public_url {
         Some(url) => rocket.manage(PublicUrl(url)),
         None => rocket.attach(rocket::fairing::AdHoc::try_on_ignite("PUBLIC_URL", |r| async {
@@ -2707,6 +2806,43 @@ async fn webconsole_vue(path: PathBuf) -> Option<StaticFileResponse> {
 
 #[cfg(test)]
 mod tests {
+    use super::Drain;
+    use std::sync::atomic::Ordering;
+    use std::time::{Duration, Instant};
+
+    #[tokio::test]
+    async fn drain_ends_after_a_quiet_period() {
+        let d = Drain::new();
+        let t = Instant::now();
+        d.wait_quiet(Duration::from_millis(300), Duration::from_secs(5), std::future::pending()).await;
+        assert!(d.draining.load(Ordering::Relaxed));
+        assert!(t.elapsed() >= Duration::from_millis(300) && t.elapsed() < Duration::from_secs(2), "{:?}", t.elapsed());
+    }
+
+    #[tokio::test]
+    async fn drain_waits_while_requests_arrive_up_to_the_cap() {
+        let d = std::sync::Arc::new(Drain::new());
+        let busy = d.clone();
+        let feeder = tokio::spawn(async move {
+            loop {
+                busy.last_request_ms.store(busy.now_ms(), Ordering::Relaxed);
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        });
+        let t = Instant::now();
+        d.wait_quiet(Duration::from_millis(300), Duration::from_millis(900), std::future::pending()).await;
+        feeder.abort();
+        assert!(t.elapsed() >= Duration::from_millis(900), "requests kept arriving, so only the cap ends it: {:?}", t.elapsed());
+    }
+
+    #[tokio::test]
+    async fn drain_stops_early_on_a_second_signal() {
+        let d = Drain::new();
+        let t = Instant::now();
+        d.wait_quiet(Duration::from_secs(5), Duration::from_secs(10), tokio::time::sleep(Duration::from_millis(100))).await;
+        assert!(t.elapsed() < Duration::from_secs(2), "{:?}", t.elapsed());
+    }
+
     use super::*;
     use rocket::http::{ContentType, Header, Status};
     use rocket::local::asynchronous::Client;
