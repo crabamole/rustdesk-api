@@ -4,16 +4,8 @@ An open-source API server and web console for [RustDesk](https://github.com/rust
 covering the parts of the RustDesk Pro API that a corporate deployment needs: OIDC login,
 address books, device and user management, audit logs and device policy.
 
-It is part of the [crabamole](https://github.com/crabamole) RustDesk stack:
-
-| Repo | Role |
-|---|---|
-| [rustdesk](https://github.com/crabamole/rustdesk) | Native clients (`cRustDesk`) and the web client |
-| [rustdesk-server](https://github.com/crabamole/rustdesk-server) | hbbs (rendezvous) and hbbr (relay) |
-| **rustdesk-api** (this repo) | API server and web console |
-| [rustdesk-charts](https://github.com/crabamole/rustdesk-charts) | Helm chart that deploys all of them |
-
-Status: in development, not yet production-ready.
+It is the API server of [crabamole](https://github.com/crabamole), which runs RustDesk
+behind your own single sign-on; the org page lists the other repos and how they fit.
 
 ## Features
 
