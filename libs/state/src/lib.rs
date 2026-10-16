@@ -17,6 +17,7 @@ mod database;
 mod state;
 mod bearer;
 pub mod retry;
+pub mod device_owner;
 
 #[cfg(any(test, feature = "test-util"))]
 pub mod testing;

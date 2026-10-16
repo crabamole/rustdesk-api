@@ -2096,6 +2096,46 @@ impl Database {
             .is_some()
     }
 
+    /// The key device `id` registered with hbbs; `uuid` is the raw machine UUID.
+    pub async fn peer_pk(&self, id: &str, uuid: &[u8]) -> Option<Vec<u8>> {
+        sqlx::query_scalar("SELECT pk FROM peer WHERE id = $1 AND uuid = $2")
+            .bind(id)
+            .bind(uuid)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|e| log::error!("peer_pk error: {e:?}"))
+            .ok()?
+    }
+
+    /// Makes `session` the owner of device `id`, unless the device re-registered with another key meanwhile.
+    pub async fn set_peer_owner(&self, id: &str, session: &str, pk: &[u8]) -> Option<bool> {
+        sqlx::query("UPDATE peer SET owner_session = $2, owner_pk = $3 WHERE id = $1 AND pk = $3")
+            .bind(id)
+            .bind(session)
+            .bind(pk)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| log::error!("set_peer_owner error: {e:?}"))
+            .ok()
+            .map(|r| r.rows_affected() == 1)
+    }
+
+    /// The owner key of device `id` when its owner session is live and belongs to active `user`.
+    pub async fn same_user_owner_pk(&self, user: &[u8], id: &str) -> Option<Vec<u8>> {
+        sqlx::query_scalar(
+            "SELECT p.owner_pk FROM peer p JOIN session s ON s.id = p.owner_session \
+             JOIN \"user\" u ON u.guid = s.\"user\" \
+             WHERE p.id = $1 AND s.\"user\" = $2 AND s.expiry_at > NOW()::text AND u.status = 1 \
+             AND p.owner_pk IS NOT NULL",
+        )
+        .bind(id)
+        .bind(user)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| log::error!("same_user_owner_pk error: {e:?}"))
+        .ok()?
+    }
+
     /// Stores a ref minted for `user`; refs a day old are dropped, a connection uses its ref within seconds.
     pub async fn insert_audit_conn_ref(&self, conn_ref: &str, user: &[u8], target: &str) -> Option<()> {
         execute_async_commit(&self.pool, sqlx::query("DELETE FROM audit_conn_ref WHERE created_at < now() - interval '1 day'")
@@ -2344,6 +2384,12 @@ impl Database {
             .execute(&self.pool)
             .await
             .expect("insert peer");
+    }
+
+    /// Sets the key a registered device holds. Test-only.
+    #[cfg(any(test, feature = "test-util"))]
+    pub async fn test_set_device_pk(&self, id: &str, pk: &[u8]) {
+        sqlx::query("UPDATE peer SET pk = $2 WHERE id = $1").bind(id).bind(pk).execute(&self.pool).await.expect("set pk");
     }
 
     #[cfg(any(test, feature = "test-util"))]
@@ -2659,7 +2705,7 @@ fn audit_alarm_log_from_row(row: &sqlx::postgres::PgRow) -> Option<utils::AuditA
     })
 }
 
-const OIDC_LOGIN_COLUMNS: &str = "provider, callback_url, provider_state, provider_nonce, code_verifier, return_to, \
+const OIDC_LOGIN_COLUMNS: &str = "code, provider, callback_url, provider_state, provider_nonce, code_verifier, return_to, \
     code_challenge, rustdesk_id, uuid, device_name, device_os, device_type, requester_ip, sub, name, email, result, \
     extract(epoch FROM created_at)::bigint AS created_secs, coalesce(extract(epoch FROM result_at)::bigint, 0) AS result_secs";
 
@@ -2697,6 +2743,7 @@ fn oidc_login_from_row(row: &sqlx::postgres::PgRow) -> Result<(OidcState, Option
         device_os: row.try_get("device_os")?,
         requester_ip: row.try_get("requester_ip")?,
         device_type: row.try_get("device_type")?,
+        login_code: row.try_get("code")?,
         ..Default::default()
     };
     Ok((login, provider))
@@ -2782,7 +2829,7 @@ mod tests {
                 .fetch_all(&first.pool)
                 .await
                 .unwrap();
-        assert_eq!(applied, (1..=14).map(|v| (v, true)).collect::<Vec<_>>());
+        assert_eq!(applied, (1..=15).map(|v| (v, true)).collect::<Vec<_>>());
         first.pool.close().await;
 
         // Second start on the same database must not fail or duplicate rows.

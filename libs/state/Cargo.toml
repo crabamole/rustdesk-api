@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 base64 = "0.22"
+ed25519-dalek = "2"
 utils = { path = "../utils" }
 oauth2 = { path = "../oauth2" }
 log = "0.4"

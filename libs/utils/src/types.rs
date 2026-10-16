@@ -746,6 +746,9 @@ pub struct OidcTokenRequest {
     pub code_verifier: String,
     pub id: String,
     pub uuid: String,
+    /// Device's signature of its owner proof (`device_owner`); empty for viewers and stock clients.
+    #[serde(rename = "ownerSignature", default)]
+    pub owner_signature: String,
 }
 
 // OIDC response
@@ -830,6 +833,8 @@ pub struct OidcState {
     pub requester_ip: Option<String>,
     /// `client` for native RustDesk clients, other values for browsers.
     pub device_type: String,
+    /// The login code (`oidc_login.code`), the owner proof's challenge.
+    pub login_code: String,
 }
 impl Default for OidcState {
     fn default() -> Self {
@@ -854,6 +859,7 @@ impl Default for OidcState {
             device_os: String::new(),
             requester_ip: None,
             device_type: String::new(),
+            login_code: String::new(),
         }
     }
 }
