@@ -278,6 +278,8 @@ async fn test_audit_ref_is_minted_for_the_caller() {
     assert_eq!(resp.status(), Status::Ok);
     let body: Value = resp.into_json().await.unwrap();
     let r = body["ref"].as_str().unwrap().to_string();
+    assert_eq!(body["same_user"], false, "SAME_USER_ACCESS is not set");
+    assert_eq!(body["owner_pk"], "");
     assert!(state.resolve_audit_conn_ref(&r, "dev1").await.is_some());
     assert!(state.resolve_audit_conn_ref(&r, "dev2").await.is_none(), "bound to its target");
     let resp = client.post("/api/audit/ref").header(auth_header(&token)).dispatch().await;

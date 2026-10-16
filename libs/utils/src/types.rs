@@ -273,6 +273,10 @@ pub struct AuditAlarmRequest {
 pub struct AuditRefResponse {
     #[serde(rename = "ref")]
     pub conn_ref: String,
+    /// The viewer is the device's owner; the device admits it without a password.
+    pub same_user: bool,
+    /// The key that signed the owner's login (base64); the device compares it with its own.
+    pub owner_pk: String,
 }
 
 /// `GET /api/audits/*` query parameters (audit-api-spec.md §9.1), normalised server-side.

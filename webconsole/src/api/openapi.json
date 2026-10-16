@@ -432,7 +432,7 @@
           "audit"
         ],
         "summary": "Mint a connection audit ref",
-        "description": "Called by hbbs with the viewer's token (audit-api-spec §11) and the device it connects to. The ref names the caller only, so any logged-in user may mint one; it attributes only records of `target`.",
+        "description": "Called by hbbs with the viewer's token (audit-api-spec §11) and the device it connects to. The ref names the caller only, so any logged-in user may mint one; it attributes only records of `target`. With `SAME_USER_ACCESS=Y`, `same_user` and `owner_pk` tell `target` that the caller is its owner.",
         "operationId": "audit_ref",
         "parameters": [
           {
@@ -3205,10 +3205,20 @@
       "AuditRefResponse": {
         "type": "object",
         "required": [
-          "ref"
+          "owner_pk",
+          "ref",
+          "same_user"
         ],
         "properties": {
           "ref": {
+            "type": "string"
+          },
+          "same_user": {
+            "description": "The viewer is the device's owner; the device admits it without a password.",
+            "type": "boolean"
+          },
+          "owner_pk": {
+            "description": "The key that signed the owner's login (base64); the device compares it with its own.",
             "type": "string"
           }
         }
@@ -4454,6 +4464,11 @@
             "type": "string"
           },
           "uuid": {
+            "type": "string"
+          },
+          "ownerSignature": {
+            "description": "Device's signature of its owner proof (`device_owner`); empty for viewers and stock clients.",
+            "default": "",
             "type": "string"
           }
         }

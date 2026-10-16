@@ -202,7 +202,7 @@ No `action` field. Recognised by presence of `peer` / `type`.
 |---|---|
 | `peer` | `[controller_id, controller_name]` (2-element array) |
 | `type` | 0 remote desktop, 1 file transfer, 2 port forward (incl. RDP), 3 view camera, 4 terminal |
-| `primary_auth` (omitted if none) | 1 click-accept, 2 temporary password, 3 permanent password, 4 switch sides |
+| `primary_auth` (omitted if none) | 1 click-accept, 2 temporary password, 3 permanent password, 4 switch sides, 5 same user (owner of the device, design-same-user-access.md) |
 | `two_factor` (omitted if none) | 1 TOTP, 2 trusted device. Always absent when `primary_auth` is 1 or 4 |
 
 Server: update the row matching the connection key: set `conn_type`,
@@ -471,6 +471,7 @@ that device's next heartbeat.
 `rendezvous.proto`: `message ControlledContext { string conn_audit_ref = 1; }`,
 carried in `PunchHole.controlled_context` (9), `RequestRelay.controlled_context`
 (10), `FetchLocalAddr.controlled_context` (5).
+Fields 2 `same_user` and 3 `owner_pk` carry the `/api/audit/ref` answer `same_user` / `owner_pk` (base64 in JSON, bytes in the proto) when `SAME_USER_ACCESS=Y` and the viewer owns the device.
 
 1. Controlling client sends its access token in `PunchHoleRequest.token` /
    `RequestRelay.token`.

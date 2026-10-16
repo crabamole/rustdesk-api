@@ -703,7 +703,8 @@ async fn audit_alarm(
 ///
 /// Called by hbbs with the viewer's token (audit-api-spec §11) and the device it connects to.
 /// The ref names the caller only, so any logged-in user may mint one; it attributes only
-/// records of `target`.
+/// records of `target`. With `SAME_USER_ACCESS=Y`, `same_user` and `owner_pk` tell `target`
+/// that the caller is its owner.
 // no body, so no format: Rocket 0.5 404s a POST with a format guard and no Content-Type
 #[openapi(tag = "audit")]
 #[post("/api/audit/ref?<target>")]
@@ -715,11 +716,13 @@ async fn audit_ref(
     if target.is_empty() {
         return Err(Status::BadRequest);
     }
-    state
-        .mint_audit_conn_ref(&user.info.user_id, target)
-        .await
-        .map(|conn_ref| Json(utils::AuditRefResponse { conn_ref }))
-        .ok_or(Status::InternalServerError)
+    let conn_ref = state.mint_audit_conn_ref(&user.info.user_id, target).await.ok_or(Status::InternalServerError)?;
+    let owner_pk = state.same_user_owner_pk(same_user_access(), &user.info.user_id, target).await;
+    Ok(Json(utils::AuditRefResponse {
+        conn_ref,
+        same_user: owner_pk.is_some(),
+        owner_pk: owner_pk.map(|pk| BASE64_STANDARD.encode(pk)).unwrap_or_default(),
+    }))
 }
 
 /// `created_at` filter format (audit-api-spec.md §9.1): UTC `YYYY-MM-DD HH:MM:SS.000`.
@@ -1561,6 +1564,11 @@ fn is_loopback_return(uri: &str) -> bool {
 /// BASE64URL without padding of a SHA-256: 43 characters.
 fn is_s256_challenge(c: &str) -> bool {
     c.len() == 43 && c.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+}
+
+/// `SAME_USER_ACCESS=Y`: a device's owner opens it without its password (design-same-user-access.md).
+fn same_user_access() -> bool {
+    std::env::var("SAME_USER_ACCESS").is_ok_and(|v| v.eq_ignore_ascii_case("Y"))
 }
 
 /// Proxies whose X-Forwarded-For is believed; empty trusts none. `None` (an invalid setting) trusts none too.

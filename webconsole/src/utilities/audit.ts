@@ -10,7 +10,7 @@ export function connTypeLabel(t?: number): string {
     return t === undefined || t === null ? 'Not logged in' : CONN_TYPES[t] ?? `Unknown (${t})`;
 }
 
-const PRIMARY_AUTH: Record<number, string> = { 1: 'Click to accept', 2: 'One-time password', 3: 'Permanent password', 4: 'Switch sides' };
+const PRIMARY_AUTH: Record<number, string> = { 1: 'Click to accept', 2: 'One-time password', 3: 'Permanent password', 4: 'Switch sides', 5: 'Same user' };
 const TWO_FACTOR: Record<number, string> = { 1: '2FA code', 2: 'Trusted device' };
 
 export function authLabel(primary?: number, twoFactor?: number): string {

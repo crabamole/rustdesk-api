@@ -25,4 +25,20 @@ export interface AuditRefResponse {
      * @memberof AuditRefResponse
      */
     ref: string;
+
+    /**
+     * The viewer is the device's owner; the device admits it without a password.
+     *
+     * @type {boolean}
+     * @memberof AuditRefResponse
+     */
+    same_user: boolean;
+
+    /**
+     * The key that signed the owner's login (base64); the device compares it with its own.
+     *
+     * @type {string}
+     * @memberof AuditRefResponse
+     */
+    owner_pk: string;
 }
