@@ -2585,6 +2585,11 @@ async fn test_disconnect_reaches_the_device_heartbeat() {
     assert_eq!((console["data"][0]["typ"].as_i64(), console["data"][0]["iop"].as_i64()), (Some(2), Some(5)));
     assert_eq!(console["data"][0]["info"]["device"], "devdc");
 
+    let again = client.post(format!("/api/audits/conn/{guid}/disconnect")).header(auth_header(&admin)).dispatch().await;
+    assert_eq!(again.status(), Status::Ok);
+    let console2: Value = client.get("/api/audits/console").header(auth_header(&admin)).dispatch().await.into_json().await.unwrap();
+    assert_eq!(console2["total"], console["total"]);
+
     client.post("/api/audit/conn").header(ContentType::JSON)
         .body(r#"{"action":"close","id":"devdc","uuid":"ZGM=","conn_id":5,"session_id":0,"nonce":"n-dc-c"}"#).dispatch().await;
     let resp = client.post(format!("/api/audits/conn/{guid}/disconnect")).header(auth_header(&admin)).dispatch().await;

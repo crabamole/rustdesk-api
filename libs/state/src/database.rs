@@ -2490,15 +2490,18 @@ impl Database {
         .map_err(|e| log::error!("audit_conn_disconnect read error: {e:?}"))
         .ok()??;
         let (device, conn_id, viewer, user, ended) = row;
+        let mut marked = false;
         if !ended {
-            sqlx::query("UPDATE audit_conn SET disconnect_at = COALESCE(disconnect_at, now()) WHERE guid = $1 AND end_time IS NULL")
+            marked = sqlx::query("UPDATE audit_conn SET disconnect_at = now() WHERE guid = $1 AND end_time IS NULL AND disconnect_at IS NULL")
                 .bind(guid)
                 .execute(&self.pool)
                 .await
                 .map_err(|e| log::error!("audit_conn_disconnect update error: {e:?}"))
-                .ok()?;
+                .ok()?
+                .rows_affected()
+                == 1;
         }
-        Some(utils::AuditConnTarget { device, conn_id, viewer, user, ended })
+        Some(utils::AuditConnTarget { device, conn_id, viewer, user, ended, marked })
     }
 
     /// `conn_id`s of the device's open rows marked for disconnect that it still lists in `alive`.
@@ -2581,7 +2584,7 @@ impl Database {
     pub async fn list_audit_consoles(&self, q: &utils::AuditQuery) -> Option<(i64, Vec<utils::AuditConsoleLog>)> {
         const FROM: &str = "FROM audit_console c LEFT JOIN \"user\" u ON u.guid = c.operator \
              WHERE ($1::text IS NULL OR c.created_at::timestamptz >= ($1::timestamp AT TIME ZONE 'UTC')) \
-             AND ($2::text IS NULL OR COALESCE(u.name, 'CLI') LIKE $2)";
+             AND ($2::text IS NULL OR (CASE WHEN c.operator IS NULL THEN 'CLI' ELSE COALESCE(u.name, '(deleted user)') END) LIKE $2)";
         let total: i64 = sqlx::query_scalar(&format!("SELECT count(*) {FROM}"))
             .bind(&q.created_at)
             .bind(&q.pattern)
@@ -2590,7 +2593,7 @@ impl Database {
             .map_err(|e| log::error!("list_audit_consoles count error: {e:?}"))
             .ok()?;
         let rows: Vec<(Vec<u8>, i16, i16, Option<String>, String, i64)> = sqlx::query_as(&format!(
-            "SELECT c.guid, c.type, c.iop, CASE WHEN c.operator IS NULL THEN 'CLI' ELSE u.name END, c.info, \
+            "SELECT c.guid, c.type, c.iop, CASE WHEN c.operator IS NULL THEN 'CLI' ELSE COALESCE(u.name, '(deleted user)') END, c.info, \
                extract(epoch FROM c.created_at::timestamptz)::bigint {FROM} \
              ORDER BY c.created_at::timestamptz DESC, c.guid LIMIT $3 OFFSET $4"
         ))

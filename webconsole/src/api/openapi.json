@@ -733,7 +733,7 @@
           "audit"
         ],
         "summary": "Console audit log",
-        "description": "Pro-compatible (`audits.py console`): One row per admin change, newest first; `operator` is an SQL LIKE pattern on the user name (`CLI` for CLI rows).",
+        "description": "Pro-compatible (`audits.py console`): one row per admin change, newest first; `operator` is an SQL LIKE pattern on the user name (`CLI` for CLI rows).",
         "operationId": "audits_console",
         "parameters": [
           {
@@ -3634,7 +3634,6 @@
         "description": "Reply to `/api/heartbeat`; the client applies `strategy` when present (`hbbs_http/sync.rs`).",
         "type": "object",
         "required": [
-          "disconnect",
           "modified_at"
         ],
         "properties": {

@@ -341,6 +341,8 @@ pub struct AuditConnTarget {
     pub viewer: Option<String>,
     pub user: Option<String>,
     pub ended: bool,
+    /// This request set `disconnect_at`; false for a repeat or an ended row.
+    pub marked: bool,
 }
 
 /// `GET /api/audits/file` row (audit-api-spec.md §9.2).
@@ -1125,7 +1127,7 @@ pub struct HeartbeatResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub strategy: Option<StrategyPush>,
     /// Connection ids the device closes (audit-api-spec.md §10).
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub disconnect: Vec<i64>,
 }
 

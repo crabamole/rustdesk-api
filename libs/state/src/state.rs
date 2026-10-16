@@ -2257,4 +2257,17 @@ mod tests {
         let by_op = utils::AuditQuery { pattern: Some("%adm%".into()), ..q };
         assert_eq!(state.list_audit_consoles(&by_op).await.unwrap().0, 1);
     }
+
+    #[tokio::test]
+    async fn console_log_names_a_deleted_operator() {
+        let state = test_state().await;
+        let (alice, _, _) = state.db.get_user_for_oauth2("alice", "alice", Some("alice@example.org")).await.unwrap();
+        state.log_console(Some(&alice), utils::console_log::TYP_GROUP, utils::console_log::IOP_ADD_GROUP, serde_json::json!({"name":"g1"})).await;
+        state.user_delete(&utils::guid_into_uuid(alice.clone()).unwrap()).await.unwrap();
+        let q = utils::AuditQuery { offset: 0, limit: 10, created_at: None, pattern: None, conn_type: None };
+        let (_, rows) = state.list_audit_consoles(&q).await.unwrap();
+        assert_eq!(rows[0].operator.as_deref(), Some("(deleted user)"));
+        let cli = utils::AuditQuery { pattern: Some("CLI".into()), ..q };
+        assert_eq!(state.list_audit_consoles(&cli).await.unwrap().0, 0);
+    }
 }

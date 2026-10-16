@@ -811,14 +811,16 @@ async fn audits_conn_disconnect(state: &State<ApiState>, user: AuthenticatedAdmi
     if target.ended {
         return Err(Status::Conflict);
     }
-    state
-        .log_console(
-            Some(&user.info.user_id),
-            utils::console_log::TYP_DEVICE,
-            utils::console_log::IOP_DISCONNECT_DEVICE,
-            serde_json::json!({ "device": target.device, "conn_id": target.conn_id, "viewer": target.viewer, "user": target.user }),
-        )
-        .await;
+    if target.marked {
+        state
+            .log_console(
+                Some(&user.info.user_id),
+                utils::console_log::TYP_DEVICE,
+                utils::console_log::IOP_DISCONNECT_DEVICE,
+                serde_json::json!({ "device": target.device, "conn_id": target.conn_id, "viewer": target.viewer, "user": target.user }),
+            )
+            .await;
+    }
     Ok(())
 }
 
@@ -868,7 +870,7 @@ async fn audits_alarm(
 
 /// # Console audit log
 ///
-/// Pro-compatible (`audits.py console`): One row per admin change, newest first; `operator` is an
+/// Pro-compatible (`audits.py console`): one row per admin change, newest first; `operator` is an
 /// SQL LIKE pattern on the user name (`CLI` for CLI rows).
 #[openapi(tag = "audit")]
 #[allow(non_snake_case)]

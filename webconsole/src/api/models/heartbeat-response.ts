@@ -39,5 +39,5 @@ export interface HeartbeatResponse {
      * @type {Array<number>}
      * @memberof HeartbeatResponse
      */
-    disconnect: Array<number>;
+    disconnect?: Array<number>;
 }
