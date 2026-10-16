@@ -979,6 +979,9 @@ impl Database {
             log::error!("change_user_status error: {:?}", res.as_ref().err());
             return None;
         }
+        if res.is_ok_and(|r| r.rows_affected() == 0) {
+            return None;
+        }
         Some(())
     }
 
@@ -1251,6 +1254,9 @@ impl Database {
             log::error!("delete_ab error: {:?}", res.as_ref().err());
             return None;
         }
+        if res.is_ok_and(|r| r.rows_affected() == 0) {
+            return None;
+        }
         Some(())
     }
 
@@ -1358,6 +1364,9 @@ impl Database {
             .await;
         if res.is_err() {
             log::error!("delete_ab_rule error: {:?}", res.as_ref().err());
+            return None;
+        }
+        if res.is_ok_and(|r| r.rows_affected() == 0) {
             return None;
         }
         Some(())
@@ -1515,6 +1524,9 @@ impl Database {
             log::error!("create_group error: {:?}", res.as_ref().err());
             return None;
         }
+        if res.is_ok_and(|r| r.rows_affected() == 0) {
+            return None;
+        }
         Some(())
     }
 
@@ -1546,6 +1558,9 @@ impl Database {
             log::error!("update_group error: {:?}", res.as_ref().err());
             return None;
         }
+        if res.is_ok_and(|r| r.rows_affected() == 0) {
+            return None;
+        }
         Some(())
     }
 
@@ -1563,6 +1578,9 @@ impl Database {
             .await;
         if res.is_err() {
             log::error!("delete_group error: {:?}", res.as_ref().err());
+            return None;
+        }
+        if res.is_ok_and(|r| r.rows_affected() == 0) {
             return None;
         }
         Some(())
@@ -1751,6 +1769,9 @@ impl Database {
             .await;
         if res.is_err() {
             log::error!("update_shared_address_book error: {:?}", res.as_ref().err());
+            return None;
+        }
+        if res.is_ok_and(|r| r.rows_affected() == 0) {
             return None;
         }
         Some(())

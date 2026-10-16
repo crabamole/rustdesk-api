@@ -2667,3 +2667,25 @@ async fn test_console_log_address_books() {
         .body(format!(r#"["{ab}"]"#)).dispatch().await;
     assert_eq!(codes(&last_console_row(&client, &admin).await), (3, 16));
 }
+
+async fn console_total(client: &Client, admin: &str) -> i64 {
+    let body: Value = client.get("/api/audits/console").header(auth_header(admin)).dispatch().await.into_json().await.unwrap();
+    body["total"].as_i64().unwrap()
+}
+
+#[rocket::async_test]
+async fn test_console_log_skips_changes_that_changed_nothing() {
+    let (client, _dir) = test_client().await;
+    let admin = login_admin(&client).await;
+    let before = console_total(&client, &admin).await;
+
+    client.post("/api/enable-users").header(ContentType::JSON).header(auth_header(&admin))
+        .body(r#"{"rows":["11111111-2222-4333-8444-555555555555"],"disable":true}"#).dispatch().await;
+    client.delete("/api/ab/shared").header(ContentType::JSON).header(auth_header(&admin))
+        .body(r#"["11111111-2222-4333-8444-555555555555"]"#).dispatch().await;
+    let resp = client.put("/api/user").header(ContentType::JSON).header(auth_header(&admin))
+        .body(r#"{"uuid":""}"#).dispatch().await;
+    assert_eq!(resp.status(), Status::Ok);
+
+    assert_eq!(console_total(&client, &admin).await, before);
+}

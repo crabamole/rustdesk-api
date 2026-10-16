@@ -2517,7 +2517,7 @@ async fn user_update(
     }
     let info = serde_json::to_value(&user_update).unwrap_or_default();
     let res = state.user_update(guid, user_update).await;
-    if res.is_some() {
+    if res.is_some() && info.as_object().is_some_and(|o| o.len() > 1) {
         state
             .log_console(Some(&user.info.user_id), utils::console_log::TYP_USER, utils::console_log::IOP_UPDATE_USER, info)
             .await;
