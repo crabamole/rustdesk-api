@@ -399,7 +399,7 @@ pub struct LoginRecord {
     pub ip: String,
 }
 
-/// `GET /api/audits/console` row (audit-api-spec.md §9.2). Nothing writes `audit_console` yet.
+/// `GET /api/audits/console` row (audit-api-spec.md §9.2).
 #[derive(Serialize, Debug, JsonSchema)]
 pub struct AuditConsoleLog {
     pub guid: String,

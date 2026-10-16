@@ -843,21 +843,25 @@ async fn audits_alarm(
 
 /// # Console audit log
 ///
-/// Pro-compatible (`audits.py console`): nothing writes `audit_console` yet, so this always
-/// answers an empty page (audit-api-spec.md §9, §14).
+/// Pro-compatible (`audits.py console`): One row per admin change, newest first; `operator` is an
+/// SQL LIKE pattern on the user name (`CLI` for CLI rows).
 #[openapi(tag = "audit")]
 #[allow(non_snake_case)]
 #[get("/api/audits/console?<current>&<pageSize>&<created_at>&<operator>")]
 async fn audits_console(
-    _state: &State<ApiState>,
+    state: &State<ApiState>,
     _user: AuthenticatedAdmin,
     current: Option<i64>,
     pageSize: Option<i64>,
     created_at: Option<String>,
     operator: Option<String>,
 ) -> Result<Json<utils::AuditPage<utils::AuditConsoleLog>>, (Status, String)> {
-    audit_query(current, pageSize, created_at, operator, None)?;
-    Ok(Json(utils::AuditPage { total: 0, data: Vec::new() }))
+    let q = audit_query(current, pageSize, created_at, operator, None)?;
+    state
+        .list_audit_consoles(&q)
+        .await
+        .map(|(total, data)| Json(utils::AuditPage { total, data }))
+        .ok_or((Status::InternalServerError, "cannot read audit log".to_string()))
 }
 
 /// # Login audit log

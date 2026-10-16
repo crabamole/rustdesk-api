@@ -862,6 +862,17 @@ impl ApiState {
         self.db.list_audit_conns(q).await
     }
 
+    /// Writes one console log row (design-console-audit.md); a failed write is logged and the action stands.
+    pub async fn log_console(&self, operator: Option<&UserId>, typ: i16, iop: i16, info: serde_json::Value) {
+        if self.db.insert_audit_console(operator.map(|o| o.as_slice()), typ, iop, &info.to_string()).await.is_none() {
+            log::error!("console log row not written: typ {typ} iop {iop}");
+        }
+    }
+
+    pub async fn list_audit_consoles(&self, q: &utils::AuditQuery) -> Option<(i64, Vec<utils::AuditConsoleLog>)> {
+        self.db.list_audit_consoles(q).await
+    }
+
     pub async fn list_audit_files(&self, q: &utils::AuditQuery) -> Option<(i64, Vec<utils::AuditFileLog>)> {
         self.db.list_audit_files(q).await
     }
@@ -2187,5 +2198,21 @@ mod tests {
         let ok = OidcState { id: "7".repeat(32), uuid: "u".repeat(255), device_type: "client".into(), ..Default::default() };
         state.record_viewer_login(&ok, &user).await;
         assert_eq!(state.list_viewer_devices(0, 10).await.unwrap().0, 1);
+    }
+
+    #[tokio::test]
+    async fn console_log_rows_are_listed_newest_first() {
+        let state = test_state().await;
+        let admin = state.db.get_user_for_oauth2("admin", "admin", Some("admin@example.org")).await.unwrap().0;
+        state.log_console(Some(&admin), utils::console_log::TYP_GROUP, utils::console_log::IOP_ADD_GROUP, serde_json::json!({"name":"g1"})).await;
+        state.log_console(None, utils::console_log::TYP_USER, utils::console_log::IOP_PROMOTE_ADMIN, serde_json::json!({"email":"a@x","via":"cli"})).await;
+        let q = utils::AuditQuery { offset: 0, limit: 10, created_at: None, pattern: None, conn_type: None };
+        let (total, rows) = state.list_audit_consoles(&q).await.unwrap();
+        assert_eq!(total, 2);
+        assert_eq!((rows[0].typ, rows[0].iop, rows[0].operator.as_deref()), (1, 23, Some("CLI")));
+        assert_eq!(rows[0].info["email"], "a@x");
+        assert_eq!((rows[1].typ, rows[1].iop, rows[1].operator.as_deref()), (0, 1, Some("admin")));
+        let by_op = utils::AuditQuery { pattern: Some("%adm%".into()), ..q };
+        assert_eq!(state.list_audit_consoles(&by_op).await.unwrap().0, 1);
     }
 }

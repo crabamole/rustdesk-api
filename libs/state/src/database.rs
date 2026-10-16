@@ -2501,6 +2501,60 @@ impl Database {
         Some((total, data))
     }
 
+    /// Stores one console log row; `operator` is None for the CLI.
+    pub async fn insert_audit_console(&self, operator: Option<&[u8]>, typ: i16, iop: i16, info: &str) -> Option<()> {
+        sqlx::query("INSERT INTO audit_console (guid, type, operator, iop, info) VALUES ($1, $2, $3, $4, $5)")
+            .bind(Uuid::new_v4().as_bytes().to_vec())
+            .bind(typ)
+            .bind(operator)
+            .bind(iop)
+            .bind(info)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| log::error!("insert_audit_console error: {e:?}"))
+            .ok()?;
+        Some(())
+    }
+
+    /// Admin read API (audit-api-spec.md §9): console rows, newest first; `pattern` matches the operator name.
+    pub async fn list_audit_consoles(&self, q: &utils::AuditQuery) -> Option<(i64, Vec<utils::AuditConsoleLog>)> {
+        const FROM: &str = "FROM audit_console c LEFT JOIN \"user\" u ON u.guid = c.operator \
+             WHERE ($1::text IS NULL OR c.created_at::timestamptz >= ($1::timestamp AT TIME ZONE 'UTC')) \
+             AND ($2::text IS NULL OR COALESCE(u.name, 'CLI') LIKE $2)";
+        let total: i64 = sqlx::query_scalar(&format!("SELECT count(*) {FROM}"))
+            .bind(&q.created_at)
+            .bind(&q.pattern)
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|e| log::error!("list_audit_consoles count error: {e:?}"))
+            .ok()?;
+        let rows: Vec<(Vec<u8>, i16, i16, Option<String>, String, i64)> = sqlx::query_as(&format!(
+            "SELECT c.guid, c.type, c.iop, CASE WHEN c.operator IS NULL THEN 'CLI' ELSE u.name END, c.info, \
+               extract(epoch FROM c.created_at::timestamptz)::bigint {FROM} \
+             ORDER BY c.created_at::timestamptz DESC, c.guid LIMIT $3 OFFSET $4"
+        ))
+        .bind(&q.created_at)
+        .bind(&q.pattern)
+        .bind(q.limit)
+        .bind(q.offset)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| log::error!("list_audit_consoles query error: {e:?}"))
+        .ok()?;
+        let mut data = Vec::with_capacity(rows.len());
+        for (guid, typ, iop, operator, info, created_at) in rows {
+            data.push(utils::AuditConsoleLog {
+                guid: guid_into_uuid(guid)?,
+                typ,
+                iop,
+                operator,
+                info: serde_json::from_str(&info).unwrap_or(serde_json::Value::String(info)),
+                created_at,
+            });
+        }
+        Some((total, data))
+    }
+
     /// Admin read API (audit-api-spec.md §9): file transfer / clipboard-file rows.
     ///
     /// `info.info` is read as plain jsonb (`j.i->'info'`, never cast from text) because a
@@ -2829,7 +2883,7 @@ mod tests {
                 .fetch_all(&first.pool)
                 .await
                 .unwrap();
-        assert_eq!(applied, (1..=15).map(|v| (v, true)).collect::<Vec<_>>());
+        assert_eq!(applied, (1..=16).map(|v| (v, true)).collect::<Vec<_>>());
         first.pool.close().await;
 
         // Second start on the same database must not fail or duplicate rows.

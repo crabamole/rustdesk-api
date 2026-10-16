@@ -1954,7 +1954,7 @@ async fn test_audits_alarm_shows_info_as_an_object() {
 }
 
 #[rocket::async_test]
-async fn test_audits_console_is_always_an_empty_page() {
+async fn test_audits_console_is_empty_on_a_fresh_database() {
     let (client, _dir) = test_client().await;
     let admin = login_admin(&client).await;
     let resp = client.get("/api/audits/console?current=1&pageSize=10").header(auth_header(&admin)).dispatch().await;
@@ -1962,6 +1962,18 @@ async fn test_audits_console_is_always_an_empty_page() {
     let body: Value = resp.into_json().await.unwrap();
     assert_eq!(body["total"], 0);
     assert_eq!(body["data"].as_array().unwrap().len(), 0);
+}
+
+#[rocket::async_test]
+async fn test_console_log_lists_rows() {
+    let (client, _dir) = test_client().await;
+    let token = login_admin(&client).await;
+    let state = client.rocket().state::<state::ApiState>().unwrap();
+    state.log_console(None, utils::console_log::TYP_POLICY, utils::console_log::IOP_REPUSH_POLICY, serde_json::json!({"via":"cli"})).await;
+    let body: Value = client.get("/api/audits/console?operator=CLI").header(auth_header(&token)).dispatch().await.into_json().await.unwrap();
+    assert_eq!(body["total"], 1);
+    assert_eq!(body["data"][0]["iop"], 26);
+    assert_eq!(body["data"][0]["operator"], "CLI");
 }
 
 /// `POST /api/audit/{file,alarm}` are unauthenticated; a non-JSON `info` string starting with
