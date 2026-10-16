@@ -548,6 +548,39 @@
         ]
       }
     },
+    "/api/audits/conn/{guid}/disconnect": {
+      "post": {
+        "tags": [
+          "audit"
+        ],
+        "summary": "Disconnect a connection",
+        "description": "Marks an active connection; its device closes it on its next heartbeat (audit-api-spec.md §10). 404 for an unknown connection, 409 when it has already ended.",
+        "operationId": "audits_conn_disconnect",
+        "parameters": [
+          {
+            "name": "guid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          },
+          "default": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "authorization_admin": []
+          }
+        ]
+      }
+    },
     "/api/audits/file": {
       "get": {
         "tags": [
@@ -700,7 +733,7 @@
           "audit"
         ],
         "summary": "Console audit log",
-        "description": "Pro-compatible (`audits.py console`): nothing writes `audit_console` yet, so this always answers an empty page (audit-api-spec.md §9, §14).",
+        "description": "Pro-compatible (`audits.py console`): One row per admin change, newest first; `operator` is an SQL LIKE pattern on the user name (`CLI` for CLI rows).",
         "operationId": "audits_console",
         "parameters": [
           {
@@ -3248,6 +3281,7 @@
         "required": [
           "active",
           "created_at",
+          "disconnect_requested",
           "guid",
           "remote"
         ],
@@ -3330,6 +3364,10 @@
             "nullable": true
           },
           "active": {
+            "type": "boolean"
+          },
+          "disconnect_requested": {
+            "description": "An admin asked the device to close this connection.",
             "type": "boolean"
           }
         }
@@ -3478,7 +3516,7 @@
         }
       },
       "AuditConsoleLog": {
-        "description": "`GET /api/audits/console` row (audit-api-spec.md §9.2). Nothing writes `audit_console` yet.",
+        "description": "`GET /api/audits/console` row (audit-api-spec.md §9.2).",
         "type": "object",
         "required": [
           "created_at",
@@ -3596,6 +3634,7 @@
         "description": "Reply to `/api/heartbeat`; the client applies `strategy` when present (`hbbs_http/sync.rs`).",
         "type": "object",
         "required": [
+          "disconnect",
           "modified_at"
         ],
         "properties": {
@@ -3610,6 +3649,14 @@
               }
             ],
             "nullable": true
+          },
+          "disconnect": {
+            "description": "Connection ids the device closes (audit-api-spec.md §10).",
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "format": "int64"
+            }
           }
         }
       },

@@ -18,6 +18,28 @@ export function authLabel(primary?: number, twoFactor?: number): string {
     return parts.filter(Boolean).join(' + ');
 }
 
+const CONSOLE_AREAS: Record<number, string> = { 0: 'Group', 1: 'User', 2: 'Device', 3: 'Address book', 4: 'Policy' };
+const CONSOLE_ACTIONS: Record<number, string> = {
+    1: 'Add group', 2: 'Add user', 4: 'Delete groups', 5: 'Disconnect', 6: 'Enable users', 7: 'Disable users',
+    10: 'Update group', 11: 'Update user', 13: 'Delete user', 15: 'Add address book', 16: 'Delete address book',
+    17: 'Rename address book', 20: 'Add address book permission', 21: 'Delete address book permission',
+    23: 'Promote admin', 24: 'Demote admin', 25: 'Update policy', 26: 'Re-push policy',
+};
+
+export function consoleAreaLabel(typ: number): string {
+    return CONSOLE_AREAS[typ] ?? `Unknown (${typ})`;
+}
+
+export function consoleActionLabel(iop: number): string {
+    return CONSOLE_ACTIONS[iop] ?? `Unknown (${iop})`;
+}
+
+/** `info` as `key: value` pairs; objects and lists as compact JSON. */
+export function consoleDetails(info: any): string {
+    if (!info || typeof info !== 'object') return info == null ? '' : String(info);
+    return Object.entries(info).map(([k, v]) => `${k}: ${typeof v === 'object' ? JSON.stringify(v) : v}`).join(', ');
+}
+
 const ALARMS: Record<number, string> = {
     0: 'Access outside the IP whitelist', 1: 'Over 30 consecutive access attempts', 2: 'Multiple access attempts within one minute',
     6: 'Too many attempts from an IPv6 prefix', 7: 'Terminal login backoff', 8: 'Terminal login busy',
