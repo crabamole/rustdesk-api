@@ -98,6 +98,8 @@ pub async fn run_admin(cmd: &AdminCommand, db_url: &str) -> Result<String, Strin
     };
     let state = ApiState::new_with_db(db_url).await;
     let name = state.set_admin(email, admin).await?;
+    let iop = if admin { utils::console_log::IOP_PROMOTE_ADMIN } else { utils::console_log::IOP_DEMOTE_ADMIN };
+    state.log_console(None, utils::console_log::TYP_USER, iop, serde_json::json!({ "email": email, "via": "cli" })).await;
     Ok(if admin {
         format!("{name} is now an admin")
     } else {
@@ -131,6 +133,7 @@ pub async fn run_policy(cmd: &PolicyCommand, db_url: &str) -> Result<String, Str
         }
         PolicyCommand::Repush => {
             let m = state.bump_strategy(guid).await.ok_or("cannot update the policy")?;
+            state.log_console(None, utils::console_log::TYP_POLICY, utils::console_log::IOP_REPUSH_POLICY, serde_json::json!({ "guid": guid, "via": "cli" })).await;
             log::info!("policy re-pushed from the CLI");
             Ok(format!("policy re-pushed (modified_at {m}); devices receive it on their next heartbeat"))
         }
@@ -229,6 +232,11 @@ issuer = "https://idp.example.com"
         assert_eq!(run_admin(&demote, &db_url).await.unwrap(), "alice is no longer an admin");
         let (info, _) = state.test_oidc_login(&"alice".to_string()).await.unwrap();
         assert!(!info.admin);
+
+        let q = utils::AuditQuery { offset: 0, limit: 10, created_at: None, pattern: Some("CLI".into()), conn_type: None };
+        let (total, rows) = ApiState::new_with_db(&db_url).await.list_audit_consoles(&q).await.unwrap();
+        assert_eq!(total, 2);
+        assert_eq!((rows[0].iop, rows[1].iop), (24, 23));
     }
 
     #[rocket::async_test]

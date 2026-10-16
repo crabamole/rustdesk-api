@@ -2605,3 +2605,65 @@ async fn test_disconnect_needs_an_admin_and_a_known_row() {
     let resp = client.post("/api/audits/conn/00000000-0000-0000-0000-000000000000/disconnect").header(auth_header(&alice)).dispatch().await;
     assert!(resp.status() == Status::Unauthorized || resp.status() == Status::Forbidden);
 }
+
+/// The newest console log row, as the console reads it.
+async fn last_console_row(client: &Client, admin: &str) -> Value {
+    let body: Value = client.get("/api/audits/console").header(auth_header(admin)).dispatch().await.into_json().await.unwrap();
+    body["data"][0].clone()
+}
+
+fn codes(row: &Value) -> (i64, i64) {
+    (row["typ"].as_i64().unwrap(), row["iop"].as_i64().unwrap())
+}
+
+#[rocket::async_test]
+async fn test_console_log_groups_and_users() {
+    let (client, _dir) = test_client().await;
+    let admin = login_admin(&client).await;
+    client.post("/api/group").header(ContentType::JSON).header(auth_header(&admin))
+        .body(r#"{"name":"g-log","note":"n","allowed_outgoings":[],"allowed_incomings":[]}"#).dispatch().await;
+    let row = last_console_row(&client, &admin).await;
+    assert_eq!(codes(&row), (0, 1));
+    assert_eq!(row["info"]["name"], "g-log");
+    assert_eq!(row["operator"], "admin");
+
+    let state = client.rocket().state::<state::ApiState>().unwrap();
+    state.test_oidc_login(&"bob".to_string()).await;
+    let users: Value = client.get("/api/user-list?current=1&pageSize=100&name=bob").header(auth_header(&admin)).dispatch().await.into_json().await.unwrap();
+    let bob = users["data"][0]["guid"].as_str().unwrap().to_string();
+    client.post("/api/enable-users").header(ContentType::JSON).header(auth_header(&admin))
+        .body(format!(r#"{{"rows":["{bob}"],"disable":false}}"#)).dispatch().await;
+    let row = last_console_row(&client, &admin).await;
+    assert_eq!(codes(&row), (1, 6));
+    assert_eq!(row["info"]["users"], serde_json::json!([bob]));
+}
+
+#[rocket::async_test]
+async fn test_console_log_policy_and_failed_change() {
+    let (client, _dir) = test_client().await;
+    let admin = login_admin(&client).await;
+    client.put(format!("/api/strategies/{DEFAULT_STRATEGY}")).header(ContentType::JSON).header(auth_header(&admin))
+        .body(r#"{"options":{"enable-clipboard":"N"}}"#).dispatch().await;
+    let row = last_console_row(&client, &admin).await;
+    assert_eq!(codes(&row), (4, 25));
+    assert_eq!(row["info"]["options"]["enable-clipboard"], "N");
+
+    let resp = client.post("/api/strategies/no-such-guid/repush").header(auth_header(&admin)).dispatch().await;
+    assert_eq!(resp.status(), Status::NotFound);
+    assert_eq!(codes(&last_console_row(&client, &admin).await), (4, 25), "a failed change writes no row");
+}
+
+#[rocket::async_test]
+async fn test_console_log_address_books() {
+    let (client, _dir) = test_client().await;
+    let admin = login_admin(&client).await;
+    let added: Value = client.post("/api/ab/shared/add").header(ContentType::JSON).header(auth_header(&admin))
+        .body(r#"{"name":"ab-log"}"#).dispatch().await.into_json().await.unwrap();
+    let row = last_console_row(&client, &admin).await;
+    assert_eq!(codes(&row), (3, 15));
+    assert_eq!(row["info"]["name"], "ab-log");
+    let ab = added["data"][0]["guid"].as_str().unwrap().to_string();
+    client.delete("/api/ab/shared").header(ContentType::JSON).header(auth_header(&admin))
+        .body(format!(r#"["{ab}"]"#)).dispatch().await;
+    assert_eq!(codes(&last_console_row(&client, &admin).await), (3, 16));
+}

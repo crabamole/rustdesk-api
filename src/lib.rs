@@ -1134,15 +1134,21 @@ async fn group_get(
 #[post("/api/group", format = "application/json", data = "<request>")]
 async fn group_add(
     state: &State<ApiState>,
-    _user: AuthenticatedAdmin,
+    user: AuthenticatedAdmin,
     request: Json<AddGoupRequest>,
 ) -> Result<Json<UsersResponse>, status::Unauthorized<()>> {
     log::debug!("create_group");
 
     let request = request.into_inner();
-    let _res = state
+    let res = state
         .create_group(request.name.as_str(), "Default", request.note.as_str()) // Todo allow to use different team
         .await;
+    if res.is_some() {
+        state
+            .log_console(Some(&user.info.user_id), utils::console_log::TYP_GROUP, utils::console_log::IOP_ADD_GROUP,
+                serde_json::json!({ "name": request.name, "note": request.note }))
+            .await;
+    }
     let response = UsersResponse {
         msg: "success".to_string(),
         total: 1,
@@ -1168,13 +1174,13 @@ async fn group_add(
 #[put("/api/group", format = "application/json", data = "<request>")]
 async fn group_update(
     state: &State<ApiState>,
-    _user: AuthenticatedAdmin,
+    user: AuthenticatedAdmin,
     request: Json<UpdateGoupRequest>,
 ) -> Result<Json<UsersResponse>, status::Unauthorized<()>> {
     log::debug!("update_group");
 
     let request = request.into_inner();
-    let _res = state
+    let res = state
         .update_group(
             request.guid.as_str(),
             request.name.as_str(),
@@ -1182,6 +1188,12 @@ async fn group_update(
             request.note.as_str(),
         )
         .await;
+    if res.is_some() {
+        state
+            .log_console(Some(&user.info.user_id), utils::console_log::TYP_GROUP, utils::console_log::IOP_UPDATE_GROUP,
+                serde_json::json!({ "guid": request.guid, "name": request.name, "note": request.note }))
+            .await;
+    }
     let response = UsersResponse {
         msg: "success".to_string(),
         total: 1,
@@ -1206,12 +1218,18 @@ async fn group_update(
 #[delete("/api/group/<guid>", format = "application/json", data = "<request>")]
 async fn group_delete(
     state: &State<ApiState>,
-    _user: AuthenticatedAdmin,
+    user: AuthenticatedAdmin,
     request: Json<Vec<String>>,
     guid: &str,
 ) -> Result<(), status::Unauthorized<()>> {
     log::debug!("group_delete");
-    let _res = state.delete_group(guid).await;
+    let res = state.delete_group(guid).await;
+    if res.is_some() {
+        state
+            .log_console(Some(&user.info.user_id), utils::console_log::TYP_GROUP, utils::console_log::IOP_DELETE_GROUPS,
+                serde_json::json!({ "guid": guid }))
+            .await;
+    }
     Ok(())
 }
 
@@ -2275,6 +2293,10 @@ async fn strategy_update(
         .set_strategy_options(guid, &options)
         .await
         .ok_or((Status::NotFound, format!("no strategy {guid}")))?;
+    state
+        .log_console(Some(&user.info.user_id), utils::console_log::TYP_POLICY, utils::console_log::IOP_UPDATE_POLICY,
+            serde_json::json!({ "guid": guid, "options": options }))
+        .await;
     log::info!("{} set strategy {guid} options: {:?}", user.username, options);
     load_strategy(state, guid).await
 }
@@ -2295,6 +2317,10 @@ async fn strategy_repush(
         .bump_strategy(guid)
         .await
         .ok_or((Status::NotFound, format!("no strategy {guid}")))?;
+    state
+        .log_console(Some(&user.info.user_id), utils::console_log::TYP_POLICY, utils::console_log::IOP_REPUSH_POLICY,
+            serde_json::json!({ "guid": guid }))
+        .await;
     log::info!("{} re-pushed strategy {guid}", user.username);
     load_strategy(state, guid).await
 }
@@ -2314,16 +2340,25 @@ async fn strategy_repush(
 #[post("/api/user", format = "application/json", data = "<request>")]
 async fn user_add(
     state: &State<ApiState>,
-    _user: AuthenticatedAdmin,
+    user: AuthenticatedAdmin,
     request: Json<AddUserRequest>,
 ) -> Result<Json<UsersResponse>, status::Unauthorized<()>> {
     log::debug!("create_user");
 
     let user_parameters = request.0;
+    let info = serde_json::json!({
+        "name": user_parameters.name,
+        "email": user_parameters.email,
+        "is_admin": user_parameters.is_admin,
+        "group_name": user_parameters.group_name,
+    });
     let res = state.add_user(user_parameters).await;
     if res.is_none() {
         return Err(status::Unauthorized::<()>(()));
     }
+    state
+        .log_console(Some(&user.info.user_id), utils::console_log::TYP_USER, utils::console_log::IOP_ADD_USER, info)
+        .await;
     let response = UsersResponse {
         msg: "success".to_string(),
         total: 1,
@@ -2348,7 +2383,7 @@ async fn user_add(
 #[delete("/api/user", format = "application/json", data = "<request>")]
 async fn user_delete(
     state: &State<ApiState>,
-    _user: AuthenticatedAdmin,
+    user: AuthenticatedAdmin,
     request: Json<DeleteUserRequest>,
 ) -> Result<Json<UsersResponse>, status::Unauthorized<()>> {
     log::debug!("create_user");
@@ -2356,11 +2391,19 @@ async fn user_delete(
     let delete_users = request.0;
 
     let mut count = 0;
+    let mut deleted = Vec::new();
     for uuid in delete_users.rows {
         let res = state.user_delete(uuid.as_str()).await;
         if res.is_some() {
             count += 1;
+            deleted.push(uuid);
         }
+    }
+    if !deleted.is_empty() {
+        state
+            .log_console(Some(&user.info.user_id), utils::console_log::TYP_USER, utils::console_log::IOP_DELETE_USER,
+                serde_json::json!({ "users": deleted }))
+            .await;
     }
     let response = UsersResponse {
         msg: "success".to_string(),
@@ -2386,7 +2429,7 @@ async fn user_delete(
 #[post("/api/enable-users", format = "application/json", data = "<request>")]
 async fn user_enable(
     state: &State<ApiState>,
-    _user: AuthenticatedAdmin,
+    user: AuthenticatedAdmin,
     request: Json<EnableUserRequest>,
 ) -> Result<Json<UsersResponse>, status::Unauthorized<()>> {
     log::debug!("create_user");
@@ -2394,13 +2437,26 @@ async fn user_enable(
     let enable_users = request.0;
 
     let mut count = 0;
+    let mut changed = Vec::new();
     for uuid in enable_users.rows {
         let res = state
             .user_change_status(uuid.as_str(), enable_users.disable)
             .await;
         if res.is_some() {
             count += 1;
+            changed.push(uuid);
         }
+    }
+    if !changed.is_empty() {
+        let iop = if enable_users.disable {
+            utils::console_log::IOP_DISABLE_USERS
+        } else {
+            utils::console_log::IOP_ENABLE_USERS
+        };
+        state
+            .log_console(Some(&user.info.user_id), utils::console_log::TYP_USER, iop,
+                serde_json::json!({ "users": changed }))
+            .await;
     }
     let response = UsersResponse {
         msg: "success".to_string(),
@@ -2459,7 +2515,13 @@ async fn user_update(
         user_update.group_name = None;
         user_update.status = None;
     }
-    state.user_update(guid, user_update).await;
+    let info = serde_json::to_value(&user_update).unwrap_or_default();
+    let res = state.user_update(guid, user_update).await;
+    if res.is_some() {
+        state
+            .log_console(Some(&user.info.user_id), utils::console_log::TYP_USER, utils::console_log::IOP_UPDATE_USER, info)
+            .await;
+    }
     Ok(Json(response))
 }
 
@@ -2643,7 +2705,7 @@ async fn ab_rules(
 #[post("/api/ab/rule", format = "application/json", data = "<request>")]
 async fn ab_rule_add(
     state: &State<ApiState>,
-    _user: AuthenticatedAdmin,
+    user: AuthenticatedAdmin,
     request: Json<AbRuleAddRequest>,
 ) -> Result<ActionResponse, status::Unauthorized<()>> {
     let rule = AbRule {
@@ -2652,7 +2714,13 @@ async fn ab_rule_add(
         group: request.0.group,
         rule: request.0.rule,
     };
-    state.add_ab_rule(rule).await;
+    let info = serde_json::json!({ "ab": rule.guid, "user": rule.user, "group": rule.group, "rule": rule.rule });
+    let res = state.add_ab_rule(rule).await;
+    if res.is_some() {
+        state
+            .log_console(Some(&user.info.user_id), utils::console_log::TYP_ADDRESS_BOOK, utils::console_log::IOP_ADD_AB_PERMISSION, info)
+            .await;
+    }
     Ok(ActionResponse::Empty)
 }
 
@@ -2672,11 +2740,17 @@ async fn ab_rule_add(
 #[delete("/api/ab/rule", format = "application/json", data = "<request>")]
 async fn ab_rule_delete(
     state: &State<ApiState>,
-    _user: AuthenticatedAdmin,
+    user: AuthenticatedAdmin,
     request: Json<AbRuleDeleteRequest>,
 ) -> Result<ActionResponse, status::Unauthorized<()>> {
     let rule = request.0.guid;
-    state.delete_ab_rule(rule.as_str()).await;
+    let res = state.delete_ab_rule(rule.as_str()).await;
+    if res.is_some() {
+        state
+            .log_console(Some(&user.info.user_id), utils::console_log::TYP_ADDRESS_BOOK, utils::console_log::IOP_DELETE_AB_PERMISSION,
+                serde_json::json!({ "rule": rule }))
+            .await;
+    }
     Ok(ActionResponse::Empty)
 }
 
@@ -2707,6 +2781,10 @@ async fn ab_shared_add(
         return Err(status::Unauthorized::<()>(()));
     }
     let ab_uuid = ab_uuid.unwrap();
+    state
+        .log_console(Some(&user.info.user_id), utils::console_log::TYP_ADDRESS_BOOK, utils::console_log::IOP_ADD_ADDRESS_BOOK,
+            serde_json::json!({ "guid": ab_uuid, "name": name }))
+        .await;
     let shared_profile = AbProfile {
         guid: ab_uuid,
         name: name,
@@ -2736,11 +2814,17 @@ async fn ab_shared_add(
 #[delete("/api/ab/shared", format = "application/json", data = "<request>")]
 async fn ab_shared_delete(
     state: &State<ApiState>,
-    _user: AuthenticatedAdmin,
+    user: AuthenticatedAdmin,
     request: Json<Vec<String>>,
 ) -> Result<ActionResponse, status::Unauthorized<()>> {
     let shared_profiles_to_delete = request.0;
-    state.delete_shared_address_books(shared_profiles_to_delete).await;
+    let res = state.delete_shared_address_books(shared_profiles_to_delete.clone()).await;
+    if res.is_some() {
+        state
+            .log_console(Some(&user.info.user_id), utils::console_log::TYP_ADDRESS_BOOK, utils::console_log::IOP_DELETE_ADDRESS_BOOK,
+                serde_json::json!({ "guids": shared_profiles_to_delete }))
+            .await;
+    }
     Ok(ActionResponse::Empty)
 }
 
@@ -2765,7 +2849,13 @@ async fn ab_shared_name(
 ) -> Result<Json<AbSharedProfilesResponse>, status::Unauthorized<()>> {
     let shared_profile = request.0;
     let name = shared_profile.name.expect("Currently name is required");
-    state.update_shared_address_book(shared_profile.guid.as_str(), name.as_str()).await;
+    let res = state.update_shared_address_book(shared_profile.guid.as_str(), name.as_str()).await;
+    if res.is_some() {
+        state
+            .log_console(Some(&user.info.user_id), utils::console_log::TYP_ADDRESS_BOOK, utils::console_log::IOP_CHANGE_ADDRESS_BOOK_NAME,
+                serde_json::json!({ "guid": shared_profile.guid, "name": name }))
+            .await;
+    }
     let shared_profiles = state.get_shared_address_books(user.info.user_id).await;
     let mut ab_shared_profiles = AbSharedProfilesResponse::default();
     for ab in shared_profiles.expect("shared_profiles is None") {
