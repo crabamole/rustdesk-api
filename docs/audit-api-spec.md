@@ -439,7 +439,7 @@ specified; we define them to cover the Pro console columns [D]:
 
 ### 9.4 Console log codes [S]
 
-`typ`: 0 Group, 1 User, 2 Device, 3 Address Book management (Pro docs also
+`typ`: 0 Group, 1 User, 2 Device, 3 Address Book management, 4 Policy (ours) (Pro docs also
 list Admin Roles / Control Roles management — codes undocumented).
 
 `iop`: 0 User Login, 1 Add Group, 2 Add User, 3 Add Device, 4 Delete Groups,
@@ -576,12 +576,12 @@ Legend: ✅ conforms · ⚠️ partial / deviates · ❌ missing
 
 | Spec | Status | Finding |
 |---|---|---|
-| §9 `GET /api/audits/{conn,file,alarm,console}` | ✅ | Implemented, `audits.py`-compatible, admin only; `console` kind always answers an empty page (§9.4 not written to). |
+| §9 `GET /api/audits/{conn,file,alarm,console}` | ✅ | Implemented, `audits.py`-compatible, admin only; `console` kind returns one row per admin change, newest first, with Pro paging. |
 | §9 `GET /api/audits/login` (ours) | ✅ | OIDC sign-ins with outcome; console "Logins" tab. |
-| §9.3 console UI (logs pages, disconnect, edit note, CSV export) | ⚠️ | Webconsole has a new "Audit log" page (conn/file/alarm/login). Disconnect, edit-note-from-console and CSV export are not implemented. |
+| §9.3 console UI (logs pages, disconnect, edit note, CSV export) | ⚠️ | Webconsole has a new "Audit log" page (conn/file/alarm/login). Edit-note-from-console and CSV export are not implemented. |
 | §9.3 retention | ❌ | No setting, no purge job. |
 | §9.3 visibility / permissions | ❌ | No `audits.view` / `audits.edit` model; nothing to read anyway. |
-| §9.4 console audit (`audit_console`) | ✅ | Admin and CLI changes logged (typ 0–4, iop codes 1–22, 23–26); CLI rows have no operator and `info.via = "cli"`; console shown as "CLI". |
+| §9.4 console audit (`audit_console`) | ✅ | Admin and CLI changes logged (typ 0–4, Pro's codes plus 23–26); CLI rows have no operator and `info.via = "cli"`; console shown as "CLI". |
 | §12.1 write validation | ✅ | conn/file/alarm records only from a registered `(id, uuid)`; others answered 2xx and dropped with a warning. Refs bound to their target device. |
 
 ### 14.3 Schema (`libs/state/migrations/0001_initial.sql`)
@@ -607,6 +607,6 @@ All client-facing write paths (§3.1–§8) now work, including both note paths
 (§4, §8), the GUID lookup (§7, now authenticated and scoped to the caller),
 and controller-user attribution end to end (§11, §3.1, §5, §6). The admin
 read API (§9) and a webconsole "Audit log" page (§9.3) are implemented.
-Still open: console Disconnect, CSV export, retention, console (admin
-action) logging, alarms 3–5, hbbs's raw-TCP API
+Console Disconnect and console (admin action) logging are also implemented.
+Still open: CSV export, retention, alarms 3–5, hbbs's raw-TCP API
 proxy (§2.2).
