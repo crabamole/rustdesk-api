@@ -146,7 +146,8 @@ Upstream clients log in by polling `GET /api/oidc/auth-query`; that login is not
 | GET | /api/audits/conn | [S] `audits.py` | implemented | admin-only; newest first; `remote`/`conn_type` filters, per audit-api-spec.md §9; rows also carry the viewer machine (`peer_hostname`, `peer_os`, `peer_login_ip`) |
 | GET | /api/audits/file | [S] `audits.py` | implemented | admin-only; newest first; `remote` filter, per audit-api-spec.md §9 |
 | GET | /api/audits/alarm | [S] `audits.py` | implemented | admin-only; newest first; `device` filter, per audit-api-spec.md §9 |
-| GET | /api/audits/console | [S] `audits.py` | partial | admin-only; always answers an empty page — nothing writes `audit_console` yet, per audit-api-spec.md §9/§14.2 |
+| GET | /api/audits/console | [S] `audits.py` | implemented | admin-only; newest first; returns rows logged by admin and CLI actions per audit-api-spec.md §9/§14.2 |
+| POST | /api/audits/conn/<guid>/disconnect | ours | implemented | admin-only; 404 unknown, 409 ended; sets disconnect_at and queues the conn_id for heartbeat delivery per audit-api-spec.md §10 |
 
 ## Our own endpoints
 
