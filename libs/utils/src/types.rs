@@ -329,6 +329,18 @@ pub struct AuditConnLog {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
     pub active: bool,
+    /// An admin asked the device to close this connection.
+    pub disconnect_requested: bool,
+}
+
+/// The connection a disconnect request names, for the console log and the endpoint's answer.
+#[derive(Debug)]
+pub struct AuditConnTarget {
+    pub device: String,
+    pub conn_id: Option<i64>,
+    pub viewer: Option<String>,
+    pub user: Option<String>,
+    pub ended: bool,
 }
 
 /// `GET /api/audits/file` row (audit-api-spec.md §9.2).
@@ -1112,6 +1124,9 @@ pub struct HeartbeatResponse {
     pub modified_at: i64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub strategy: Option<StrategyPush>,
+    /// Connection ids the device closes (audit-api-spec.md §10).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub disconnect: Vec<i64>,
 }
 
 #[derive(Debug, PartialEq, Serialize, JsonSchema)]

@@ -2561,3 +2561,47 @@ async fn test_serve_logs_one_access_line_per_request_without_query_or_probes() {
     assert!(access[0].contains("GET /api/login-options 200 "), "{err}");
     assert!(!err.contains("s3cret") && !err.contains("Matched:"), "{err}");
 }
+
+#[rocket::async_test]
+async fn test_disconnect_reaches_the_device_heartbeat() {
+    let (client, _dir) = test_client().await;
+    let admin = login_admin(&client).await;
+    let state = client.rocket().state::<state::ApiState>().unwrap();
+    state.test_register_device("devdc", "ZGM=").await;
+    client.post("/api/audit/conn").header(ContentType::JSON)
+        .body(r#"{"action":"new","ip":"1.2.3.4","id":"devdc","uuid":"ZGM=","conn_id":5,"session_id":0,"nonce":"n-dc"}"#).dispatch().await;
+    let list: Value = client.get("/api/audits/conn?remote=devdc").header(auth_header(&admin)).dispatch().await.into_json().await.unwrap();
+    let guid = list["data"][0]["guid"].as_str().unwrap().to_string();
+
+    let hb = r#"{"id":"devdc","uuid":"ZGM=","modified_at":0,"ver":0,"conns":[5]}"#;
+    let before: Value = client.post("/api/heartbeat").header(ContentType::JSON).body(hb).dispatch().await.into_json().await.unwrap();
+    assert!(before.get("disconnect").is_none());
+
+    let resp = client.post(format!("/api/audits/conn/{guid}/disconnect")).header(auth_header(&admin)).dispatch().await;
+    assert_eq!(resp.status(), Status::Ok);
+    let after: Value = client.post("/api/heartbeat").header(ContentType::JSON).body(hb).dispatch().await.into_json().await.unwrap();
+    assert_eq!(after["disconnect"], serde_json::json!([5]));
+    let console: Value = client.get("/api/audits/console").header(auth_header(&admin)).dispatch().await.into_json().await.unwrap();
+    assert_eq!((console["data"][0]["typ"].as_i64(), console["data"][0]["iop"].as_i64()), (Some(2), Some(5)));
+    assert_eq!(console["data"][0]["info"]["device"], "devdc");
+
+    client.post("/api/audit/conn").header(ContentType::JSON)
+        .body(r#"{"action":"close","id":"devdc","uuid":"ZGM=","conn_id":5,"session_id":0,"nonce":"n-dc-c"}"#).dispatch().await;
+    let resp = client.post(format!("/api/audits/conn/{guid}/disconnect")).header(auth_header(&admin)).dispatch().await;
+    assert_eq!(resp.status(), Status::Conflict);
+}
+
+#[rocket::async_test]
+async fn test_disconnect_needs_an_admin_and_a_known_row() {
+    let (client, _dir) = test_client().await;
+    let admin = login_admin(&client).await;
+    let resp = client.post("/api/audits/conn/00000000-0000-0000-0000-000000000000/disconnect").header(auth_header(&admin)).dispatch().await;
+    assert_eq!(resp.status(), Status::NotFound);
+    let state = client.rocket().state::<state::ApiState>().unwrap();
+    state.test_oidc_login(&"alice".to_string()).await;
+    state.set_admin("alice@example.org", true).await.unwrap();
+    state.set_admin("alice@example.org", false).await.unwrap();
+    let alice = oidc_token(&client, "alice").await;
+    let resp = client.post("/api/audits/conn/00000000-0000-0000-0000-000000000000/disconnect").header(auth_header(&alice)).dispatch().await;
+    assert!(resp.status() == Status::Unauthorized || resp.status() == Status::Forbidden);
+}

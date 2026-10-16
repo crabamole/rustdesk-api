@@ -313,6 +313,7 @@ pub fn api_routes() -> (Vec<rocket::Route>, rocket_okapi::okapi::openapi3::OpenA
         audit_alarm,
         audit_ref,
         audits_conn,
+        audits_conn_disconnect,
         audits_file,
         audits_alarm,
         audits_console,
@@ -797,6 +798,30 @@ async fn audits_conn(
         .ok_or((Status::InternalServerError, "cannot read audit log".to_string()))
 }
 
+/// # Disconnect a connection
+///
+/// Marks an active connection; its device closes it on its next heartbeat (audit-api-spec.md §10).
+/// 404 for an unknown connection, 409 when it has already ended.
+// no body, so no format: Rocket 0.5 404s a POST with a format guard and no Content-Type
+#[openapi(tag = "audit")]
+#[post("/api/audits/conn/<guid>/disconnect")]
+async fn audits_conn_disconnect(state: &State<ApiState>, user: AuthenticatedAdmin, guid: &str) -> Result<(), Status> {
+    let row = utils::uuid_into_guid(guid).ok_or(Status::NotFound)?;
+    let target = state.request_disconnect(&row).await.ok_or(Status::NotFound)?;
+    if target.ended {
+        return Err(Status::Conflict);
+    }
+    state
+        .log_console(
+            Some(&user.info.user_id),
+            utils::console_log::TYP_DEVICE,
+            utils::console_log::IOP_DISCONNECT_DEVICE,
+            serde_json::json!({ "device": target.device, "conn_id": target.conn_id, "viewer": target.viewer, "user": target.user }),
+        )
+        .await;
+    Ok(())
+}
+
 /// # File transfer audit log
 ///
 /// Pro-compatible (`audits.py file`): newest first; `remote` is an SQL LIKE pattern.
@@ -946,9 +971,12 @@ async fn heartbeat(state: &State<ApiState>, request: Json<HeartbeatRequest>) -> 
     log::debug!("heartbeat: {:?}", request);
     let heartbeat = request.0;
     let device_modified_at = heartbeat.modified_at as i64;
+    let disconnect = state.disconnects_for_heartbeat(&heartbeat).await;
     let res = state.update_heartbeat(heartbeat).await;
     log::debug!("res: {:?}", res);
-    Json(state.policy_for_heartbeat(device_modified_at).await)
+    let mut response = state.policy_for_heartbeat(device_modified_at).await;
+    response.disconnect = disconnect;
+    Json(response)
 }
 
 /// # Set the System Info

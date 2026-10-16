@@ -2456,6 +2456,46 @@ impl Database {
         Some((total, data))
     }
 
+    /// Marks an open connection row for disconnect, keeping the first request's time; None for an unknown guid.
+    pub async fn audit_conn_disconnect(&self, guid: &[u8]) -> Option<utils::AuditConnTarget> {
+        let row: (String, Option<i64>, Option<String>, Option<String>, bool) = sqlx::query_as(
+            "SELECT convert_from(a.remote, 'UTF8'), (a.info::jsonb->>'conn_id')::bigint, convert_from(a.local, 'UTF8'), \
+               u.name, a.end_time IS NOT NULL \
+             FROM audit_conn a LEFT JOIN \"user\" u ON u.guid = a.\"user\" WHERE a.guid = $1",
+        )
+        .bind(guid)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| log::error!("audit_conn_disconnect read error: {e:?}"))
+        .ok()??;
+        let (device, conn_id, viewer, user, ended) = row;
+        if !ended {
+            sqlx::query("UPDATE audit_conn SET disconnect_at = COALESCE(disconnect_at, now()) WHERE guid = $1 AND end_time IS NULL")
+                .bind(guid)
+                .execute(&self.pool)
+                .await
+                .map_err(|e| log::error!("audit_conn_disconnect update error: {e:?}"))
+                .ok()?;
+        }
+        Some(utils::AuditConnTarget { device, conn_id, viewer, user, ended })
+    }
+
+    /// `conn_id`s of the device's open rows marked for disconnect that it still lists in `alive`.
+    pub async fn audit_conns_to_disconnect(&self, id: &str, uuid: &str, alive: &[i64]) -> Vec<i64> {
+        sqlx::query_scalar(
+            "SELECT (info::jsonb->>'conn_id')::bigint FROM audit_conn \
+             WHERE remote = $1 AND end_time IS NULL AND disconnect_at IS NOT NULL \
+             AND info::jsonb->>'uuid' = $2 AND (info::jsonb->>'conn_id')::bigint = ANY($3)",
+        )
+        .bind(id.as_bytes())
+        .bind(uuid)
+        .bind(alive)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| log::error!("audit_conns_to_disconnect error: {e:?}"))
+        .unwrap_or_default()
+    }
+
     /// Admin read API (audit-api-spec.md §9): newest first, `created_at` filters at/after (UTC).
     pub async fn list_audit_conns(&self, q: &utils::AuditQuery) -> Option<(i64, Vec<utils::AuditConnLog>)> {
         const WHERE: &str = "WHERE ($1::text IS NULL OR a.created_at::timestamptz >= ($1::timestamp AT TIME ZONE 'UTC')) \
@@ -2479,7 +2519,7 @@ impl Database {
                i->>'ip' AS ip, a.type, (i->>'primary_auth')::int AS primary_auth, (i->>'two_factor')::int AS two_factor, \
                i->>'session_id' AS session_id, (i->>'conn_id')::bigint AS conn_id, \
                extract(epoch FROM a.created_at::timestamptz)::bigint AS created_at, \
-               extract(epoch FROM a.end_time::timestamptz)::bigint AS end_time, a.note \
+               extract(epoch FROM a.end_time::timestamptz)::bigint AS end_time, a.note, a.disconnect_at IS NOT NULL AS disconnect_requested \
              FROM audit_conn a CROSS JOIN LATERAL (SELECT a.info::jsonb AS i) j \
              LEFT JOIN \"user\" u ON u.guid = a.\"user\" {WHERE} \
              ORDER BY a.created_at::timestamptz DESC LIMIT $4 OFFSET $5"
@@ -2723,6 +2763,7 @@ fn audit_conn_log_from_row(row: &sqlx::postgres::PgRow) -> Option<utils::AuditCo
         end_time,
         note: audit_try_get(row, "note")?,
         active: end_time.is_none(),
+        disconnect_requested: audit_try_get(row, "disconnect_requested")?,
     })
 }
 

@@ -606,10 +606,24 @@ impl ApiState {
             Some((s, options)) if s.modified_at != device_modified_at => HeartbeatResponse {
                 modified_at: s.modified_at,
                 strategy: Some(StrategyPush { config_options: utils::policy::allowed_options(options) }),
+                disconnect: Vec::new(),
             },
-            Some((s, _)) => HeartbeatResponse { modified_at: s.modified_at, strategy: None },
-            None => HeartbeatResponse { modified_at: device_modified_at, strategy: None },
+            Some((s, _)) => HeartbeatResponse { modified_at: s.modified_at, strategy: None, disconnect: Vec::new() },
+            None => HeartbeatResponse { modified_at: device_modified_at, strategy: None, disconnect: Vec::new() },
         }
+    }
+
+    /// Marks a connection for disconnect (design-console-audit.md); None for an unknown guid.
+    pub async fn request_disconnect(&self, guid: &[u8]) -> Option<utils::AuditConnTarget> {
+        self.db.audit_conn_disconnect(guid).await
+    }
+
+    /// The heartbeat answer's `disconnect`: only devices with live connections are asked about.
+    pub async fn disconnects_for_heartbeat(&self, hb: &utils::HeartbeatRequest) -> Vec<i64> {
+        if hb.conns.is_empty() {
+            return Vec::new();
+        }
+        self.db.audit_conns_to_disconnect(&hb.id, &hb.uuid, &hb.conns).await
     }
 
     /// Add a shared address book given its name and its owner
@@ -1733,6 +1747,33 @@ mod tests {
         conn_record(&format!(
             r#"{{"action":"close","id":"{id}","uuid":"{uuid}","conn_id":{conn_id},"session_id":0,"nonce":"{nonce}"}}"#
         ))
+    }
+
+    #[tokio::test]
+    async fn disconnect_is_delivered_only_to_its_live_connection() {
+        let state = test_state().await;
+        state.test_register_device("dev9", "dXVpZA==").await;
+        state.audit_conn(&conn_record(r#"{"action":"new","ip":"10.0.0.1","id":"dev9","uuid":"dXVpZA==","conn_id":7,"session_id":0,"nonce":"n-dc"}"#)).await.unwrap();
+        let q = utils::AuditQuery { offset: 0, limit: 10, created_at: None, pattern: Some("dev9".into()), conn_type: None };
+        let row = state.list_audit_conns(&q).await.unwrap().1.remove(0);
+        assert!(!row.disconnect_requested);
+        let guid = utils::uuid_into_guid(&row.guid).unwrap();
+
+        let hb = |id: &str, uuid: &str, conns: Vec<i64>| utils::HeartbeatRequest { id: id.into(), uuid: uuid.into(), modified_at: 0, ver: 0, conns };
+        assert!(state.disconnects_for_heartbeat(&hb("dev9", "dXVpZA==", vec![7])).await.is_empty(), "nothing requested yet");
+
+        let target = state.request_disconnect(&guid).await.unwrap();
+        assert_eq!((target.device.as_str(), target.conn_id, target.ended), ("dev9", Some(7), false));
+        assert!(state.list_audit_conns(&q).await.unwrap().1[0].disconnect_requested);
+
+        assert_eq!(state.disconnects_for_heartbeat(&hb("dev9", "dXVpZA==", vec![7, 8])).await, vec![7]);
+        assert_eq!(state.disconnects_for_heartbeat(&hb("dev9", "dXVpZA==", vec![8])).await, Vec::<i64>::new(), "not listed");
+        assert_eq!(state.disconnects_for_heartbeat(&hb("dev9", "b3RoZXI=", vec![7])).await, Vec::<i64>::new(), "other uuid");
+        assert_eq!(state.disconnects_for_heartbeat(&hb("dev8", "dXVpZA==", vec![7])).await, Vec::<i64>::new(), "other id");
+
+        state.audit_conn(&conn_record(r#"{"action":"close","id":"dev9","uuid":"dXVpZA==","conn_id":7,"session_id":0,"nonce":"n-dc-c"}"#)).await.unwrap();
+        assert!(state.disconnects_for_heartbeat(&hb("dev9", "dXVpZA==", vec![7])).await.is_empty(), "row ended");
+        assert!(state.request_disconnect(&guid).await.unwrap().ended);
     }
 
     #[tokio::test]
