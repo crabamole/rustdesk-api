@@ -77,6 +77,14 @@ mod tests {
         );
     }
 
+    /// rustdesk `device_call` tests sign the same message with the same seed.
+    #[test]
+    fn accepts_the_device_signature() {
+        let sig = "2GuRO1FkhojSdpBOJYhJwk1UjQmu2OkX0qdzo0t1jzSIAZ6S58cRy5hlpiQarK3QLAVWpLr5MOHY4IgT1W/RCQ==";
+        let pk = key().verifying_key().to_bytes();
+        assert!(verify(&pk, &format!("1800000000.{sig}"), "/api/heartbeat", b"{}", NOW));
+    }
+
     #[test]
     fn accepts_a_fresh_signature() {
         let pk = key().verifying_key().to_bytes();
