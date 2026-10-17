@@ -3,6 +3,18 @@ use rocket::local::asynchronous::Client;
 use rustdesk_api::build_rocket_with_db;
 use serde_json::Value;
 
+/// Sends `body` signed as the test device (rustdesk docs/design-signed-device-calls.md).
+trait SignedBody {
+    fn signed_body(self, path: &str, body: impl AsRef<[u8]>) -> Self;
+}
+
+impl SignedBody for rocket::local::asynchronous::LocalRequest<'_> {
+    fn signed_body(self, path: &str, body: impl AsRef<[u8]>) -> Self {
+        let header = state::device_call::testing::test_header(path, body.as_ref());
+        self.header(rocket::http::Header::new(state::device_call::HEADER, header)).body(body)
+    }
+}
+
 /// A fresh database; also trusts the test peer as a proxy, set before any request reads TRUSTED_PROXIES.
 async fn fresh_db() -> String {
     static ONCE: std::sync::Once = std::sync::Once::new();
@@ -135,10 +147,11 @@ async fn test_logout() {
 const DEFAULT_STRATEGY: &str = "018f2556-2316-7a02-b31c-5599e7cd5b5e";
 
 async fn heartbeat(client: &Client, modified_at: i64) -> Value {
+    client.rocket().state::<state::ApiState>().unwrap().test_register_device("test123", "dGVzdA==").await;
     let resp = client
         .post("/api/heartbeat")
         .header(ContentType::JSON)
-        .body(format!(r#"{{"id":"test123","modified_at":{modified_at},"uuid":"abc","ver":1}}"#))
+        .signed_body("/api/heartbeat", format!(r#"{{"id":"test123","modified_at":{modified_at},"uuid":"dGVzdA==","ver":1}}"#))
         .dispatch()
         .await;
     assert_eq!(resp.status(), Status::Ok);
@@ -154,10 +167,11 @@ async fn set_policy(client: &Client, options: &[(&str, &str)]) -> i64 {
 #[rocket::async_test]
 async fn test_heartbeat_accepts_live_connections() {
     let (client, _dir) = test_client().await;
+    client.rocket().state::<state::ApiState>().unwrap().test_register_device("test123", "dGVzdA==").await;
     let resp = client
         .post("/api/heartbeat")
         .header(ContentType::JSON)
-        .body(r#"{"id":"test123","modified_at":0,"uuid":"abc","ver":1,"conns":[3,7]}"#)
+        .signed_body("/api/heartbeat", r#"{"id":"test123","modified_at":0,"uuid":"dGVzdA==","ver":1,"conns":[3,7]}"#)
         .dispatch()
         .await;
     assert_eq!(resp.status(), Status::Ok);
@@ -194,16 +208,16 @@ async fn test_heartbeat_never_sends_keys_outside_the_allow_list() {
 #[rocket::async_test]
 async fn test_sysinfo() {
     let (client, _dir) = test_client().await;
+    client.rocket().state::<state::ApiState>().unwrap().test_register_device("test123", "dGVzdA==").await;
     let resp = client
         .post("/api/sysinfo")
         .header(ContentType::JSON)
-        .body(r#"{"id":"test123","uuid":"abc","hostname":"testhost","username":"user","os":"linux","cpu":"x86","memory":"8GB","version":"1.0.0","ip":"1.2.3.4"}"#)
+        .signed_body("/api/sysinfo", r#"{"id":"test123","uuid":"dGVzdA==","hostname":"testhost","username":"user","os":"linux","cpu":"x86","memory":"8GB","version":"1.0.0","ip":"1.2.3.4"}"#)
         .dispatch()
         .await;
     assert_eq!(resp.status(), Status::Ok);
     let body = resp.into_string().await.unwrap();
-    // "abc" is not valid padded base64, so no peer can match it.
-    assert_eq!(body, "ID_NOT_FOUND");
+    assert_eq!(body, "SYSINFO_UPDATED");
 }
 
 #[rocket::async_test]
@@ -216,12 +230,35 @@ async fn test_sysinfo_unknown_or_missing_uuid() {
         let resp = client
             .post("/api/sysinfo")
             .header(ContentType::JSON)
-            .body(body)
+            .signed_body("/api/sysinfo", body)
             .dispatch()
             .await;
-        assert_eq!(resp.status(), Status::Ok, "{body}");
-        assert_eq!(resp.into_string().await.unwrap(), "ID_NOT_FOUND", "{body}");
+        // No registered key to check the signature against.
+        assert_eq!(resp.status(), Status::Unauthorized, "{body}");
     }
+}
+
+#[rocket::async_test]
+async fn test_device_calls_need_the_device_signature() {
+    let (client, _dir) = test_client().await;
+    let admin = login_admin(&client).await;
+    client.rocket().state::<state::ApiState>().unwrap().test_register_device("devsig", "c2ln").await;
+    client.post("/api/audit/conn").header(ContentType::JSON)
+        .signed_body("/api/audit/conn", r#"{"action":"new","id":"devsig","uuid":"c2ln","conn_id":9,"session_id":0,"nonce":"sig-n"}"#).dispatch().await;
+
+    let close = r#"{"action":"close","id":"devsig","uuid":"c2ln","conn_id":9,"session_id":0,"nonce":"sig-c"}"#;
+    let resp = client.post("/api/audit/conn").header(ContentType::JSON).body(close).dispatch().await;
+    assert_eq!(resp.status(), Status::Unauthorized, "unsigned");
+    let resp = client.post("/api/audit/conn").header(ContentType::JSON)
+        .header(Header::new("X-Device-Signature", state::device_call::testing::test_header("/api/heartbeat", close.as_bytes())))
+        .body(close).dispatch().await;
+    assert_eq!(resp.status(), Status::Unauthorized, "signed for another endpoint");
+    let hb = r#"{"id":"devsig","uuid":"c2ln","modified_at":0,"ver":1,"conns":[]}"#;
+    let resp = client.post("/api/heartbeat").header(ContentType::JSON).body(hb).dispatch().await;
+    assert_eq!(resp.status(), Status::Unauthorized, "unsigned heartbeat");
+
+    let rows: Value = client.get("/api/audits/conn?remote=devsig").header(auth_header(&admin)).dispatch().await.into_json().await.unwrap();
+    assert_eq!(rows["data"][0]["active"], true, "refused calls leave the row open");
 }
 
 #[rocket::async_test]
@@ -241,7 +278,7 @@ async fn test_audit_file_answers_empty_when_stored() {
     let (client, _dir) = test_client().await;
     client.rocket().state::<state::ApiState>().unwrap().test_register_device("d", "dQ==").await;
     let resp = client.post("/api/audit/file").header(ContentType::JSON)
-        .body(r#"{"id":"d","uuid":"dQ==","peer_id":"p","conn_id":1,"type":0,"path":"","is_file":false,"info":"{}","nonce":"x1"}"#)
+        .signed_body("/api/audit/file", r#"{"id":"d","uuid":"dQ==","peer_id":"p","conn_id":1,"type":0,"path":"","is_file":false,"info":"{}","nonce":"x1"}"#)
         .dispatch().await;
     assert_eq!(resp.status(), Status::Ok);
     assert_eq!(resp.into_string().await.unwrap_or_default(), "");
@@ -252,7 +289,7 @@ async fn test_audit_alarm_answers_empty_when_stored() {
     let (client, _dir) = test_client().await;
     client.rocket().state::<state::ApiState>().unwrap().test_register_device("d", "dQ==").await;
     let resp = client.post("/api/audit/alarm").header(ContentType::JSON)
-        .body(r#"{"id":"d","uuid":"dQ==","typ":1,"info":"{}","conn_id":1,"nonce":"x2"}"#)
+        .signed_body("/api/audit/alarm", r#"{"id":"d","uuid":"dQ==","typ":1,"info":"{}","conn_id":1,"nonce":"x2"}"#)
         .dispatch().await;
     assert_eq!(resp.status(), Status::Ok);
     assert_eq!(resp.into_string().await.unwrap_or_default(), "");
@@ -316,7 +353,7 @@ async fn test_audit_conn_active_and_note() {
     let resp = client
         .post("/api/audit/conn")
         .header(ContentType::JSON)
-        .body(format!(
+        .signed_body("/api/audit/conn", format!(
             r#"{{"action":"new","id":"devX","uuid":"dVg=","conn_id":1,"session_id":99,"nonce":"nA","conn_audit_ref":"{conn_ref}"}}"#
         ))
         .dispatch()
@@ -325,7 +362,7 @@ async fn test_audit_conn_active_and_note() {
     let resp = client
         .post("/api/audit/conn")
         .header(ContentType::JSON)
-        .body(r#"{"peer":["v1","Viewer"],"type":0,"id":"devX","uuid":"dVg=","conn_id":1,"session_id":99,"nonce":"nB"}"#)
+        .signed_body("/api/audit/conn", r#"{"peer":["v1","Viewer"],"type":0,"id":"devX","uuid":"dVg=","conn_id":1,"session_id":99,"nonce":"nB"}"#)
         .dispatch()
         .await;
     assert_eq!(resp.status(), Status::Ok);
@@ -1811,7 +1848,7 @@ async fn test_audits_conn_lists_newest_first_with_viewer_user() {
     let r = r["ref"].as_str().unwrap();
     for (n, conn_id) in [("a", 1), ("b", 2)] {
         client.post("/api/audit/conn").header(ContentType::JSON)
-            .body(format!(r#"{{"action":"new","id":"devx","uuid":"dXg=","conn_id":{conn_id},"ip":"203.0.113.9","nonce":"{n}","conn_audit_ref":"{r}"}}"#))
+            .signed_body("/api/audit/conn", format!(r#"{{"action":"new","id":"devx","uuid":"dXg=","conn_id":{conn_id},"ip":"203.0.113.9","nonce":"{n}","conn_audit_ref":"{r}"}}"#))
             .dispatch().await;
     }
     let resp = client.get("/api/audits/conn?current=1&pageSize=10&remote=%25devx%25").header(auth_header(&admin)).dispatch().await;
@@ -1843,7 +1880,7 @@ async fn test_audits_conn_pagination_returns_the_older_row_on_page_two() {
     let admin = login_admin(&client).await;
     for (n, conn_id) in [("p1", 1), ("p2", 2)] {
         client.post("/api/audit/conn").header(ContentType::JSON)
-            .body(format!(r#"{{"action":"new","id":"devpage","uuid":"dXBhZ2U=","conn_id":{conn_id},"ip":"203.0.113.10","nonce":"{n}"}}"#))
+            .signed_body("/api/audit/conn", format!(r#"{{"action":"new","id":"devpage","uuid":"dXBhZ2U=","conn_id":{conn_id},"ip":"203.0.113.10","nonce":"{n}"}}"#))
             .dispatch().await;
     }
     let resp = client.get("/api/audits/conn?current=2&pageSize=1&remote=%25devpage%25").header(auth_header(&admin)).dispatch().await;
@@ -1860,10 +1897,10 @@ async fn test_audits_conn_filters_by_conn_type() {
     client.rocket().state::<state::ApiState>().unwrap().test_register_device("devtype", "dXR5cGU=").await;
     let admin = login_admin(&client).await;
     client.post("/api/audit/conn").header(ContentType::JSON)
-        .body(r#"{"action":"new","id":"devtype","uuid":"dXR5cGU=","conn_id":1,"ip":"203.0.113.11","nonce":"nt1"}"#)
+        .signed_body("/api/audit/conn", r#"{"action":"new","id":"devtype","uuid":"dXR5cGU=","conn_id":1,"ip":"203.0.113.11","nonce":"nt1"}"#)
         .dispatch().await;
     client.post("/api/audit/conn").header(ContentType::JSON)
-        .body(r#"{"peer":["v1","Viewer"],"type":0,"id":"devtype","uuid":"dXR5cGU=","conn_id":1,"session_id":1,"nonce":"nt2"}"#)
+        .signed_body("/api/audit/conn", r#"{"peer":["v1","Viewer"],"type":0,"id":"devtype","uuid":"dXR5cGU=","conn_id":1,"session_id":1,"nonce":"nt2"}"#)
         .dispatch().await;
 
     let resp = client.get("/api/audits/conn?current=1&pageSize=10&remote=%25devtype%25&conn_type=0").header(auth_header(&admin)).dispatch().await;
@@ -1881,7 +1918,7 @@ async fn test_audits_conn_future_created_at_finds_nothing() {
     client.rocket().state::<state::ApiState>().unwrap().test_register_device("devfuture", "dWZ1dHVyZQ==").await;
     let admin = login_admin(&client).await;
     client.post("/api/audit/conn").header(ContentType::JSON)
-        .body(r#"{"action":"new","id":"devfuture","uuid":"dWZ1dHVyZQ==","conn_id":1,"ip":"203.0.113.12","nonce":"nf1"}"#)
+        .signed_body("/api/audit/conn", r#"{"action":"new","id":"devfuture","uuid":"dWZ1dHVyZQ==","conn_id":1,"ip":"203.0.113.12","nonce":"nf1"}"#)
         .dispatch().await;
 
     let resp = client
@@ -1914,7 +1951,7 @@ async fn test_audits_file_shows_remote_peer_num_and_files() {
     let resp = client
         .post("/api/audit/file")
         .header(ContentType::JSON)
-        .body(r#"{"id":"devfile","uuid":"dWZpbGU=","peer_id":"viewerfile","conn_id":1,"type":0,"path":"/tmp","is_file":false,"info":"{\"ip\":\"203.0.113.13\",\"name\":\"alice-laptop\",\"num\":2,\"files\":[[\"a.pdf\",10],[\"b.txt\",5]]}","nonce":"filenonce"}"#)
+        .signed_body("/api/audit/file", r#"{"id":"devfile","uuid":"dWZpbGU=","peer_id":"viewerfile","conn_id":1,"type":0,"path":"/tmp","is_file":false,"info":"{\"ip\":\"203.0.113.13\",\"name\":\"alice-laptop\",\"num\":2,\"files\":[[\"a.pdf\",10],[\"b.txt\",5]]}","nonce":"filenonce"}"#)
         .dispatch()
         .await;
     assert_eq!(resp.status(), Status::Ok);
@@ -1937,7 +1974,7 @@ async fn test_audits_alarm_shows_info_as_an_object() {
     let resp = client
         .post("/api/audit/alarm")
         .header(ContentType::JSON)
-        .body(r#"{"id":"devalarm","uuid":"dWFsYXJt","typ":1,"info":"{\"ip\":\"203.0.113.14\",\"id\":\"ctl1\",\"name\":\"alice\"}","conn_id":1,"nonce":"alarmnonce"}"#)
+        .signed_body("/api/audit/alarm", r#"{"id":"devalarm","uuid":"dWFsYXJt","typ":1,"info":"{\"ip\":\"203.0.113.14\",\"id\":\"ctl1\",\"name\":\"alice\"}","conn_id":1,"nonce":"alarmnonce"}"#)
         .dispatch()
         .await;
     assert_eq!(resp.status(), Status::Ok);
@@ -1986,14 +2023,14 @@ async fn test_audits_file_and_alarm_survive_an_unparsable_info_string() {
     let resp = client
         .post("/api/audit/file")
         .header(ContentType::JSON)
-        .body(r#"{"id":"devbad","uuid":"dWJhZA==","peer_id":"viewerbad","conn_id":1,"type":0,"path":"/tmp","is_file":false,"info":"{x","nonce":"badfilenonce"}"#)
+        .signed_body("/api/audit/file", r#"{"id":"devbad","uuid":"dWJhZA==","peer_id":"viewerbad","conn_id":1,"type":0,"path":"/tmp","is_file":false,"info":"{x","nonce":"badfilenonce"}"#)
         .dispatch()
         .await;
     assert_eq!(resp.status(), Status::Ok);
     let resp = client
         .post("/api/audit/file")
         .header(ContentType::JSON)
-        .body(r#"{"id":"devbad","uuid":"dWJhZA==","peer_id":"viewerbad","conn_id":2,"type":0,"path":"/tmp","is_file":false,"info":"{\"ip\":\"203.0.113.15\",\"name\":\"ok\",\"num\":1,\"files\":[]}","nonce":"goodfilenonce"}"#)
+        .signed_body("/api/audit/file", r#"{"id":"devbad","uuid":"dWJhZA==","peer_id":"viewerbad","conn_id":2,"type":0,"path":"/tmp","is_file":false,"info":"{\"ip\":\"203.0.113.15\",\"name\":\"ok\",\"num\":1,\"files\":[]}","nonce":"goodfilenonce"}"#)
         .dispatch()
         .await;
     assert_eq!(resp.status(), Status::Ok);
@@ -2007,14 +2044,14 @@ async fn test_audits_file_and_alarm_survive_an_unparsable_info_string() {
     let resp = client
         .post("/api/audit/alarm")
         .header(ContentType::JSON)
-        .body(r#"{"id":"devbadalarm","uuid":"dWJhZGFsYXJt","typ":1,"info":"{x","conn_id":1,"nonce":"badalarmnonce"}"#)
+        .signed_body("/api/audit/alarm", r#"{"id":"devbadalarm","uuid":"dWJhZGFsYXJt","typ":1,"info":"{x","conn_id":1,"nonce":"badalarmnonce"}"#)
         .dispatch()
         .await;
     assert_eq!(resp.status(), Status::Ok);
     let resp = client
         .post("/api/audit/alarm")
         .header(ContentType::JSON)
-        .body(r#"{"id":"devbadalarm","uuid":"dWJhZGFsYXJt","typ":1,"info":"{\"ip\":\"203.0.113.16\",\"id\":\"ctl1\",\"name\":\"ok\"}","conn_id":2,"nonce":"goodalarmnonce"}"#)
+        .signed_body("/api/audit/alarm", r#"{"id":"devbadalarm","uuid":"dWJhZGFsYXJt","typ":1,"info":"{\"ip\":\"203.0.113.16\",\"id\":\"ctl1\",\"name\":\"ok\"}","conn_id":2,"nonce":"goodalarmnonce"}"#)
         .dispatch()
         .await;
     assert_eq!(resp.status(), Status::Ok);
@@ -2039,7 +2076,7 @@ async fn test_audits_conn_shows_the_viewer_machine_from_its_login() {
         format!(r#"{{"action":"new","id":"devvm","uuid":"dXZt","conn_id":1,"ip":"203.0.113.20","nonce":"vm-n","conn_audit_ref":"{r}"}}"#),
         r#"{"peer":["123456789","Alice"],"type":0,"id":"devvm","uuid":"dXZt","conn_id":1,"session_id":5,"nonce":"vm-a"}"#.to_string(),
     ] {
-        let resp = client.post("/api/audit/conn").header(ContentType::JSON).body(body).dispatch().await;
+        let resp = client.post("/api/audit/conn").header(ContentType::JSON).signed_body("/api/audit/conn", body).dispatch().await;
         assert_eq!(resp.status(), Status::Ok);
     }
 
@@ -2240,7 +2277,7 @@ async fn test_device_lists_do_not_reveal_the_uuid() {
     let state = client.rocket().state::<state::ApiState>().unwrap();
     state.test_register_device("devinfo", "dXVpZA==").await;
     let resp = client.post("/api/sysinfo").header(ContentType::JSON)
-        .body(r#"{"id":"devinfo","uuid":"dXVpZA==","hostname":"pc-1","os":"Linux"}"#)
+        .signed_body("/api/sysinfo", r#"{"id":"devinfo","uuid":"dXVpZA==","hostname":"pc-1","os":"Linux"}"#)
         .dispatch().await;
     assert_eq!(resp.into_string().await.unwrap(), "SYSINFO_UPDATED");
     let alice = activated_user_token(&client, "alice").await;
@@ -2567,17 +2604,17 @@ async fn test_disconnect_reaches_the_device_heartbeat() {
     let state = client.rocket().state::<state::ApiState>().unwrap();
     state.test_register_device("devdc", "ZGM=").await;
     client.post("/api/audit/conn").header(ContentType::JSON)
-        .body(r#"{"action":"new","ip":"1.2.3.4","id":"devdc","uuid":"ZGM=","conn_id":5,"session_id":0,"nonce":"n-dc"}"#).dispatch().await;
+        .signed_body("/api/audit/conn", r#"{"action":"new","ip":"1.2.3.4","id":"devdc","uuid":"ZGM=","conn_id":5,"session_id":0,"nonce":"n-dc"}"#).dispatch().await;
     let list: Value = client.get("/api/audits/conn?remote=devdc").header(auth_header(&admin)).dispatch().await.into_json().await.unwrap();
     let guid = list["data"][0]["guid"].as_str().unwrap().to_string();
 
     let hb = r#"{"id":"devdc","uuid":"ZGM=","modified_at":0,"ver":0,"conns":[5]}"#;
-    let before: Value = client.post("/api/heartbeat").header(ContentType::JSON).body(hb).dispatch().await.into_json().await.unwrap();
+    let before: Value = client.post("/api/heartbeat").header(ContentType::JSON).signed_body("/api/heartbeat", hb).dispatch().await.into_json().await.unwrap();
     assert!(before.get("disconnect").is_none());
 
     let resp = client.post(format!("/api/audits/conn/{guid}/disconnect")).header(auth_header(&admin)).dispatch().await;
     assert_eq!(resp.status(), Status::Ok);
-    let after: Value = client.post("/api/heartbeat").header(ContentType::JSON).body(hb).dispatch().await.into_json().await.unwrap();
+    let after: Value = client.post("/api/heartbeat").header(ContentType::JSON).signed_body("/api/heartbeat", hb).dispatch().await.into_json().await.unwrap();
     assert_eq!(after["disconnect"], serde_json::json!([5]));
     let console: Value = client.get("/api/audits/console").header(auth_header(&admin)).dispatch().await.into_json().await.unwrap();
     assert_eq!((console["data"][0]["typ"].as_i64(), console["data"][0]["iop"].as_i64()), (Some(2), Some(5)));
@@ -2589,7 +2626,7 @@ async fn test_disconnect_reaches_the_device_heartbeat() {
     assert_eq!(console2["total"], console["total"]);
 
     client.post("/api/audit/conn").header(ContentType::JSON)
-        .body(r#"{"action":"close","id":"devdc","uuid":"ZGM=","conn_id":5,"session_id":0,"nonce":"n-dc-c"}"#).dispatch().await;
+        .signed_body("/api/audit/conn", r#"{"action":"close","id":"devdc","uuid":"ZGM=","conn_id":5,"session_id":0,"nonce":"n-dc-c"}"#).dispatch().await;
     let resp = client.post(format!("/api/audits/conn/{guid}/disconnect")).header(auth_header(&admin)).dispatch().await;
     assert_eq!(resp.status(), Status::Conflict);
 }

@@ -83,8 +83,8 @@ Audit is **disabled client-side** (no request sent) when:
 
 - `Content-Type: application/json`, UTF-8 JSON body.
 - Rust-side audit POSTs (§3–§6) send **no `Authorization` header**. The
-  controlled device is generally not logged in. The server must accept them
-  unauthenticated (see §12.1 for validation policy).
+  controlled device is generally not logged in. Our builds sign them with the
+  device key instead (`X-Device-Signature`, see §12.1); stock clients do not.
 - Flutter calls (§7, §8) send `Authorization: Bearer <access_token>`.
 - Transport: 12 s timeout per attempt; TLS retry variants; on transport error
   or 5xx a single fallback via the hbbs raw-TCP proxy. With
@@ -496,12 +496,14 @@ token.
 
 ## 12. Server policy (not dictated by the client)
 
-### 12.1 Unauthenticated writes
+### 12.1 Device writes
 
-§3–§6 carry no credentials. Validation **[I]**: accept only if `(id, uuid)`
-matches a registered peer (`peer.id`, `peer.uuid` = the base64-decoded `uuid`);
-otherwise answer 2xx empty and discard (a 4xx would only make
-legitimate-but-unregistered devices log errors). §4 notes are accepted only if
+§3–§6, the heartbeat (§10) and sysinfo carry no credentials in stock RustDesk. Validation **[I]**:
+accept only with `X-Device-Signature: <ts>.<sig>`, an Ed25519 signature by the key the device
+registered with hbbs (`peer.pk` for the body's `id` + `uuid`) over
+`"device-call" 0 ts 0 path 0 hex(sha256(body))`, with `ts` within 300 s; otherwise answer 401 and
+do nothing. Stock clients cannot sign, so their records and heartbeats are refused. Design: rustdesk
+`docs/design-signed-device-calls.md`. §4 notes are accepted only if
 `(id, session_id)` matches an existing row. The UUID is never returned by device
 lists (`GET /api/peers`) or stored in a device's system info, so knowing an ID
 is not enough to write for it. Design: rustdesk `docs/design-audit-authentication.md`.
@@ -582,7 +584,7 @@ Legend: ✅ conforms · ⚠️ partial / deviates · ❌ missing
 | §9.3 retention | ❌ | No setting, no purge job. |
 | §9.3 visibility / permissions | ❌ | No `audits.view` / `audits.edit` model; nothing to read anyway. |
 | §9.4 console audit (`audit_console`) | ✅ | Admin and CLI changes logged (typ 0–4, Pro's codes plus 23–26); CLI rows have no operator and `info.via = "cli"`; console shown as "CLI". |
-| §12.1 write validation | ✅ | conn/file/alarm records only from a registered `(id, uuid)`; others answered 2xx and dropped with a warning. Refs bound to their target device. |
+| §12.1 write validation | ✅ | conn/file/alarm records, heartbeats and sysinfo only with a valid device signature (401 otherwise). Refs bound to their target device. |
 
 ### 14.3 Schema (`libs/state/migrations/0001_initial.sql`)
 

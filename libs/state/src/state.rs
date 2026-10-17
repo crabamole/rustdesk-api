@@ -199,6 +199,12 @@ impl ApiState {
         self.db.create_user(username, admin).await
     }
 
+    /// The key device `id` registered with hbbs; `uuid` as the device sends it (base64).
+    pub async fn device_pk(&self, id: &str, uuid: &str) -> Option<Vec<u8>> {
+        let uuid = base64::prelude::BASE64_STANDARD.decode(uuid).ok()?;
+        self.db.peer_pk(id, &uuid).await
+    }
+
     /// `{guid, name, email}` of each existing user in `uuids`, for console log rows.
     pub async fn user_refs(&self, uuids: &[String]) -> Vec<serde_json::Value> {
         self.db.user_refs(uuids).await

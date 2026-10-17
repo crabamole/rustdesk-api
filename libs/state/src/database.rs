@@ -2431,7 +2431,7 @@ impl Database {
             .bind(Uuid::new_v4().as_bytes().to_vec())
             .bind(id)
             .bind(uuid)
-            .bind(vec![0u8; 32])
+            .bind(crate::device_call::testing::test_pk().to_vec())
             .execute(&self.pool)
             .await
             .expect("insert peer");

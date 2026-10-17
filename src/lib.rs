@@ -14,6 +14,7 @@
 // You should have received a copy of the Affero General Public License
 // along with SCTGDesk. If not, see <https://www.gnu.org/licenses/agpl-3.0.html>.
 mod api;
+mod device_call;
 mod extended_json;
 pub mod cli;
 
@@ -614,7 +615,7 @@ async fn audit(_state: &State<ApiState>, request: Json<AuditRequest>) {
 #[post("/api/audit/conn", format = "application/json", data = "<request>")]
 async fn audit_conn(
     state: &State<ApiState>,
-    request: Json<utils::AuditConnRequest>,
+    request: device_call::SignedDevice<utils::AuditConnRequest>,
 ) -> String {
     log::debug!("audit_conn: {:?}", request);
     let stored = state.audit_conn(&request).await;
@@ -668,7 +669,7 @@ async fn audit_note(
 #[post("/api/audit/file", format = "application/json", data = "<request>")]
 async fn audit_file(
     state: &State<ApiState>,
-    request: Json<utils::AuditFileRequest>,
+    request: device_call::SignedDevice<utils::AuditFileRequest>,
 ) -> String {
     log::debug!("audit_file: {:?}", request);
     let stored = state.audit_file(&request).await;
@@ -686,7 +687,7 @@ async fn audit_file(
 #[post("/api/audit/alarm", format = "application/json", data = "<request>")]
 async fn audit_alarm(
     state: &State<ApiState>,
-    request: Json<utils::AuditAlarmRequest>,
+    request: device_call::SignedDevice<utils::AuditAlarmRequest>,
 ) -> String {
     log::debug!("audit_alarm: {:?}", request);
     let stored = state.audit_alarm(&request).await;
@@ -965,7 +966,7 @@ async fn logout(
 /// the device policy when the device's `modified_at` differs from it.  <br>
 #[openapi(tag = "peer")]
 #[post("/api/heartbeat", format = "application/json", data = "<request>")]
-async fn heartbeat(state: &State<ApiState>, request: Json<HeartbeatRequest>) -> Json<HeartbeatResponse> {
+async fn heartbeat(state: &State<ApiState>, request: device_call::SignedDevice<HeartbeatRequest>) -> Json<HeartbeatResponse> {
     log::debug!("heartbeat: {:?}", request);
     let heartbeat = request.0;
     let device_modified_at = heartbeat.modified_at as i64;
@@ -997,7 +998,7 @@ async fn heartbeat(state: &State<ApiState>, request: Json<HeartbeatRequest>) -> 
 ///
 #[openapi(tag = "peer")]
 #[post("/api/sysinfo", format = "application/json", data = "<request>")]
-async fn sysinfo(state: &State<ApiState>, request: Json<utils::SystemInfo>) -> String {
+async fn sysinfo(state: &State<ApiState>, request: device_call::SignedDevice<utils::SystemInfo>) -> String {
     let sysinfo = request.0;
     let res = state.update_systeminfo(sysinfo).await;
 
@@ -2917,6 +2918,18 @@ mod tests {
     use std::sync::atomic::Ordering;
     use std::time::{Duration, Instant};
 
+    /// Sends `body` signed as the test device (rustdesk docs/design-signed-device-calls.md).
+    trait SignedBody {
+        fn signed_body(self, path: &str, body: impl AsRef<[u8]>) -> Self;
+    }
+
+    impl SignedBody for rocket::local::asynchronous::LocalRequest<'_> {
+        fn signed_body(self, path: &str, body: impl AsRef<[u8]>) -> Self {
+            let header = state::device_call::testing::test_header(path, body.as_ref());
+            self.header(rocket::http::Header::new(state::device_call::HEADER, header)).body(body)
+        }
+    }
+
     #[tokio::test]
     async fn drain_ends_after_a_quiet_period() {
         let d = Drain::new();
@@ -3166,10 +3179,11 @@ mod tests {
     #[rocket::async_test]
     async fn test_audit_conn_new() {
         let client = test_client().await;
+        client.rocket().state::<ApiState>().unwrap().test_register_device("peer1", "dXVpZA==").await;
         let resp = client
             .post("/api/audit/conn")
             .header(ContentType::JSON)
-            .body(r#"{"id":"peer1","uuid":"dXVpZA==","conn_id":1,"session_id":100,"nonce":"n1","ip":"10.0.0.1","action":"new"}"#)
+            .signed_body("/api/audit/conn", r#"{"id":"peer1","uuid":"dXVpZA==","conn_id":1,"session_id":100,"nonce":"n1","ip":"10.0.0.1","action":"new"}"#)
             .dispatch()
             .await;
         assert_eq!(resp.status(), Status::Ok);
@@ -3180,10 +3194,11 @@ mod tests {
     #[rocket::async_test]
     async fn test_audit_conn_close() {
         let client = test_client().await;
+        client.rocket().state::<ApiState>().unwrap().test_register_device("peer2", "dXVpZA==").await;
         let resp = client
             .post("/api/audit/conn")
             .header(ContentType::JSON)
-            .body(r#"{"id":"peer2","uuid":"dXVpZA==","conn_id":1,"session_id":200,"nonce":"n2","ip":"10.0.0.2","action":"new"}"#)
+            .signed_body("/api/audit/conn", r#"{"id":"peer2","uuid":"dXVpZA==","conn_id":1,"session_id":200,"nonce":"n2","ip":"10.0.0.2","action":"new"}"#)
             .dispatch()
             .await;
         assert_eq!(resp.status(), Status::Ok);
@@ -3191,7 +3206,7 @@ mod tests {
         let resp = client
             .post("/api/audit/conn")
             .header(ContentType::JSON)
-            .body(r#"{"id":"peer2","uuid":"dXVpZA==","conn_id":1,"session_id":200,"nonce":"n3","action":"close"}"#)
+            .signed_body("/api/audit/conn", r#"{"id":"peer2","uuid":"dXVpZA==","conn_id":1,"session_id":200,"nonce":"n3","action":"close"}"#)
             .dispatch()
             .await;
         assert_eq!(resp.status(), Status::Ok);
@@ -3206,14 +3221,14 @@ mod tests {
         let resp = client
             .post("/api/audit/conn")
             .header(ContentType::JSON)
-            .body(r#"{"id":"peer3","uuid":"dXVpZA==","conn_id":1,"session_id":0,"nonce":"n4","ip":"10.0.0.3","action":"new"}"#)
+            .signed_body("/api/audit/conn", r#"{"id":"peer3","uuid":"dXVpZA==","conn_id":1,"session_id":0,"nonce":"n4","ip":"10.0.0.3","action":"new"}"#)
             .dispatch()
             .await;
         assert_eq!(resp.status(), Status::Ok);
         let resp = client
             .post("/api/audit/conn")
             .header(ContentType::JSON)
-            .body(r#"{"peer":["111","viewer"],"type":0,"id":"peer3","uuid":"dXVpZA==","conn_id":1,"session_id":300,"nonce":"n5"}"#)
+            .signed_body("/api/audit/conn", r#"{"peer":["111","viewer"],"type":0,"id":"peer3","uuid":"dXVpZA==","conn_id":1,"session_id":300,"nonce":"n5"}"#)
             .dispatch()
             .await;
         assert_eq!(resp.status(), Status::Ok);
@@ -3243,10 +3258,11 @@ mod tests {
     async fn test_audit_conn_accepts_u64_session_id() {
         // The client's session_id is a random u64; values above i64::MAX must not be rejected.
         let client = test_client().await;
+        client.rocket().state::<ApiState>().unwrap().test_register_device("peer_u64", "dXVpZA==").await;
         let resp = client
             .post("/api/audit/conn")
             .header(ContentType::JSON)
-            .body(r#"{"id":"peer_u64","uuid":"dXVpZA==","conn_id":1,"session_id":18446744073709551615,"nonce":"n_u64","ip":"10.0.0.9","action":"close"}"#)
+            .signed_body("/api/audit/conn", r#"{"id":"peer_u64","uuid":"dXVpZA==","conn_id":1,"session_id":18446744073709551615,"nonce":"n_u64","ip":"10.0.0.9","action":"close"}"#)
             .dispatch()
             .await;
         assert_eq!(resp.status(), Status::Ok);
@@ -3255,10 +3271,11 @@ mod tests {
     #[rocket::async_test]
     async fn test_audit_file() {
         let client = test_client().await;
+        client.rocket().state::<ApiState>().unwrap().test_register_device("peer4", "dXVpZA==").await;
         let resp = client
             .post("/api/audit/file")
             .header(ContentType::JSON)
-            .body(r#"{"id":"peer4","uuid":"dXVpZA==","peer_id":"remote1","conn_id":1,"type":1,"path":"/tmp/file.txt","is_file":true,"info":"{}","nonce":"nf1"}"#)
+            .signed_body("/api/audit/file", r#"{"id":"peer4","uuid":"dXVpZA==","peer_id":"remote1","conn_id":1,"type":1,"path":"/tmp/file.txt","is_file":true,"info":"{}","nonce":"nf1"}"#)
             .dispatch()
             .await;
         assert_eq!(resp.status(), Status::Ok);
@@ -3267,10 +3284,11 @@ mod tests {
     #[rocket::async_test]
     async fn test_audit_alarm() {
         let client = test_client().await;
+        client.rocket().state::<ApiState>().unwrap().test_register_device("peer5", "dXVpZA==").await;
         let resp = client
             .post("/api/audit/alarm")
             .header(ContentType::JSON)
-            .body(r#"{"id":"peer5","uuid":"dXVpZA==","typ":1,"info":"{}","conn_id":1,"nonce":"na1"}"#)
+            .signed_body("/api/audit/alarm", r#"{"id":"peer5","uuid":"dXVpZA==","typ":1,"info":"{}","conn_id":1,"nonce":"na1"}"#)
             .dispatch()
             .await;
         assert_eq!(resp.status(), Status::Ok);
@@ -3279,10 +3297,11 @@ mod tests {
     #[rocket::async_test]
     async fn test_audit_conn_nonce_dedup() {
         let client = test_client().await;
+        client.rocket().state::<ApiState>().unwrap().test_register_device("peer6", "dXVpZA==").await;
         let resp = client
             .post("/api/audit/conn")
             .header(ContentType::JSON)
-            .body(r#"{"id":"peer6","uuid":"dXVpZA==","conn_id":1,"session_id":600,"nonce":"dedup1","ip":"10.0.0.6","action":"new"}"#)
+            .signed_body("/api/audit/conn", r#"{"id":"peer6","uuid":"dXVpZA==","conn_id":1,"session_id":600,"nonce":"dedup1","ip":"10.0.0.6","action":"new"}"#)
             .dispatch()
             .await;
         assert_eq!(resp.into_string().await.unwrap(), "");
@@ -3291,7 +3310,7 @@ mod tests {
         let resp = client
             .post("/api/audit/conn")
             .header(ContentType::JSON)
-            .body(r#"{"id":"peer6","uuid":"dXVpZA==","conn_id":1,"session_id":600,"nonce":"dedup1","ip":"10.0.0.6","action":"new"}"#)
+            .signed_body("/api/audit/conn", r#"{"id":"peer6","uuid":"dXVpZA==","conn_id":1,"session_id":600,"nonce":"dedup1","ip":"10.0.0.6","action":"new"}"#)
             .dispatch()
             .await;
         assert_eq!(resp.status(), Status::Ok);
@@ -3301,10 +3320,11 @@ mod tests {
     #[rocket::async_test]
     async fn test_audit_file_nonce_dedup() {
         let client = test_client().await;
+        client.rocket().state::<ApiState>().unwrap().test_register_device("peer7", "dXVpZA==").await;
         let resp = client
             .post("/api/audit/file")
             .header(ContentType::JSON)
-            .body(r#"{"id":"peer7","uuid":"dXVpZA==","peer_id":"remote7","conn_id":1,"type":1,"path":"/tmp/f.txt","is_file":true,"info":"{}","nonce":"fdedup1"}"#)
+            .signed_body("/api/audit/file", r#"{"id":"peer7","uuid":"dXVpZA==","peer_id":"remote7","conn_id":1,"type":1,"path":"/tmp/f.txt","is_file":true,"info":"{}","nonce":"fdedup1"}"#)
             .dispatch()
             .await;
         assert_eq!(resp.status(), Status::Ok);
@@ -3312,7 +3332,7 @@ mod tests {
         let resp = client
             .post("/api/audit/file")
             .header(ContentType::JSON)
-            .body(r#"{"id":"peer7","uuid":"dXVpZA==","peer_id":"remote7","conn_id":1,"type":1,"path":"/tmp/f.txt","is_file":true,"info":"{}","nonce":"fdedup1"}"#)
+            .signed_body("/api/audit/file", r#"{"id":"peer7","uuid":"dXVpZA==","peer_id":"remote7","conn_id":1,"type":1,"path":"/tmp/f.txt","is_file":true,"info":"{}","nonce":"fdedup1"}"#)
             .dispatch()
             .await;
         assert_eq!(resp.status(), Status::Ok);
@@ -3321,10 +3341,11 @@ mod tests {
     #[rocket::async_test]
     async fn test_heartbeat() {
         let client = test_client().await;
+        client.rocket().state::<ApiState>().unwrap().test_register_device("test-peer", "dXVpZA==").await;
         let resp = client
             .post("/api/heartbeat")
             .header(ContentType::JSON)
-            .body(r#"{"id":"test-peer","modified_at":0,"uuid":"test-uuid","ver":0}"#)
+            .signed_body("/api/heartbeat", r#"{"id":"test-peer","modified_at":0,"uuid":"dXVpZA==","ver":0}"#)
             .dispatch()
             .await;
         assert_eq!(resp.status(), Status::Ok);
@@ -3339,12 +3360,11 @@ mod tests {
         let resp = client
             .post("/api/sysinfo")
             .header(ContentType::JSON)
-            .body(r#"{"id":"unknown"}"#)
+            .signed_body("/api/sysinfo", r#"{"id":"unknown"}"#)
             .dispatch()
             .await;
-        // No uuid means no peer can be matched.
-        assert_eq!(resp.status(), Status::Ok);
-        assert_eq!(resp.into_string().await.unwrap(), "ID_NOT_FOUND");
+        // No uuid means no peer key to check the signature against.
+        assert_eq!(resp.status(), Status::Unauthorized);
     }
 
     #[rocket::async_test]
