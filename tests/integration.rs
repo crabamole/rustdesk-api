@@ -1712,7 +1712,8 @@ async fn test_non_admin_cannot_escalate_via_user_update() {
 }
 
 #[rocket::async_test]
-async fn test_non_admin_can_update_own_email() {
+/// The email names a user to `rustdesk-api admin promote`; only the IdP sets it.
+async fn test_non_admin_cannot_change_own_email() {
     let (client, _dir) = test_client().await;
     let admin = login_admin(&client).await;
     let (token, guid) = create_and_login_user(&client, &admin, "selfedit").await;
@@ -1726,7 +1727,7 @@ async fn test_non_admin_can_update_own_email() {
         .await;
     assert_eq!(resp.status(), Status::Ok);
     let user = find_user(&client, &admin, "selfedit").await.unwrap();
-    assert_eq!(user["email"], "new-selfedit@test.com");
+    assert_eq!(user["email"], "selfedit@example.org");
 }
 
 #[rocket::async_test]

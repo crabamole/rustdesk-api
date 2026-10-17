@@ -2507,7 +2507,9 @@ async fn user_update(
     let mut user_update = request.0;
     if !is_admin {
         // A non-admin may edit only their own profile fields, never the
-        // fields that control identity or privileges.
+        // fields that control identity or privileges. The email names the
+        // user to `rustdesk-api admin promote`, so it comes from the IdP only.
+        user_update.email = None;
         user_update.name = None;
         user_update.is_admin = None;
         user_update.group_name = None;
