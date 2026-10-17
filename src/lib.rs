@@ -1126,7 +1126,8 @@ async fn group_get(
 ///
 /// ## Errors
 ///
-/// This function will return an error if the admin is not authorized.
+/// This function will return an error if the admin is not authorized,
+/// and 409 when the group was not created (a group with that name exists).
 ///
 /// # Example
 ///
@@ -1138,19 +1139,18 @@ async fn group_add(
     state: &State<ApiState>,
     user: AuthenticatedAdmin,
     request: Json<AddGoupRequest>,
-) -> Result<Json<UsersResponse>, status::Unauthorized<()>> {
+) -> Result<Json<UsersResponse>, Status> {
     log::debug!("create_group");
 
     let request = request.into_inner();
-    let res = state
+    state
         .create_group(request.name.as_str(), "Default", request.note.as_str()) // Todo allow to use different team
+        .await
+        .ok_or(Status::Conflict)?;
+    state
+        .log_console(Some(&user.info.user_id), utils::console_log::TYP_GROUP, utils::console_log::IOP_ADD_GROUP,
+            serde_json::json!({ "name": request.name, "note": request.note }))
         .await;
-    if res.is_some() {
-        state
-            .log_console(Some(&user.info.user_id), utils::console_log::TYP_GROUP, utils::console_log::IOP_ADD_GROUP,
-                serde_json::json!({ "name": request.name, "note": request.note }))
-            .await;
-    }
     let response = UsersResponse {
         msg: "success".to_string(),
         total: 1,

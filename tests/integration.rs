@@ -2648,6 +2648,11 @@ async fn test_console_log_groups_and_users() {
     let row = last_console_row(&client, &admin).await;
     assert_eq!(codes(&row), (1, 13));
     assert_eq!(row["info"]["users"][0]["name"], "bob", "a deleted user stays identifiable");
+
+    let resp = client.post("/api/group").header(ContentType::JSON).header(auth_header(&admin))
+        .body(r#"{"name":"g-log","note":"again","allowed_outgoings":[],"allowed_incomings":[]}"#).dispatch().await;
+    assert_eq!(resp.status(), Status::Conflict, "a duplicate group name is refused");
+    assert_eq!(codes(&last_console_row(&client, &admin).await), (1, 13));
 }
 
 #[rocket::async_test]

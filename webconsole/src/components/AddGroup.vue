@@ -59,6 +59,8 @@ function addGroup(): void {
   }
   groupApi.groupAdd(request).then(() => {
     emit('group_added')
+  }).catch(() => {
+    alert("Failed to add group: a group with this name may already exist");
   })
 }
 </script>
