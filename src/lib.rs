@@ -1178,24 +1178,24 @@ async fn group_update(
     state: &State<ApiState>,
     user: AuthenticatedAdmin,
     request: Json<UpdateGoupRequest>,
-) -> Result<Json<UsersResponse>, status::Unauthorized<()>> {
+) -> Result<Json<UsersResponse>, Status> {
     log::debug!("update_group");
 
     let request = request.into_inner();
-    let res = state
+    // None: no such group, or another group has the name.
+    state
         .update_group(
             request.guid.as_str(),
             request.name.as_str(),
             "Default", // Todo allow to use different team
             request.note.as_str(),
         )
+        .await
+        .ok_or(Status::Conflict)?;
+    state
+        .log_console(Some(&user.info.user_id), utils::console_log::TYP_GROUP, utils::console_log::IOP_UPDATE_GROUP,
+            serde_json::json!({ "guid": request.guid, "name": request.name, "note": request.note }))
         .await;
-    if res.is_some() {
-        state
-            .log_console(Some(&user.info.user_id), utils::console_log::TYP_GROUP, utils::console_log::IOP_UPDATE_GROUP,
-                serde_json::json!({ "guid": request.guid, "name": request.name, "note": request.note }))
-            .await;
-    }
     let response = UsersResponse {
         msg: "success".to_string(),
         total: 1,

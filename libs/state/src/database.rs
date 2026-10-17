@@ -1123,15 +1123,24 @@ impl Database {
             query_params.push(if is_admin { "1" } else { "0" }.to_string());
             param_idx += 1;
         }
+        // An unknown group matches no row, so the update fails instead of clearing the group.
+        let mut group_exists = String::new();
+        if let Some(group) = user_parameters.group_name.filter(|g| !g.is_empty()) {
+            set_clauses.push(format!("grp = (SELECT guid FROM grp WHERE name = ${})", param_idx));
+            group_exists = format!(" AND EXISTS (SELECT 1 FROM grp WHERE name = ${})", param_idx);
+            query_params.push(group);
+            param_idx += 1;
+        }
 
         if set_clauses.is_empty() {
             return Some(());
         }
 
         let query = format!(
-            "UPDATE \"user\" SET {} WHERE guid = ${}",
+            "UPDATE \"user\" SET {} WHERE guid = ${}{}",
             set_clauses.join(", "),
-            param_idx
+            param_idx,
+            group_exists
         );
 
         log::debug!("query: {:?}", query);

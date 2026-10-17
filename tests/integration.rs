@@ -1731,6 +1731,32 @@ async fn test_non_admin_cannot_change_own_email() {
 }
 
 #[rocket::async_test]
+async fn test_admin_moves_a_user_to_another_group() {
+    let (client, _dir) = test_client().await;
+    let admin = login_admin(&client).await;
+    let (_, guid) = create_and_login_user(&client, &admin, "mover").await;
+    for name in ["g-a", "g-b"] {
+        client.post("/api/group").header(ContentType::JSON).header(auth_header(&admin))
+            .body(format!(r#"{{"name":"{name}","note":"","allowed_outgoings":[],"allowed_incomings":[]}}"#)).dispatch().await;
+    }
+    let moved: Value = client.put("/api/user").header(ContentType::JSON).header(auth_header(&admin))
+        .body(format!(r#"{{"uuid":"{guid}","group_name":"g-a"}}"#)).dispatch().await.into_json().await.unwrap();
+    assert_eq!(moved["total"], 1);
+    assert_eq!(find_user(&client, &admin, "mover").await.unwrap()["group_name"], "g-a");
+
+    let unknown: Value = client.put("/api/user").header(ContentType::JSON).header(auth_header(&admin))
+        .body(format!(r#"{{"uuid":"{guid}","group_name":"no-such-group"}}"#)).dispatch().await.into_json().await.unwrap();
+    assert_eq!(unknown["total"], 0, "an unknown group fails the update");
+    assert_eq!(find_user(&client, &admin, "mover").await.unwrap()["group_name"], "g-a");
+
+    let groups: Value = client.get("/api/groups?current=1&pageSize=100").header(auth_header(&admin)).dispatch().await.into_json().await.unwrap();
+    let gb = groups["data"].as_array().unwrap().iter().find(|g| g["name"] == "g-b").unwrap()["guid"].as_str().unwrap().to_string();
+    let resp = client.put("/api/group").header(ContentType::JSON).header(auth_header(&admin))
+        .body(format!(r#"{{"guid":"{gb}","name":"g-a","note":"","allowed_outgoings":[],"allowed_incomings":[]}}"#)).dispatch().await;
+    assert_eq!(resp.status(), Status::Conflict, "renaming to an existing group name is refused");
+}
+
+#[rocket::async_test]
 async fn test_non_admin_cannot_update_other_user() {
     let (client, _dir) = test_client().await;
     let admin = login_admin(&client).await;

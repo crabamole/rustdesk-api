@@ -74,6 +74,8 @@ function updateGroup(): void {
   }
   groupApi.groupUpdate(request).then(() => {
     emit('group_updated')
+  }).catch(() => {
+    alert("Failed to update group: another group may have this name");
   })
 }
 </script>

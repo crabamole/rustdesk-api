@@ -109,7 +109,7 @@ function updateUser(): void {
     }
     const userApi = new UserApi(userStore.api_configuration);
     userApi.userUpdate(user_request).then((response) => {
-        if (response.status == 200 && response.data.msg == "success") {
+        if (response.status == 200 && response.data.msg == "success" && response.data.total > 0) {
             console.log("User update successfully");
             closeModal();
         }
