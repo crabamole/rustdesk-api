@@ -34,10 +34,20 @@ export function consoleActionLabel(iop: number): string {
     return CONSOLE_ACTIONS[iop] ?? `Unknown (${iop})`;
 }
 
-/** `info` as `key: value` pairs; objects and lists as compact JSON. */
+/** A user reference `{guid, name, email}` as "name <email>". */
+function userRef(u: any): string {
+    if (!u || typeof u !== 'object' || !('guid' in u)) return JSON.stringify(u);
+    return u.email ? `${u.name ?? u.guid} <${u.email}>` : (u.name ?? u.guid);
+}
+
+/** `info` as `key: value` pairs; user references by name; other objects and lists as compact JSON. */
 export function consoleDetails(info: any): string {
     if (!info || typeof info !== 'object') return info == null ? '' : String(info);
-    return Object.entries(info).map(([k, v]) => `${k}: ${typeof v === 'object' ? JSON.stringify(v) : v}`).join(', ');
+    return Object.entries(info).map(([k, v]) => {
+        if (k === 'users' && Array.isArray(v)) return `${k}: ${v.map(userRef).join(', ')}`;
+        if (k === 'user' && v && typeof v === 'object') return `${k}: ${userRef(v)}`;
+        return `${k}: ${typeof v === 'object' ? JSON.stringify(v) : v}`;
+    }).join(', ');
 }
 
 const ALARMS: Record<number, string> = {

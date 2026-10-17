@@ -199,6 +199,11 @@ impl ApiState {
         self.db.create_user(username, admin).await
     }
 
+    /// `{guid, name, email}` of each existing user in `uuids`, for console log rows.
+    pub async fn user_refs(&self, uuids: &[String]) -> Vec<serde_json::Value> {
+        self.db.user_refs(uuids).await
+    }
+
     pub async fn user_delete(&self, user_id: &str) -> Option<()> {
         self.db.delete_user(user_id).await
     }

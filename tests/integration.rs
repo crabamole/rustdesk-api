@@ -2640,7 +2640,14 @@ async fn test_console_log_groups_and_users() {
         .body(format!(r#"{{"rows":["{bob}"],"disable":false}}"#)).dispatch().await;
     let row = last_console_row(&client, &admin).await;
     assert_eq!(codes(&row), (1, 6));
-    assert_eq!(row["info"]["users"], serde_json::json!([bob]));
+    assert_eq!(row["info"]["users"][0]["guid"], bob.as_str());
+    assert_eq!(row["info"]["users"][0]["name"], "bob");
+
+    client.delete("/api/user").header(ContentType::JSON).header(auth_header(&admin))
+        .body(format!(r#"{{"rows":["{bob}"]}}"#)).dispatch().await;
+    let row = last_console_row(&client, &admin).await;
+    assert_eq!(codes(&row), (1, 13));
+    assert_eq!(row["info"]["users"][0]["name"], "bob", "a deleted user stays identifiable");
 }
 
 #[rocket::async_test]
@@ -2691,6 +2698,9 @@ async fn test_console_log_skips_changes_that_changed_nothing() {
     let resp = client.put("/api/user").header(ContentType::JSON).header(auth_header(&admin))
         .body(r#"{"uuid":""}"#).dispatch().await;
     assert_eq!(resp.status(), Status::Ok);
+    let unknown: Value = client.put("/api/user").header(ContentType::JSON).header(auth_header(&admin))
+        .body(r#"{"uuid":"11111111-2222-4333-8444-555555555555","note":"x"}"#).dispatch().await.into_json().await.unwrap();
+    assert_eq!(unknown["total"], 0, "no user has that guid");
 
     assert_eq!(console_total(&client, &admin).await, before);
 }

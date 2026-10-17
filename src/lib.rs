@@ -2392,6 +2392,7 @@ async fn user_delete(
 
     let delete_users = request.0;
 
+    let refs = state.user_refs(&delete_users.rows).await;
     let mut count = 0;
     let mut deleted = Vec::new();
     for uuid in delete_users.rows {
@@ -2404,7 +2405,7 @@ async fn user_delete(
     if !deleted.is_empty() {
         state
             .log_console(Some(&user.info.user_id), utils::console_log::TYP_USER, utils::console_log::IOP_DELETE_USER,
-                serde_json::json!({ "users": deleted }))
+                serde_json::json!({ "users": refs.into_iter().filter(|r| deleted.iter().any(|d| r["guid"] == *d)).collect::<Vec<_>>() }))
             .await;
     }
     let response = UsersResponse {
@@ -2457,7 +2458,7 @@ async fn user_enable(
         };
         state
             .log_console(Some(&user.info.user_id), utils::console_log::TYP_USER, iop,
-                serde_json::json!({ "users": changed }))
+                serde_json::json!({ "users": state.user_refs(&changed).await }))
             .await;
     }
     let response = UsersResponse {
@@ -2503,11 +2504,6 @@ async fn user_update(
     if !is_admin && user.info.user_id != guid {
         return Err(status::Unauthorized::<()>(()));
     }
-    let response = UsersResponse {
-        msg: "success".to_string(),
-        total: 1,
-        data: "[{}]".to_string(),
-    };
     let mut user_update = request.0;
     if !is_admin {
         // A non-admin may edit only their own profile fields, never the
@@ -2517,9 +2513,19 @@ async fn user_update(
         user_update.group_name = None;
         user_update.status = None;
     }
-    let info = serde_json::to_value(&user_update).unwrap_or_default();
+    let mut info = serde_json::to_value(&user_update).unwrap_or_default();
+    let changes = info.as_object().is_some_and(|o| o.len() > 1);
+    let target = utils::guid_into_uuid(guid.clone()).unwrap_or_default();
     let res = state.user_update(guid, user_update).await;
-    if res.is_some() && info.as_object().is_some_and(|o| o.len() > 1) {
+    let response = UsersResponse {
+        msg: "success".to_string(),
+        total: res.is_some() as u32,
+        data: "[{}]".to_string(),
+    };
+    if let Some(user) = state.user_refs(&[target]).await.pop() {
+        info["user"] = user;
+    }
+    if res.is_some() && changes {
         state
             .log_console(Some(&user.info.user_id), utils::console_log::TYP_USER, utils::console_log::IOP_UPDATE_USER, info)
             .await;

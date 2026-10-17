@@ -333,6 +333,24 @@ impl Database {
         Some(guid)
     }
 
+    /// `{guid, name, email}` of each user in `uuids` that exists, for console log rows.
+    pub async fn user_refs(&self, uuids: &[String]) -> Vec<serde_json::Value> {
+        let guids: Vec<Vec<u8>> = uuids.iter().filter_map(|u| utils::uuid_into_guid(u)).collect();
+        sqlx::query("SELECT guid, name, email FROM \"user\" WHERE guid = ANY($1)")
+            .bind(&guids)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| log::error!("user_refs error: {e:?}"))
+            .unwrap_or_default()
+            .iter()
+            .map(|r| serde_json::json!({
+                "guid": utils::guid_into_uuid(r.try_get::<Vec<u8>, _>("guid").unwrap_or_default()),
+                "name": r.try_get::<Option<String>, _>("name").ok().flatten(),
+                "email": r.try_get::<Option<String>, _>("email").ok().flatten(),
+            }))
+            .collect()
+    }
+
     pub async fn delete_user(&self, uuid: &str) -> Option<()> {
         let user_id = Uuid::parse_str(uuid);
         if user_id.is_err() {
@@ -1124,6 +1142,9 @@ impl Database {
         let res = res.bind(user_id).execute(&self.pool).await;
         if res.is_err() {
             log::error!("user_update error: {:?}", res.as_ref().err());
+            return None;
+        }
+        if res.is_ok_and(|r| r.rows_affected() == 0) {
             return None;
         }
         Some(())
