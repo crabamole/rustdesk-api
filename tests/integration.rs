@@ -1135,18 +1135,6 @@ async fn test_software_version() {
 }
 
 #[rocket::async_test]
-async fn test_software_releases_tag() {
-    let (client, _dir) = test_client().await;
-    let resp = client
-        .get("/api/software/releases/tag/1.2.3")
-        .dispatch()
-        .await;
-    assert_eq!(resp.status(), Status::Ok);
-    let body: Value = resp.into_json().await.unwrap();
-    assert_eq!(body["client"], "1.2.3");
-}
-
-#[rocket::async_test]
 async fn test_options_cors() {
     let (client, _dir) = test_client().await;
     let resp = client.options("/api/login").dispatch().await;
@@ -1214,33 +1202,6 @@ async fn test_user_update() {
     assert_eq!(resp.status(), Status::Ok);
     let body: Value = resp.into_json().await.unwrap();
     assert_eq!(body["msg"], "success");
-}
-
-#[rocket::async_test]
-async fn test_oidc_add_returns_unauthorized() {
-    let (client, _dir) = test_client().await;
-    let token = login_admin(&client).await;
-    let resp = client
-        .put("/api/oidc/settings")
-        .header(ContentType::JSON)
-        .header(auth_header(&token))
-        .body(r#"{"rows":[],"disable":false}"#)
-        .dispatch()
-        .await;
-    assert_eq!(resp.status(), Status::Unauthorized);
-}
-
-#[rocket::async_test]
-async fn test_oidc_get_returns_unauthorized() {
-    let (client, _dir) = test_client().await;
-    let token = login_admin(&client).await;
-    let resp = client
-        .get("/api/oidc/settings")
-        .header(ContentType::JSON)
-        .header(auth_header(&token))
-        .dispatch()
-        .await;
-    assert_eq!(resp.status(), Status::Unauthorized);
 }
 
 /// An IdP that accepts any code and says the user is `sub`.

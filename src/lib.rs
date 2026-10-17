@@ -64,7 +64,7 @@ use rocket::{
 pub use state::ApiState;
 use utils::{
     unwrap_or_return, uuid_into_guid, AbTagRenameRequest, AddUserRequest,
-    AddressBook, EnableUserRequest, DeleteUserRequest, GroupsResponse, OidcSettingsResponse, PeersResponse,
+    AddressBook, EnableUserRequest, DeleteUserRequest, GroupsResponse, PeersResponse,
     SoftwareVersionResponse, UpdateUserRequest, UserList,
 };
 use utils::{
@@ -342,8 +342,6 @@ pub fn api_routes() -> (Vec<rocket::Route>, rocket_okapi::okapi::openapi3::OpenA
         strategy_repush,
         oidc_auth,
         oidc_token,
-        oidc_add,
-        oidc_get,
         ab_peer_add,
         ab_peer_update,
         ab_peer_delete,
@@ -363,8 +361,6 @@ pub fn api_routes() -> (Vec<rocket::Route>, rocket_okapi::okapi::openapi3::OpenA
         ab_rule_add,
         ab_rule_delete,
         software_version,
-        software_download,
-        software_releases_tag,
         webconsole_index,
         webconsole_index_html,
         // webconsole_assets,
@@ -2533,38 +2529,6 @@ async fn user_update(
     Ok(Json(response))
 }
 
-/// # Add OIDC Provider
-///
-/// This function is an API endpoint that adds an OIDC provider.
-///
-/// TODO: This function is currently unused.
-#[openapi(tag = "todo")]
-#[put("/api/oidc/settings", format = "application/json", data = "<_request>")]
-async fn oidc_add(
-    _state: &State<ApiState>,
-    _user: AuthenticatedAdmin,
-    _request: Json<EnableUserRequest>,
-) -> Result<Json<EnableUserRequest>, status::Unauthorized<()>> {
-    log::debug!("Add OIDC Provider");
-
-    Err(status::Unauthorized::<()>(()))
-}
-
-/// # Get OIDC Providers
-///
-/// This function is an API endpoint that retrieves all OIDC providers.
-///
-/// TODO: This function is currently unused.
-#[openapi(tag = "todo")]
-#[get("/api/oidc/settings", format = "application/json")]
-async fn oidc_get(
-    _state: &State<ApiState>,
-    _user: AuthenticatedAdmin,
-) -> Result<Json<OidcSettingsResponse>, status::Unauthorized<()>> {
-    log::debug!("create_user");
-    Err(status::Unauthorized::<()>(()))
-}
-
 /// # Get Users for client
 ///
 /// One page of users ordered by name, for clients.
@@ -2618,39 +2582,6 @@ async fn software_version() -> Json<SoftwareVersionResponse> {
     Json(response)
 }
 
-/// # Simulate GitHub API for releases
-///
-/// This function is an API endpoint that simulates the GitHub API for releases.
-///
-/// ## Parameters
-///
-/// - `version`: The version of the release.
-///
-/// ## Returns
-///
-/// Returns a `Json<SoftwareVersionResponse>` object containing the version of the release.
-#[openapi(tag = "software")]
-#[get("/api/software/releases/tag/<version>")]
-async fn software_releases_tag(
-    version: &str,
-) -> Result<Json<SoftwareVersionResponse>, status::NotFound<()>> {
-    log::debug!("software_releases_tag");
-    let response = SoftwareVersionResponse {
-        server: None,
-        client: Some(version.to_string()),
-    };
-    Ok(Json(response))
-}
-
-/// # Redirect to the software download page
-///
-/// This function is an API endpoint that redirects to the software download page.
-///
-#[openapi(tag = "software")]
-#[get("/api/software/download")]
-async fn software_download() -> Redirect {
-    Redirect::to("https://github.com/rustdesk/rustdesk/releases/latest")
-}
 /// # List the rules
 ///
 /// This function is an API endpoint that lists the rules attached to a shared address book.
@@ -4253,33 +4184,6 @@ mod tests {
     }
 
     #[rocket::async_test]
-    async fn test_oidc_settings_add() {
-        let client = test_client().await;
-        let token = login_admin(&client).await;
-        let resp = client
-            .put("/api/oidc/settings")
-            .header(ContentType::JSON)
-            .header(auth_header(&token))
-            .body(r#"{"rows":[],"disable":false}"#)
-            .dispatch()
-            .await;
-        assert_eq!(resp.status(), Status::Unauthorized);
-    }
-
-    #[rocket::async_test]
-    async fn test_oidc_settings_get() {
-        let client = test_client().await;
-        let token = login_admin(&client).await;
-        let resp = client
-            .get("/api/oidc/settings")
-            .header(ContentType::JSON)
-            .header(auth_header(&token))
-            .dispatch()
-            .await;
-        assert_eq!(resp.status(), Status::Unauthorized);
-    }
-
-    #[rocket::async_test]
     async fn test_oidc_auth_invalid_uuid() {
         let client = test_client().await;
         let resp = client
@@ -4339,17 +4243,6 @@ mod tests {
     }
 
     #[rocket::async_test]
-    async fn test_software_download_redirects_to_rustdesk_releases() {
-        let client = test_client().await;
-        let resp = client.get("/api/software/download").dispatch().await;
-        assert_eq!(resp.status(), Status::SeeOther);
-        assert_eq!(
-            resp.headers().get_one("Location"),
-            Some("https://github.com/rustdesk/rustdesk/releases/latest")
-        );
-    }
-
-    #[rocket::async_test]
     async fn test_software_version() {
         let client = test_client().await;
         let resp = client
@@ -4364,10 +4257,12 @@ mod tests {
     }
 
     #[rocket::async_test]
-    async fn test_software_releases_latest_removed() {
+    async fn test_unused_routes_removed() {
         let client = test_client().await;
-        let resp = client.get("/api/software/releases/latest").dispatch().await;
-        assert_eq!(resp.status(), Status::NotFound);
+        for path in ["/api/software/releases/latest", "/api/software/releases/tag/1.2.3", "/api/software/download", "/api/oidc/settings"] {
+            let resp = client.get(path).dispatch().await;
+            assert_eq!(resp.status(), Status::NotFound, "{path}");
+        }
     }
 
     #[rocket::async_test]

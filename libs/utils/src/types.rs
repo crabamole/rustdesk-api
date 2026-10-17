@@ -928,13 +928,6 @@ pub struct Provider {
 }
 
 #[derive(Serialize, Deserialize, Clone, JsonSchema)]
-pub struct OidcSettingsResponse {
-    max_auth_count: u32,
-    callback_url: String,
-    providers: Vec<Provider>,
-}
-
-#[derive(Serialize, Deserialize, Clone, JsonSchema)]
 pub struct UserListResponse {
     pub guid: String,
     pub name: String,

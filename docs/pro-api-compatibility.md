@@ -170,10 +170,6 @@ Upstream clients log in by polling `GET /api/oidc/auth-query`; that login is not
 | GET | /api/peers/cpus | cpu count per peer |
 | GET | /api/audits/login | admin-only login audit: one row per OIDC login that reached the callback, with its outcome; `user` (LIKE) and `outcome` filters, per audit-api-spec.md §9 |
 | GET | /api/viewers | admin-only paginated list of machines whose native client logged in through OIDC but never registered with hbbs; one row per machine and user, with the latest login address (`login_ip`) |
-| GET | /api/oidc/settings | stub; always 401; TODO in source |
-| PUT | /api/oidc/settings | stub; always 401; TODO in source |
-| GET | /api/software/version/server | server version |
-| GET | /api/software/releases/tag/{version} | echoes the requested version tag back; no real release lookup |
-| GET | /api/software/download | redirects to upstream RustDesk release |
+| GET | /api/software/version/server | server version (web console footer) |
 | GET | /livez | liveness probe: 200 while the server answers requests |
 | GET | /readyz | readiness probe: 200 when the database answers `SELECT 1` within 2 s, else 503; shutdown handover relies on the pod's preStop pause and endpoint removal, not on readiness |
