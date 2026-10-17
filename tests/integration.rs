@@ -1495,6 +1495,16 @@ async fn test_oidc_auth_invalid_uuid() {
     assert_eq!(resp.status(), Status::Ok);
     let body: Value = resp.into_json().await.unwrap();
     assert_eq!(body["code"], "UUID_ERROR");
+    // Valid base64 of bytes that are not UTF-8.
+    let resp = client
+        .post("/api/oidc/auth")
+        .header(ContentType::JSON)
+        .body(r#"{"op":"github","uuid":"/w==","id":"test","deviceInfo":{"name":"test","os":"linux","type":"client"}}"#)
+        .dispatch()
+        .await;
+    assert_eq!(resp.status(), Status::Ok);
+    let body: Value = resp.into_json().await.unwrap();
+    assert_eq!(body["code"], "UUID_ERROR");
 }
 
 #[rocket::async_test]
@@ -2695,6 +2705,20 @@ async fn test_console_log_policy_and_failed_change() {
     let resp = client.post("/api/strategies/no-such-guid/repush").header(auth_header(&admin)).dispatch().await;
     assert_eq!(resp.status(), Status::NotFound);
     assert_eq!(codes(&last_console_row(&client, &admin).await), (4, 25), "a failed change writes no row");
+}
+
+#[rocket::async_test]
+async fn test_shared_address_book_rename_needs_a_name() {
+    let (client, _dir) = test_client().await;
+    let admin = login_admin(&client).await;
+    let added: Value = client.post("/api/ab/shared/add").header(ContentType::JSON).header(auth_header(&admin))
+        .body(r#"{"name":"ab-named"}"#).dispatch().await.into_json().await.unwrap();
+    let ab = added["data"][0]["guid"].as_str().unwrap().to_string();
+    for body in [format!(r#"{{"guid":"{ab}"}}"#), format!(r#"{{"guid":"{ab}","name":" "}}"#)] {
+        let resp = client.put("/api/ab/shared/update/profile").header(ContentType::JSON).header(auth_header(&admin))
+            .body(body.clone()).dispatch().await;
+        assert_eq!(resp.status(), Status::BadRequest, "{body}");
+    }
 }
 
 #[rocket::async_test]

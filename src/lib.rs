@@ -1461,14 +1461,12 @@ async fn oidc_auth(
 
     let uuid_code = Uuid::new_v4().to_string();
     let uuid_decoded = BASE64_STANDARD.decode(request.uuid.clone());
-    if uuid_decoded.is_err() {
+    let Some(uuid_client) = uuid_decoded.ok().and_then(|u| String::from_utf8(u).ok()) else {
         return Json(OidcAuthUrl {
             url: "".to_string(),
             code: "UUID_ERROR".to_string(),
         });
-    }
-    let uuid_decoded = uuid_decoded.unwrap();
-    let uuid_client = String::from_utf8(uuid_decoded).unwrap();
+    };
     let host = public_url.0.clone();
     if !is_loopback_return(&request.return_to) && !is_own_login_page(&request.return_to, &host) {
         log::warn!("oidc_auth: rejected returnTo {:?}", request.return_to);
@@ -2856,9 +2854,11 @@ async fn ab_shared_name(
     state: &State<ApiState>,
     user: AuthenticatedAdmin,
     request: Json<AbSharedNameRequest>,
-) -> Result<Json<AbSharedProfilesResponse>, status::Unauthorized<()>> {
+) -> Result<Json<AbSharedProfilesResponse>, Status> {
     let shared_profile = request.0;
-    let name = shared_profile.name.expect("Currently name is required");
+    let Some(name) = shared_profile.name.filter(|n| !n.trim().is_empty()) else {
+        return Err(Status::BadRequest);
+    };
     let res = state.update_shared_address_book(shared_profile.guid.as_str(), name.as_str()).await;
     if res.is_some() {
         state
