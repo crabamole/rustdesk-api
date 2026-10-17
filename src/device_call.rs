@@ -93,7 +93,8 @@ impl<'r, T: DeserializeOwned + DeviceCall + Send> FromData<'r> for SignedDevice<
         if pk.is_some_and(|pk| device_call::verify(&pk, header, req.uri().path().as_str(), &body, now)) {
             Outcome::Success(SignedDevice(value))
         } else {
-            log::warn!("{}: refused an unsigned or wrongly signed call for device {id:?}", req.uri().path());
+            // Debug only: devices call at their own rate; the access log already records the 401.
+            log::debug!("{}: refused an unsigned or wrongly signed call for device {id:?}", req.uri().path());
             Outcome::Error((Status::Unauthorized, "device signature required".into()))
         }
     }
