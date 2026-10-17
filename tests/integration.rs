@@ -262,6 +262,23 @@ async fn test_device_calls_need_the_device_signature() {
 }
 
 #[rocket::async_test]
+async fn test_viewer_menu_note_needs_no_device_signature() {
+    let (client, _dir) = test_client().await;
+    let admin = login_admin(&client).await;
+    client.rocket().state::<state::ApiState>().unwrap().test_register_device("devnote", "bm90ZQ==").await;
+    client.post("/api/audit/conn").header(ContentType::JSON)
+        .signed_body("/api/audit/conn", r#"{"action":"new","id":"devnote","uuid":"bm90ZQ==","conn_id":4,"session_id":0,"nonce":"note-n"}"#).dispatch().await;
+    client.post("/api/audit/conn").header(ContentType::JSON)
+        .signed_body("/api/audit/conn", r#"{"peer":["111","viewer"],"type":0,"id":"devnote","uuid":"bm90ZQ==","conn_id":4,"session_id":77,"nonce":"note-a"}"#).dispatch().await;
+    // Sent by the viewer (rustdesk `send_note`): no uuid, no signature.
+    let resp = client.post("/api/audit/conn").header(ContentType::JSON)
+        .body(r#"{"id":"devnote","session_id":77,"note":"from the menu"}"#).dispatch().await;
+    assert_eq!(resp.status(), Status::Ok);
+    let rows: Value = client.get("/api/audits/conn?remote=devnote").header(auth_header(&admin)).dispatch().await.into_json().await.unwrap();
+    assert_eq!(rows["data"][0]["note"], "from the menu");
+}
+
+#[rocket::async_test]
 async fn test_audit() {
     let (client, _dir) = test_client().await;
     let resp = client

@@ -13,6 +13,11 @@ use state::{device_call, ApiState};
 /// The device a call names.
 pub trait DeviceCall {
     fn device(&self) -> (&str, &str);
+
+    /// Calls a viewer sends, which carry no device signature.
+    fn from_viewer(&self) -> bool {
+        false
+    }
 }
 
 impl DeviceCall for utils::HeartbeatRequest {
@@ -31,6 +36,12 @@ impl DeviceCall for utils::AuditConnRequest {
     fn device(&self) -> (&str, &str) {
         (&self.id, &self.uuid)
     }
+
+    /// A viewer's session menu note (spec §4), as `state::audit_conn` recognises it; it only lands
+    /// on an existing row of its session.
+    fn from_viewer(&self) -> bool {
+        self.action.is_empty() && self.note.is_some() && self.uuid.is_empty() && self.peer.is_none() && self.conn_type.is_none()
+    }
 }
 
 impl DeviceCall for utils::AuditFileRequest {
@@ -46,7 +57,7 @@ impl DeviceCall for utils::AuditAlarmRequest {
 }
 
 /// A JSON body accepted only with a valid `X-Device-Signature` of the device it names: 422 for a
-/// malformed body, 401 for a missing or wrong signature.
+/// malformed body, 401 for a missing or wrong signature. Viewer calls (`from_viewer`) need none.
 pub struct SignedDevice<T>(pub T);
 
 impl<T> std::ops::Deref for SignedDevice<T> {
@@ -80,6 +91,9 @@ impl<'r, T: DeserializeOwned + DeviceCall + Send> FromData<'r> for SignedDevice<
             }
             Err(e) => return Outcome::Error((Status::BadRequest, e.to_string())),
         };
+        if value.from_viewer() {
+            return Outcome::Success(SignedDevice(value));
+        }
         let header = req.headers().get_one(device_call::HEADER).unwrap_or_default();
         let (id, uuid) = value.device();
         let pk = match req.rocket().state::<ApiState>() {
