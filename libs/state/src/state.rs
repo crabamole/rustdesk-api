@@ -336,7 +336,7 @@ impl ApiState {
             return None;
         }
         let token = self.get_access_token(user_id.clone(), &username, db_user_info.admin).await;
-        self.record_device_owner(&login, req, &token.to_base64()).await;
+        self.record_device_owner(&login, req, &token.to_base64(), &user_id).await;
         self.record_viewer_login(&login, &user_id).await;
         self.record_login(&login, "ok", String::new(), username.clone()).await;
         Some((token, username, db_user_info))
@@ -385,7 +385,7 @@ impl ApiState {
     }
 
     /// Makes this login the owner of its device when the device signed it (design-same-user-access.md).
-    async fn record_device_owner(&self, login: &OidcState, req: &utils::OidcTokenRequest, session: &str) {
+    async fn record_device_owner(&self, login: &OidcState, req: &utils::OidcTokenRequest, session: &str, user: &UserId) {
         if login.device_type != "client" || req.owner_signature.is_empty() {
             return;
         }
@@ -393,6 +393,9 @@ impl ApiState {
             log::warn!("device owner: {:?} is not registered", login.id);
             return;
         };
+        if let Some(new_pk) = base64::prelude::BASE64_STANDARD.decode(&req.owner_pk).ok().filter(|k| !k.is_empty() && *k != pk) {
+            return self.approve_device_key(login, req, session, user, &new_pk).await;
+        }
         if !crate::device_owner::verify(&pk, &login.login_code, &req.id, &req.uuid, &req.owner_signature) {
             log::warn!("device owner: signature for {:?} does not match its key", login.id);
             return;
@@ -400,6 +403,20 @@ impl ApiState {
         if self.db.set_peer_owner(&login.id, session, &pk).await != Some(true) {
             log::warn!("device owner: {:?} not updated", login.id);
         }
+    }
+
+    /// Approves the device's new key when its owner logs in on it (design-device-key-change.md, stage 2).
+    async fn approve_device_key(&self, login: &OidcState, req: &utils::OidcTokenRequest, session: &str, user: &UserId, new_pk: &[u8]) {
+        if !crate::device_owner::verify(new_pk, &login.login_code, &req.id, &req.uuid, &req.owner_signature) {
+            log::warn!("device key: signature for {:?} does not match the new key", login.id);
+            return;
+        }
+        if self.db.approve_peer_key(&login.id, login.uuid.as_bytes(), session, new_pk, user).await != Some(true) {
+            log::warn!("device key: {:?} has no live owner session of this user", login.id);
+            return;
+        }
+        let info = serde_json::json!({ "device": login.id, "via": "owner-login" });
+        self.log_console(Some(user), utils::console_log::TYP_DEVICE, utils::console_log::IOP_DEVICE_KEY_CHANGED, info).await;
     }
 
     /// The device's owner key when same-user access is `enabled` and `user` owns device `target`.
@@ -1251,7 +1268,7 @@ mod tests {
 
     fn token_request(result: &str, verifier: &str) -> utils::OidcTokenRequest {
         let uuid = base64::prelude::BASE64_STANDARD.encode("dev");
-        utils::OidcTokenRequest { result: result.into(), code_verifier: verifier.into(), id: "601".into(), uuid, owner_signature: String::new() }
+        utils::OidcTokenRequest { result: result.into(), code_verifier: verifier.into(), id: "601".into(), uuid, owner_signature: String::new(), owner_pk: String::new() }
     }
 
     #[tokio::test]
@@ -1301,7 +1318,7 @@ mod tests {
                 base64::prelude::BASE64_STANDARD.encode(sig.to_bytes())
             })
             .unwrap_or_default();
-        utils::OidcTokenRequest { result: result.into(), code_verifier: "v".into(), id: id.into(), uuid, owner_signature }
+        utils::OidcTokenRequest { result: result.into(), code_verifier: "v".into(), id: id.into(), uuid, owner_signature, owner_pk: String::new() }
     }
 
     /// Registers device `id` (uuid "dev") with the key of `OWNER_SEED`; returns that key.
@@ -1353,6 +1370,53 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(state.same_user_owner_pk(true, &admin, "703").await, None, "logged out");
+    }
+
+    const NEW_SEED: [u8; 32] = [9; 32];
+
+    /// `owner_request` signed with the device's new key `NEW_SEED`, which it also sends as `ownerPk`.
+    fn new_key_request(id: &str, code: &str, result: &str) -> utils::OidcTokenRequest {
+        let pk = ed25519_dalek::SigningKey::from_bytes(&NEW_SEED).verifying_key().to_bytes();
+        utils::OidcTokenRequest { owner_pk: base64::prelude::BASE64_STANDARD.encode(pk), ..owner_request(id, code, result, Some(NEW_SEED)) }
+    }
+
+    #[tokio::test]
+    async fn owner_login_with_a_new_key_approves_it() {
+        let state = test_state().await;
+        owned_device(&state, "704").await;
+        device_login(&state, "admin", "704", "c7", "r7").await;
+        state.oidc_redeem(&owner_request("704", "c7", "r7", Some(OWNER_SEED))).await.unwrap();
+        device_login(&state, "admin", "704", "c8", "r8").await;
+        assert!(state.oidc_redeem(&new_key_request("704", "c8", "r8")).await.is_some());
+        let new_pk = ed25519_dalek::SigningKey::from_bytes(&NEW_SEED).verifying_key().to_bytes().to_vec();
+        assert_eq!(state.db.test_approved_pk("704").await, Some(new_pk.clone()));
+        assert_eq!(state.same_user_owner_pk(true, &admin_id(&state).await, "704").await, Some(new_pk));
+        let q = utils::AuditQuery { offset: 0, limit: 10, created_at: None, pattern: None, conn_type: None };
+        let (_, rows) = state.list_audit_consoles(&q).await.unwrap();
+        assert_eq!((rows[0].typ, rows[0].iop, rows[0].operator.as_deref()), (2, 28, Some("admin")));
+        assert_eq!(rows[0].info, serde_json::json!({"device": "704", "via": "owner-login"}));
+    }
+
+    #[tokio::test]
+    async fn a_new_key_is_approved_only_by_the_owner() {
+        let state = test_state().await;
+        owned_device(&state, "705").await;
+        device_login(&state, "admin", "705", "c9", "r9").await;
+        assert!(state.oidc_redeem(&new_key_request("705", "c9", "r9")).await.is_some(), "no owner yet");
+        assert_eq!(state.db.test_approved_pk("705").await, None);
+
+        device_login(&state, "admin", "705", "c10", "r10").await;
+        state.oidc_redeem(&owner_request("705", "c10", "r10", Some(OWNER_SEED))).await.unwrap();
+        let (alice, _, _) = state.db.get_user_for_oauth2("alice", "alice", Some("alice@example.org")).await.unwrap();
+        state.user_change_status(&utils::guid_into_uuid(alice).unwrap(), false).await.unwrap();
+        device_login(&state, "alice", "705", "c11", "r11").await;
+        assert!(state.oidc_redeem(&new_key_request("705", "c11", "r11")).await.is_some(), "the login itself works");
+        assert_eq!(state.db.test_approved_pk("705").await, None, "another user");
+
+        device_login(&state, "admin", "705", "c12", "r12").await;
+        let forged = utils::OidcTokenRequest { owner_signature: owner_request("705", "c12", "r12", Some([8; 32])).owner_signature, ..new_key_request("705", "c12", "r12") };
+        state.oidc_redeem(&forged).await.unwrap();
+        assert_eq!(state.db.test_approved_pk("705").await, None, "signature by another key");
     }
 
     #[tokio::test]

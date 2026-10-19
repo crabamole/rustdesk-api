@@ -767,6 +767,9 @@ pub struct OidcTokenRequest {
     /// Device's signature of its owner proof (`device_owner`); empty for viewers and stock clients.
     #[serde(rename = "ownerSignature", default)]
     pub owner_signature: String,
+    /// Base64 key that signed `owner_signature` when the device's key changed; empty otherwise.
+    #[serde(rename = "ownerPk", default)]
+    pub owner_pk: String,
 }
 
 // OIDC response

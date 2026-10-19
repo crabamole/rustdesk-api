@@ -24,3 +24,4 @@ pub const IOP_DEMOTE_ADMIN: i16 = 24;
 pub const IOP_UPDATE_POLICY: i16 = 25;
 pub const IOP_REPUSH_POLICY: i16 = 26;
 pub const IOP_RESET_DEVICE_KEY: i16 = 27;
+pub const IOP_DEVICE_KEY_CHANGED: i16 = 28;

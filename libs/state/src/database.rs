@@ -2171,6 +2171,27 @@ impl Database {
             .map(|r| r.rows_affected() == 1)
     }
 
+    /// Approves `pk` as the next key of device `id` and makes `session` its owner, when the device's
+    /// live owner session belongs to active `user`; hbbs takes `approved_pk` once.
+    pub async fn approve_peer_key(&self, id: &str, uuid: &[u8], session: &str, pk: &[u8], user: &[u8]) -> Option<bool> {
+        sqlx::query(
+            "UPDATE peer p SET approved_pk = $4, owner_session = $3, owner_pk = $4 \
+             FROM session s JOIN \"user\" u ON u.guid = s.\"user\" \
+             WHERE p.id = $1 AND p.uuid = $2 AND s.id = p.owner_session AND s.\"user\" = $5 \
+             AND s.expiry_at > NOW()::text AND u.status = 1",
+        )
+        .bind(id)
+        .bind(uuid)
+        .bind(session)
+        .bind(pk)
+        .bind(user)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| log::error!("approve_peer_key error: {e:?}"))
+        .ok()
+        .map(|r| r.rows_affected() == 1)
+    }
+
     /// Empties the key and the owner of device `id`, so hbbs takes the key of its next
     /// registration (design-device-key-change.md). None on error, Some(None) for an unknown
     /// device, else whether it had a key.
@@ -2458,6 +2479,12 @@ impl Database {
     #[cfg(any(test, feature = "test-util"))]
     pub async fn test_set_device_pk(&self, id: &str, pk: &[u8]) {
         sqlx::query("UPDATE peer SET pk = $2 WHERE id = $1").bind(id).bind(pk).execute(&self.pool).await.expect("set pk");
+    }
+
+    /// The key the owner of device `id` approved. Test-only.
+    #[cfg(any(test, feature = "test-util"))]
+    pub async fn test_approved_pk(&self, id: &str) -> Option<Vec<u8>> {
+        sqlx::query_scalar("SELECT approved_pk FROM peer WHERE id = $1").bind(id).fetch_one(&self.pool).await.expect("approved pk")
     }
 
     #[cfg(any(test, feature = "test-util"))]
@@ -2995,7 +3022,7 @@ mod tests {
                 .fetch_all(&first.pool)
                 .await
                 .unwrap();
-        assert_eq!(applied, (1..=16).map(|v| (v, true)).collect::<Vec<_>>());
+        assert_eq!(applied, (1..=17).map(|v| (v, true)).collect::<Vec<_>>());
         first.pool.close().await;
 
         // Second start on the same database must not fail or duplicate rows.
