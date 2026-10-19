@@ -315,6 +315,7 @@ pub fn api_routes() -> (Vec<rocket::Route>, rocket_okapi::okapi::openapi3::OpenA
         audit_ref,
         audits_conn,
         audits_conn_disconnect,
+        peer_reset_key,
         audits_file,
         audits_alarm,
         audits_console,
@@ -815,6 +816,28 @@ async fn audits_conn_disconnect(state: &State<ApiState>, user: AuthenticatedAdmi
                 utils::console_log::TYP_DEVICE,
                 utils::console_log::IOP_DISCONNECT_DEVICE,
                 serde_json::json!({ "device": target.device, "conn_id": target.conn_id, "viewer": target.viewer, "user": target.user }),
+            )
+            .await;
+    }
+    Ok(())
+}
+
+/// # Reset a device's key
+///
+/// Admin-only. Empties the key hbbs registered for device `id` and its owner, so the device's
+/// next registration sets a new key (design-device-key-change.md). 404 for an unknown device.
+// no body, so no format: Rocket 0.5 404s a POST with a format guard and no Content-Type
+#[openapi(tag = "peer")]
+#[post("/api/peers/<id>/reset-key")]
+async fn peer_reset_key(state: &State<ApiState>, user: AuthenticatedAdmin, id: &str) -> Result<(), Status> {
+    let had_key = state.reset_device_key(id).await.ok_or(Status::InternalServerError)?.ok_or(Status::NotFound)?;
+    if had_key {
+        state
+            .log_console(
+                Some(&user.info.user_id),
+                utils::console_log::TYP_DEVICE,
+                utils::console_log::IOP_RESET_DEVICE_KEY,
+                serde_json::json!({ "device": id }),
             )
             .await;
     }

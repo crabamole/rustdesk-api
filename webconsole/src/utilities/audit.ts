@@ -23,7 +23,7 @@ const CONSOLE_ACTIONS: Record<number, string> = {
     1: 'Add group', 2: 'Add user', 4: 'Delete groups', 5: 'Disconnect', 6: 'Enable users', 7: 'Disable users',
     10: 'Update group', 11: 'Update user', 13: 'Delete user', 15: 'Add address book', 16: 'Delete address book',
     17: 'Rename address book', 20: 'Add address book permission', 21: 'Delete address book permission',
-    23: 'Promote admin', 24: 'Demote admin', 25: 'Update policy', 26: 'Re-push policy',
+    23: 'Promote admin', 24: 'Demote admin', 25: 'Update policy', 26: 'Re-push policy', 27: 'Reset device key',
 };
 
 export function consoleAreaLabel(typ: number): string {

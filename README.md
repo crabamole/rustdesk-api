@@ -87,8 +87,8 @@ kubectl exec deploy/<release>-apiserver -- /app/rustdesk-api admin promote alice
 
 ## Command line
 
-The `rustdesk-api` binary runs the server (`serve`) and has admin, policy, OIDC and OpenAPI
-subcommands; see `rustdesk-api --help`.
+The `rustdesk-api` binary runs the server (`serve`) and has admin, policy, peer, OIDC and OpenAPI
+subcommands (`peer reset-key <id>` lets a reinstalled device keep its ID); see `rustdesk-api --help`.
 
 `serve` logs to stderr: one `access` line per request (`POST /api/heartbeat 200 3ms`; no query
 string, no `/livez` or `/readyz`), our own events, and Rocket's warnings and errors (its launch

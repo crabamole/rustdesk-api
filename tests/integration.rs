@@ -2663,6 +2663,40 @@ async fn test_disconnect_needs_an_admin_and_a_known_row() {
     assert!(resp.status() == Status::Unauthorized || resp.status() == Status::Forbidden);
 }
 
+#[rocket::async_test]
+async fn test_admin_resets_a_device_key() {
+    let (client, _dir) = test_client().await;
+    let admin = login_admin(&client).await;
+    let state = client.rocket().state::<state::ApiState>().unwrap();
+    state.test_register_device("devrk", "ZGM=").await;
+    let resp = client.post("/api/peers/devrk/reset-key").header(auth_header(&admin)).dispatch().await;
+    assert_eq!(resp.status(), Status::Ok);
+    assert_eq!(state.device_pk("devrk", "ZGM=").await, Some(Vec::new()));
+    let row = last_console_row(&client, &admin).await;
+    assert_eq!((row["typ"].as_i64(), row["iop"].as_i64(), row["info"]["device"].as_str()), (Some(2), Some(27), Some("devrk")));
+    // the device's calls are refused until it registers a key again
+    let hb = client.post("/api/heartbeat").header(ContentType::JSON)
+        .signed_body("/api/heartbeat", r#"{"id":"devrk","uuid":"ZGM=","modified_at":0,"ver":0,"conns":[]}"#).dispatch().await;
+    assert_eq!(hb.status(), Status::Unauthorized);
+}
+
+#[rocket::async_test]
+async fn test_device_key_reset_needs_an_admin_and_a_known_device() {
+    let (client, _dir) = test_client().await;
+    let admin = login_admin(&client).await;
+    let resp = client.post("/api/peers/nosuchdevice/reset-key").header(auth_header(&admin)).dispatch().await;
+    assert_eq!(resp.status(), Status::NotFound);
+    let state = client.rocket().state::<state::ApiState>().unwrap();
+    state.test_register_device("devrk2", "ZGM=").await;
+    state.test_oidc_login(&"alice".to_string()).await;
+    state.set_admin("alice@example.org", true).await.unwrap();
+    state.set_admin("alice@example.org", false).await.unwrap();
+    let alice = oidc_token(&client, "alice").await;
+    let resp = client.post("/api/peers/devrk2/reset-key").header(auth_header(&alice)).dispatch().await;
+    assert!(resp.status() == Status::Unauthorized || resp.status() == Status::Forbidden);
+    assert_ne!(state.device_pk("devrk2", "ZGM=").await, Some(Vec::new()));
+}
+
 /// The newest console log row, as the console reads it.
 async fn last_console_row(client: &Client, admin: &str) -> Value {
     let body: Value = client.get("/api/audits/console").header(auth_header(admin)).dispatch().await.into_json().await.unwrap();

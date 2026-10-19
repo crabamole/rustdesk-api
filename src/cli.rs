@@ -1,4 +1,4 @@
-//! Command line: `serve` runs the HTTP API; `admin` and `policy` work directly on the database, so only someone with access to the host or pod can use them; `openapi` prints the API spec.
+//! Command line: `serve` runs the HTTP API; `admin`, `policy` and `peer` work directly on the database, so only someone with access to the host or pod can use them; `openapi` prints the API spec.
 use clap::{Parser, Subcommand};
 use state::ApiState;
 
@@ -31,6 +31,9 @@ pub enum Command {
     /// Show or re-push the device policy (needs DATABASE_URL)
     #[command(subcommand)]
     Policy(PolicyCommand),
+    /// Manage registered devices (needs DATABASE_URL)
+    #[command(subcommand)]
+    Peer(PeerCommand),
     /// Check the OIDC provider file
     #[command(subcommand)]
     Oidc(OidcCommand),
@@ -138,6 +141,27 @@ pub async fn run_policy(cmd: &PolicyCommand, db_url: &str) -> Result<String, Str
             Ok(format!("policy re-pushed (modified_at {m}); devices receive it on their next heartbeat"))
         }
     }
+}
+
+#[derive(Subcommand, Debug)]
+pub enum PeerCommand {
+    /// Let device ID take a new key at its next registration, e.g. after a reinstall; also ends its owner
+    ResetKey {
+        /// The device's RustDesk ID
+        id: String,
+    },
+}
+
+/// Runs a `peer` subcommand and returns the message to print.
+pub async fn run_peer(cmd: &PeerCommand, db_url: &str) -> Result<String, String> {
+    let PeerCommand::ResetKey { id } = cmd;
+    let state = ApiState::new_with_db(db_url).await;
+    let had_key = state.reset_device_key(id).await.ok_or("cannot reset the key")?.ok_or(format!("no device {id}"))?;
+    if !had_key {
+        return Ok(format!("{id}: key already reset; its next registration sets the key"));
+    }
+    state.log_console(None, utils::console_log::TYP_DEVICE, utils::console_log::IOP_RESET_DEVICE_KEY, serde_json::json!({ "device": id, "via": "cli" })).await;
+    Ok(format!("{id}: key reset; its next registration sets the key"))
 }
 
 #[cfg(test)]
@@ -277,5 +301,27 @@ issuer = "https://idp.example.com"
         let db_url = state::testing::fresh_database_url().await;
         let shown = run_policy(&PolicyCommand::Show, &db_url).await.unwrap();
         assert!(shown.contains("no settings managed"), "{shown}");
+    }
+
+    #[test]
+    fn peer_takes_reset_key() {
+        let cli = Cli::try_parse_from(["rustdesk-api", "peer", "reset-key", "123456789"]).unwrap();
+        assert!(matches!(cli.command, Command::Peer(PeerCommand::ResetKey { id }) if id == "123456789"));
+    }
+
+    #[rocket::async_test]
+    async fn peer_reset_key_empties_the_key_and_logs_once() {
+        let db_url = state::testing::fresh_database_url().await;
+        let state = ApiState::new_with_db(&db_url).await;
+        state.test_register_device("dev-rk", "ZGV2").await;
+        let cmd = PeerCommand::ResetKey { id: "dev-rk".to_string() };
+        assert_eq!(run_peer(&cmd, &db_url).await.unwrap(), "dev-rk: key reset; its next registration sets the key");
+        assert_eq!(state.device_pk("dev-rk", "ZGV2").await, Some(Vec::new()));
+        assert!(run_peer(&cmd, &db_url).await.unwrap().contains("already reset"));
+        let q = utils::AuditQuery { offset: 0, limit: 10, created_at: None, pattern: None, conn_type: None };
+        let (_, rows) = state.list_audit_consoles(&q).await.unwrap();
+        assert_eq!(rows.iter().filter(|r| r.iop == utils::console_log::IOP_RESET_DEVICE_KEY).count(), 1);
+        let err = run_peer(&PeerCommand::ResetKey { id: "nobody".to_string() }, &db_url).await.unwrap_err();
+        assert_eq!(err, "no device nobody");
     }
 }

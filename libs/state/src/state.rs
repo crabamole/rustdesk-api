@@ -624,6 +624,11 @@ impl ApiState {
         }
     }
 
+    /// Resets the registered key of device `id`; see `Database::reset_peer_key`.
+    pub async fn reset_device_key(&self, id: &str) -> Option<Option<bool>> {
+        self.db.reset_peer_key(id).await
+    }
+
     /// Marks a connection for disconnect (design-console-audit.md); None for an unknown guid.
     pub async fn request_disconnect(&self, guid: &[u8]) -> Option<utils::AuditConnTarget> {
         self.db.audit_conn_disconnect(guid).await

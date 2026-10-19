@@ -58,6 +58,11 @@ export function listPeers(current: number, pageSize: number, q = ""): Promise<Pa
     return page(new PeerApi(useUserStore().api_configuration).peers(current, pageSize, undefined, q || undefined));
 }
 
+/** Lets device `id` take a new key at its next registration (design-device-key-change.md). */
+export function resetPeerKey(id: string): Promise<unknown> {
+    return new PeerApi(useUserStore().api_configuration).peerResetKey(id);
+}
+
 /**
  * Retrieves the server version.
  * 

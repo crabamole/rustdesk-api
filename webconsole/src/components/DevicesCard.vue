@@ -69,6 +69,10 @@ This website use:
                         </td>
                         <td
                           class="text-dark border-b border-r border-[#E8E8E8] bg-[#F3F6FF] dark:border-dark dark:bg-dark-2 dark:text-dark-7 py-5 px-2 text-center text-base font-medium">
+                          <button @click="resetKey(peer.id)" data-testid="device-reset-key"
+                            class="mr-2 inline-block px-6 py-2.5 border rounded-md border-primary text-primary hover:bg-primary hover:text-white font-medium">
+                            Reset key
+                          </button>
                           <a href="javascript:alert('todo')"
                             class="inline-block px-6 py-2.5 border rounded-md border-primary text-primary hover:bg-primary hover:text-white font-medium">
                             Delete
@@ -89,10 +93,17 @@ This website use:
 import { onMounted } from 'vue';
 import ClipboardButton from './ClipboardButton.vue';
 import ListPager from './ListPager.vue';
-import { listPeers } from '@/utilities/api';
+import { listPeers, resetPeerKey } from '@/utilities/api';
 import { usePagedList } from '@/utilities/paged';
 
 const list = usePagedList(listPeers);
+
+function resetKey(id: string): void {
+    if (!window.confirm(`Reset the key of device ${id}? Its next registration sets a new key. Do this only while the device is set up again.`)) return;
+    resetPeerKey(id)
+        .then(() => window.alert(`Key of ${id} reset.`))
+        .catch((error) => window.alert(`Key of ${id} not reset: ${error?.response?.status ?? error}`));
+}
 
 onMounted(() => list.load(1));
 </script>

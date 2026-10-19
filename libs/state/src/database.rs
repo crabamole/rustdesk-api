@@ -2171,6 +2171,23 @@ impl Database {
             .map(|r| r.rows_affected() == 1)
     }
 
+    /// Empties the key and the owner of device `id`, so hbbs takes the key of its next
+    /// registration (design-device-key-change.md). None on error, Some(None) for an unknown
+    /// device, else whether it had a key.
+    pub async fn reset_peer_key(&self, id: &str) -> Option<Option<bool>> {
+        let rows: Vec<bool> = sqlx::query_scalar(
+            "WITH old AS (SELECT guid, pk FROM peer WHERE id = $1 FOR UPDATE) \
+             UPDATE peer p SET pk = ''::bytea, owner_session = NULL, owner_pk = NULL \
+             FROM old WHERE p.guid = old.guid RETURNING length(old.pk) > 0",
+        )
+        .bind(id)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| log::error!("reset_peer_key error: {e:?}"))
+        .ok()?;
+        Some(if rows.is_empty() { None } else { Some(rows.contains(&true)) })
+    }
+
     /// The owner key of device `id` when its owner session is live and belongs to active `user`.
     pub async fn same_user_owner_pk(&self, user: &[u8], id: &str) -> Option<Vec<u8>> {
         sqlx::query_scalar(
