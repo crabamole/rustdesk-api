@@ -1285,7 +1285,7 @@
           "user"
         ],
         "summary": "Get Users for client",
-        "description": "One page of users ordered by name, for clients.\n\n## Parameters\n\n- `current`: page number, from 1 (default 1). - `pageSize`: users per page (default 10, at most 1000). - `status`: only users with this status (`1` = enabled).\n\n`total` counts every matching user, not just this page.\n\nGET /api/users?current=1&pageSize=100&status=1",
+        "description": "The caller's own entry in the user list, for clients (every role, admins included). The console lists every user with `GET /api/user-list`.\n\n## Parameters\n\n- `current`: page number, from 1 (default 1). - `pageSize`: users per page (default 10, at most 1000). - `status`: only users with this status (`1` = enabled).\n\n`total` is 1, or 0 when `status` does not match the caller.\n\nGET /api/users?current=1&pageSize=100&status=1",
         "operationId": "users_client",
         "parameters": [
           {
@@ -1500,7 +1500,7 @@
           "peer"
         ],
         "summary": "Get Peers",
-        "description": "One page of devices ordered by ID, for clients and the console.\n\n## Parameters\n\n- `current`: page number, from 1 (default 1). - `pageSize`: devices per page (default 10, at most 1000). - `status`: only devices with this status (`1` = enabled). - `q`: case-insensitive substring of the ID or hostname.\n\n`total` counts every matching device, not just this page.\n\nGET /api/peers?current=1&pageSize=100&status=1",
+        "description": "One page of the caller's devices ordered by ID, for clients: the devices the caller is logged in on (every role, admins included). The console lists every device with `GET /api/peer-list`.\n\n## Parameters\n\n- `current`: page number, from 1 (default 1). - `pageSize`: devices per page (default 10, at most 1000). - `status`: only devices with this status (`1` = enabled). - `q`: case-insensitive substring of the ID or hostname.\n\n`total` counts every matching device of the caller, not just this page.\n\nGET /api/peers?current=1&pageSize=100&status=1",
         "operationId": "peers",
         "parameters": [
           {
@@ -1561,13 +1561,80 @@
         ]
       }
     },
+    "/api/peer-list": {
+      "get": {
+        "tags": [
+          "peer"
+        ],
+        "summary": "Get the List of Peers",
+        "description": "Admin-only. One page of all devices ordered by ID, for the console.\n\n## Parameters\n\n- `current`: page number, from 1 (default 1). - `pageSize`: devices per page (default 10, at most 1000). - `status`: only devices with this status (`1` = enabled). - `q`: case-insensitive substring of the ID or hostname.\n\n`total` counts every matching device, not just this page.\n\nGET /api/peer-list?current=1&pageSize=10&q=laptop",
+        "operationId": "peer_list",
+        "parameters": [
+          {
+            "name": "current",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "nullable": true
+            }
+          },
+          {
+            "name": "pageSize",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "nullable": true
+            }
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "format": "int16",
+              "nullable": true
+            }
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "nullable": true
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PeersResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "authorization_admin": []
+          }
+        ]
+      }
+    },
     "/api/peers/count/{platform}": {
       "get": {
         "tags": [
           "peer"
         ],
         "summary": "Count Peers per platform",
-        "description": "This function is an API endpoint that retrieves the count of peers per platform. It is tagged with \"peer\" for OpenAPI documentation.\n\n## Parameters\n\n- `platform`: The platform to filter the peers by (windows, macos, linux, android or all). <br>\n\n## Returns\n\nIf successful, this function returns a `Json<PeersCountResponse>` object, which includes the total number of peers for the specified platform.  <br>",
+        "description": "Admin-only. This function is an API endpoint that retrieves the count of peers per platform. It is tagged with \"peer\" for OpenAPI documentation.\n\n## Parameters\n\n- `platform`: The platform to filter the peers by (windows, macos, linux, android or all). <br>\n\n## Returns\n\nIf successful, this function returns a `Json<PeersCountResponse>` object, which includes the total number of peers for the specified platform.  <br>",
         "operationId": "peers_count",
         "parameters": [
           {
@@ -1596,7 +1663,7 @@
         },
         "security": [
           {
-            "authorization": []
+            "authorization_admin": []
           }
         ]
       }
@@ -1607,7 +1674,7 @@
           "peer"
         ],
         "summary": "Get the List of cpus used by the peers",
-        "description": "This function is an API endpoint that retrieves the count of cpus used by the peers. It is tagged with \"peer\" for OpenAPI documentation.\n\n## Parameters\n\n## Returns\n\nIf successful, this function returns a `Json<Vec<CpuCount>>` object, which includes the total number of cpus used by the peers.  <br>",
+        "description": "Admin-only. This function is an API endpoint that retrieves the count of cpus used by the peers. It is tagged with \"peer\" for OpenAPI documentation.\n\n## Parameters\n\n## Returns\n\nIf successful, this function returns a `Json<Vec<CpuCount>>` object, which includes the total number of cpus used by the peers.  <br>",
         "operationId": "peers_cpus",
         "responses": {
           "200": {
@@ -1629,7 +1696,7 @@
         },
         "security": [
           {
-            "authorization": []
+            "authorization_admin": []
           }
         ]
       }

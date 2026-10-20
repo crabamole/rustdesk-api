@@ -360,7 +360,7 @@ export const UserApiAxiosParamCreator = function (configuration?: Configuration)
             };
         },
         /**
-         * One page of users ordered by name, for clients.  ## Parameters  - `current`: page number, from 1 (default 1). - `pageSize`: users per page (default 10, at most 1000). - `status`: only users with this status (`1` = enabled).  `total` counts every matching user, not just this page.  GET /api/users?current=1&pageSize=100&status=1
+         * The caller's own entry in the user list, for clients (every role, admins included). The console lists every user with `GET /api/user-list`.  ## Parameters  - `current`: page number, from 1 (default 1). - `pageSize`: users per page (default 10, at most 1000). - `status`: only users with this status (`1` = enabled).  `total` is 1, or 0 when `status` does not match the caller.  GET /api/users?current=1&pageSize=100&status=1
          * @summary Get Users for client
          * @param {number} [current] 
          * @param {number} [page_size] 
@@ -515,7 +515,7 @@ export const UserApiFp = function(configuration?: Configuration) {
             };
         },
         /**
-         * One page of users ordered by name, for clients.  ## Parameters  - `current`: page number, from 1 (default 1). - `pageSize`: users per page (default 10, at most 1000). - `status`: only users with this status (`1` = enabled).  `total` counts every matching user, not just this page.  GET /api/users?current=1&pageSize=100&status=1
+         * The caller's own entry in the user list, for clients (every role, admins included). The console lists every user with `GET /api/user-list`.  ## Parameters  - `current`: page number, from 1 (default 1). - `pageSize`: users per page (default 10, at most 1000). - `status`: only users with this status (`1` = enabled).  `total` is 1, or 0 when `status` does not match the caller.  GET /api/users?current=1&pageSize=100&status=1
          * @summary Get Users for client
          * @param {number} [current] 
          * @param {number} [page_size] 
@@ -604,7 +604,7 @@ export const UserApiFactory = function (configuration?: Configuration, basePath?
             return UserApiFp(configuration).users(current, page_size, email, name, q, options).then((request) => request(axios, basePath));
         },
         /**
-         * One page of users ordered by name, for clients.  ## Parameters  - `current`: page number, from 1 (default 1). - `pageSize`: users per page (default 10, at most 1000). - `status`: only users with this status (`1` = enabled).  `total` counts every matching user, not just this page.  GET /api/users?current=1&pageSize=100&status=1
+         * The caller's own entry in the user list, for clients (every role, admins included). The console lists every user with `GET /api/user-list`.  ## Parameters  - `current`: page number, from 1 (default 1). - `pageSize`: users per page (default 10, at most 1000). - `status`: only users with this status (`1` = enabled).  `total` is 1, or 0 when `status` does not match the caller.  GET /api/users?current=1&pageSize=100&status=1
          * @summary Get Users for client
          * @param {number} [current] 
          * @param {number} [page_size] 
@@ -696,7 +696,7 @@ export class UserApi extends BaseAPI {
         return UserApiFp(this.configuration).users(current, page_size, email, name, q, options).then((request) => request(this.axios, this.basePath));
     }
     /**
-     * One page of users ordered by name, for clients.  ## Parameters  - `current`: page number, from 1 (default 1). - `pageSize`: users per page (default 10, at most 1000). - `status`: only users with this status (`1` = enabled).  `total` counts every matching user, not just this page.  GET /api/users?current=1&pageSize=100&status=1
+     * The caller's own entry in the user list, for clients (every role, admins included). The console lists every user with `GET /api/user-list`.  ## Parameters  - `current`: page number, from 1 (default 1). - `pageSize`: users per page (default 10, at most 1000). - `status`: only users with this status (`1` = enabled).  `total` is 1, or 0 when `status` does not match the caller.  GET /api/users?current=1&pageSize=100&status=1
      * @summary Get Users for client
      * @param {number} [current] 
      * @param {number} [page_size] 

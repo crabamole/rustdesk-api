@@ -55,7 +55,7 @@ export function searchGroupNames(q: string): Promise<Option[]> {
 
 /** One page of devices ordered by ID; `q` matches the ID or hostname. */
 export function listPeers(current: number, pageSize: number, q = ""): Promise<Page<Peer>> {
-    return page(new PeerApi(useUserStore().api_configuration).peers(current, pageSize, undefined, q || undefined));
+    return page(new PeerApi(useUserStore().api_configuration).peerList(current, pageSize, undefined, q || undefined));
 }
 
 /** Lets device `id` take a new key at its next registration (design-device-key-change.md). */

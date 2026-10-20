@@ -433,6 +433,12 @@ impl ApiState {
         self.db.test_register_device(id, uuid).await;
     }
 
+    /// Makes the session of `token` (base64) the owner of device `id`. Test-only.
+    #[cfg(any(test, feature = "test-util"))]
+    pub async fn test_set_device_owner(&self, id: &str, token: &str) {
+        self.db.test_set_device_owner(id, token).await;
+    }
+
     /// A device's stored info JSON. Test-only.
     #[cfg(any(test, feature = "test-util"))]
     pub async fn test_peer_info(&self, id: &str) -> String {
@@ -549,7 +555,12 @@ impl ApiState {
         offset: i64,
         limit: i64,
     ) -> Option<(i64, Vec<UserListResponse>)> {
-        self.db.get_all_users(name, email, q, status, offset, limit).await
+        self.db.get_all_users(None, name, email, q, status, offset, limit).await
+    }
+
+    /// The page of the user list that holds only `user`
+    pub async fn get_own_user(&self, user: &UserId, status: Option<i16>, offset: i64, limit: i64) -> Option<(i64, Vec<UserListResponse>)> {
+        self.db.get_all_users(Some(user), None, None, None, status, offset, limit).await
     }
 
     /// Update a user
@@ -563,7 +574,12 @@ impl ApiState {
 
     /// One page of peers and the total matching
     pub async fn get_peers(&self, q: Option<&str>, status: Option<i16>, offset: i64, limit: i64) -> Option<(i64, Vec<Peer>)> {
-        self.db.get_peers(q, status, offset, limit).await
+        self.db.get_peers(None, q, status, offset, limit).await
+    }
+
+    /// One page of the devices `user` is logged in on (live owner session), and the total matching
+    pub async fn get_own_peers(&self, user: &UserId, q: Option<&str>, status: Option<i16>, offset: i64, limit: i64) -> Option<(i64, Vec<Peer>)> {
+        self.db.get_peers(Some(user), q, status, offset, limit).await
     }
 
     /// One page of groups and the total matching

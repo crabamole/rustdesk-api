@@ -2298,6 +2298,7 @@ async fn test_device_lists_do_not_reveal_the_uuid() {
         .dispatch().await;
     assert_eq!(resp.into_string().await.unwrap(), "SYSINFO_UPDATED");
     let alice = activated_user_token(&client, "alice").await;
+    state.test_set_device_owner("devinfo", &alice).await;
     let body: Value = client.get("/api/peers").header(auth_header(&alice)).dispatch().await.into_json().await.unwrap();
     let peer = body["data"].as_array().unwrap().iter().find(|p| p["id"] == "devinfo").unwrap().clone();
     assert_eq!(peer["info"]["hostname"], "pc-1");
@@ -2426,11 +2427,12 @@ async fn test_peers_page_like_the_native_client() {
     let (client, pool) = client_and_pool().await;
     let token = login_admin(&client).await;
     sqlx::query(
-        "INSERT INTO peer(guid, id, uuid, pk, status, info) \
+        "INSERT INTO peer(guid, id, uuid, pk, status, info, owner_session) \
          SELECT decode(md5(i::text), 'hex'), 'dev' || lpad(i::text, 4, '0'), ''::bytea, ''::bytea, \
-                CASE WHEN i % 10 = 0 THEN 0 ELSE 1 END, json_build_object('hostname', 'host-' || i)::text \
+                CASE WHEN i % 10 = 0 THEN 0 ELSE 1 END, json_build_object('hostname', 'host-' || i)::text, $1 \
          FROM generate_series(1, 5000) i",
     )
+    .bind(&token)
     .execute(&pool)
     .await
     .unwrap();
@@ -2467,11 +2469,7 @@ async fn test_users_page_like_the_native_client() {
     .unwrap();
 
     let names = client_pages(&client, &token, "/api/users", "name").await;
-    assert_eq!(names.len(), 136, "135 enabled users plus admin: {names:?}");
-    assert!(!names.iter().any(|n| n == "user010"), "disabled users are left out");
-    let mut unique = names.clone();
-    unique.dedup();
-    assert_eq!(unique, names);
+    assert_eq!(names, ["admin"], "a client lists only its own user");
 
     let body: Value = client.get("/api/user-list?current=2&pageSize=100&q=USER1").header(auth_header(&token))
         .dispatch().await.into_json().await.unwrap();

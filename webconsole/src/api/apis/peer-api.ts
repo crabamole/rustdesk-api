@@ -74,6 +74,69 @@ export const PeerApiAxiosParamCreator = function (configuration?: Configuration)
             };
         },
         /**
+         * Admin-only. One page of all devices ordered by ID, for the console.  ## Parameters  - `current`: page number, from 1 (default 1). - `pageSize`: devices per page (default 10, at most 1000). - `status`: only devices with this status (`1` = enabled). - `q`: case-insensitive substring of the ID or hostname.  `total` counts every matching device, not just this page.  GET /api/peer-list?current=1&pageSize=10&q=laptop
+         * @summary Get the List of Peers
+         * @param {number} [current] 
+         * @param {number} [page_size] 
+         * @param {number} [status] 
+         * @param {string} [q] 
+         * @param {*} [options] Override http request option.
+         * @throws {RequiredError}
+         */
+        peerList: async (current?: number, page_size?: number, status?: number, q?: string, options: AxiosRequestConfig = {}): Promise<RequestArgs> => {
+            const localVarPath = `/api/peer-list`;
+            // use dummy base URL string because the URL constructor only accepts absolute URLs.
+            const localVarUrlObj = new URL(localVarPath, 'https://example.com');
+            let baseOptions;
+            if (configuration) {
+                baseOptions = configuration.baseOptions;
+            }
+            const localVarRequestOptions :AxiosRequestConfig = { method: 'GET', ...baseOptions, ...options};
+            const localVarHeaderParameter = {} as any;
+            const localVarQueryParameter = {} as any;
+
+            // authentication authorization_admin required
+            // http bearer authentication required
+            if (configuration && configuration.accessToken) {
+                const accessToken = typeof configuration.accessToken === 'function'
+                    ? await configuration.accessToken()
+                    : await configuration.accessToken;
+                localVarHeaderParameter["Authorization"] = "Bearer " + accessToken;
+            }
+
+            if (current !== undefined) {
+                localVarQueryParameter['current'] = current;
+            }
+
+            if (page_size !== undefined) {
+                localVarQueryParameter['pageSize'] = page_size;
+            }
+
+            if (status !== undefined) {
+                localVarQueryParameter['status'] = status;
+            }
+
+            if (q !== undefined) {
+                localVarQueryParameter['q'] = q;
+            }
+
+            const query = new URLSearchParams(localVarUrlObj.search);
+            for (const key in localVarQueryParameter) {
+                query.set(key, localVarQueryParameter[key]);
+            }
+            for (const key in options.params) {
+                query.set(key, options.params[key]);
+            }
+            localVarUrlObj.search = (new URLSearchParams(query)).toString();
+            let headersFromBaseOptions = baseOptions && baseOptions.headers ? baseOptions.headers : {};
+            localVarRequestOptions.headers = {...localVarHeaderParameter, ...headersFromBaseOptions, ...options.headers};
+
+            return {
+                url: localVarUrlObj.pathname + localVarUrlObj.search + localVarUrlObj.hash,
+                options: localVarRequestOptions,
+            };
+        },
+        /**
          * Admin-only. Empties the key hbbs registered for device `id` and its owner, so the device's next registration sets a new key (design-device-key-change.md). 404 for an unknown device.
          * @summary Reset a device's key
          * @param {string} id 
@@ -123,7 +186,7 @@ export const PeerApiAxiosParamCreator = function (configuration?: Configuration)
             };
         },
         /**
-         * One page of devices ordered by ID, for clients and the console.  ## Parameters  - `current`: page number, from 1 (default 1). - `pageSize`: devices per page (default 10, at most 1000). - `status`: only devices with this status (`1` = enabled). - `q`: case-insensitive substring of the ID or hostname.  `total` counts every matching device, not just this page.  GET /api/peers?current=1&pageSize=100&status=1
+         * One page of the caller's devices ordered by ID, for clients: the devices the caller is logged in on (every role, admins included). The console lists every device with `GET /api/peer-list`.  ## Parameters  - `current`: page number, from 1 (default 1). - `pageSize`: devices per page (default 10, at most 1000). - `status`: only devices with this status (`1` = enabled). - `q`: case-insensitive substring of the ID or hostname.  `total` counts every matching device of the caller, not just this page.  GET /api/peers?current=1&pageSize=100&status=1
          * @summary Get Peers
          * @param {number} [current] 
          * @param {number} [page_size] 
@@ -186,7 +249,7 @@ export const PeerApiAxiosParamCreator = function (configuration?: Configuration)
             };
         },
         /**
-         * This function is an API endpoint that retrieves the count of peers per platform. It is tagged with \"peer\" for OpenAPI documentation.  ## Parameters  - `platform`: The platform to filter the peers by (windows, macos, linux, android or all). <br>  ## Returns  If successful, this function returns a `Json<PeersCountResponse>` object, which includes the total number of peers for the specified platform.  <br>
+         * Admin-only. This function is an API endpoint that retrieves the count of peers per platform. It is tagged with \"peer\" for OpenAPI documentation.  ## Parameters  - `platform`: The platform to filter the peers by (windows, macos, linux, android or all). <br>  ## Returns  If successful, this function returns a `Json<PeersCountResponse>` object, which includes the total number of peers for the specified platform.  <br>
          * @summary Count Peers per platform
          * @param {string} platform 
          * @param {*} [options] Override http request option.
@@ -209,7 +272,7 @@ export const PeerApiAxiosParamCreator = function (configuration?: Configuration)
             const localVarHeaderParameter = {} as any;
             const localVarQueryParameter = {} as any;
 
-            // authentication authorization required
+            // authentication authorization_admin required
             // http bearer authentication required
             if (configuration && configuration.accessToken) {
                 const accessToken = typeof configuration.accessToken === 'function'
@@ -235,7 +298,7 @@ export const PeerApiAxiosParamCreator = function (configuration?: Configuration)
             };
         },
         /**
-         * This function is an API endpoint that retrieves the count of cpus used by the peers. It is tagged with \"peer\" for OpenAPI documentation.  ## Parameters  ## Returns  If successful, this function returns a `Json<Vec<CpuCount>>` object, which includes the total number of cpus used by the peers.  <br>
+         * Admin-only. This function is an API endpoint that retrieves the count of cpus used by the peers. It is tagged with \"peer\" for OpenAPI documentation.  ## Parameters  ## Returns  If successful, this function returns a `Json<Vec<CpuCount>>` object, which includes the total number of cpus used by the peers.  <br>
          * @summary Get the List of cpus used by the peers
          * @param {*} [options] Override http request option.
          * @throws {RequiredError}
@@ -252,7 +315,7 @@ export const PeerApiAxiosParamCreator = function (configuration?: Configuration)
             const localVarHeaderParameter = {} as any;
             const localVarQueryParameter = {} as any;
 
-            // authentication authorization required
+            // authentication authorization_admin required
             // http bearer authentication required
             if (configuration && configuration.accessToken) {
                 const accessToken = typeof configuration.accessToken === 'function'
@@ -397,6 +460,23 @@ export const PeerApiFp = function(configuration?: Configuration) {
             };
         },
         /**
+         * Admin-only. One page of all devices ordered by ID, for the console.  ## Parameters  - `current`: page number, from 1 (default 1). - `pageSize`: devices per page (default 10, at most 1000). - `status`: only devices with this status (`1` = enabled). - `q`: case-insensitive substring of the ID or hostname.  `total` counts every matching device, not just this page.  GET /api/peer-list?current=1&pageSize=10&q=laptop
+         * @summary Get the List of Peers
+         * @param {number} [current] 
+         * @param {number} [page_size] 
+         * @param {number} [status] 
+         * @param {string} [q] 
+         * @param {*} [options] Override http request option.
+         * @throws {RequiredError}
+         */
+        async peerList(current?: number, page_size?: number, status?: number, q?: string, options?: AxiosRequestConfig): Promise<(axios?: AxiosInstance, basePath?: string) => Promise<AxiosResponse<PeersResponse>>> {
+            const localVarAxiosArgs = await PeerApiAxiosParamCreator(configuration).peerList(current, page_size, status, q, options);
+            return (axios: AxiosInstance = globalAxios, basePath: string = BASE_PATH) => {
+                const axiosRequestArgs :AxiosRequestConfig = {...localVarAxiosArgs.options, url: basePath + localVarAxiosArgs.url};
+                return axios.request(axiosRequestArgs);
+            };
+        },
+        /**
          * Admin-only. Empties the key hbbs registered for device `id` and its owner, so the device's next registration sets a new key (design-device-key-change.md). 404 for an unknown device.
          * @summary Reset a device's key
          * @param {string} id 
@@ -411,7 +491,7 @@ export const PeerApiFp = function(configuration?: Configuration) {
             };
         },
         /**
-         * One page of devices ordered by ID, for clients and the console.  ## Parameters  - `current`: page number, from 1 (default 1). - `pageSize`: devices per page (default 10, at most 1000). - `status`: only devices with this status (`1` = enabled). - `q`: case-insensitive substring of the ID or hostname.  `total` counts every matching device, not just this page.  GET /api/peers?current=1&pageSize=100&status=1
+         * One page of the caller's devices ordered by ID, for clients: the devices the caller is logged in on (every role, admins included). The console lists every device with `GET /api/peer-list`.  ## Parameters  - `current`: page number, from 1 (default 1). - `pageSize`: devices per page (default 10, at most 1000). - `status`: only devices with this status (`1` = enabled). - `q`: case-insensitive substring of the ID or hostname.  `total` counts every matching device of the caller, not just this page.  GET /api/peers?current=1&pageSize=100&status=1
          * @summary Get Peers
          * @param {number} [current] 
          * @param {number} [page_size] 
@@ -428,7 +508,7 @@ export const PeerApiFp = function(configuration?: Configuration) {
             };
         },
         /**
-         * This function is an API endpoint that retrieves the count of peers per platform. It is tagged with \"peer\" for OpenAPI documentation.  ## Parameters  - `platform`: The platform to filter the peers by (windows, macos, linux, android or all). <br>  ## Returns  If successful, this function returns a `Json<PeersCountResponse>` object, which includes the total number of peers for the specified platform.  <br>
+         * Admin-only. This function is an API endpoint that retrieves the count of peers per platform. It is tagged with \"peer\" for OpenAPI documentation.  ## Parameters  - `platform`: The platform to filter the peers by (windows, macos, linux, android or all). <br>  ## Returns  If successful, this function returns a `Json<PeersCountResponse>` object, which includes the total number of peers for the specified platform.  <br>
          * @summary Count Peers per platform
          * @param {string} platform 
          * @param {*} [options] Override http request option.
@@ -442,7 +522,7 @@ export const PeerApiFp = function(configuration?: Configuration) {
             };
         },
         /**
-         * This function is an API endpoint that retrieves the count of cpus used by the peers. It is tagged with \"peer\" for OpenAPI documentation.  ## Parameters  ## Returns  If successful, this function returns a `Json<Vec<CpuCount>>` object, which includes the total number of cpus used by the peers.  <br>
+         * Admin-only. This function is an API endpoint that retrieves the count of cpus used by the peers. It is tagged with \"peer\" for OpenAPI documentation.  ## Parameters  ## Returns  If successful, this function returns a `Json<Vec<CpuCount>>` object, which includes the total number of cpus used by the peers.  <br>
          * @summary Get the List of cpus used by the peers
          * @param {*} [options] Override http request option.
          * @throws {RequiredError}
@@ -503,6 +583,19 @@ export const PeerApiFactory = function (configuration?: Configuration, basePath?
             return PeerApiFp(configuration).heartbeat(body, options).then((request) => request(axios, basePath));
         },
         /**
+         * Admin-only. One page of all devices ordered by ID, for the console.  ## Parameters  - `current`: page number, from 1 (default 1). - `pageSize`: devices per page (default 10, at most 1000). - `status`: only devices with this status (`1` = enabled). - `q`: case-insensitive substring of the ID or hostname.  `total` counts every matching device, not just this page.  GET /api/peer-list?current=1&pageSize=10&q=laptop
+         * @summary Get the List of Peers
+         * @param {number} [current] 
+         * @param {number} [page_size] 
+         * @param {number} [status] 
+         * @param {string} [q] 
+         * @param {*} [options] Override http request option.
+         * @throws {RequiredError}
+         */
+        async peerList(current?: number, page_size?: number, status?: number, q?: string, options?: AxiosRequestConfig): Promise<AxiosResponse<PeersResponse>> {
+            return PeerApiFp(configuration).peerList(current, page_size, status, q, options).then((request) => request(axios, basePath));
+        },
+        /**
          * Admin-only. Empties the key hbbs registered for device `id` and its owner, so the device's next registration sets a new key (design-device-key-change.md). 404 for an unknown device.
          * @summary Reset a device's key
          * @param {string} id 
@@ -513,7 +606,7 @@ export const PeerApiFactory = function (configuration?: Configuration, basePath?
             return PeerApiFp(configuration).peerResetKey(id, options).then((request) => request(axios, basePath));
         },
         /**
-         * One page of devices ordered by ID, for clients and the console.  ## Parameters  - `current`: page number, from 1 (default 1). - `pageSize`: devices per page (default 10, at most 1000). - `status`: only devices with this status (`1` = enabled). - `q`: case-insensitive substring of the ID or hostname.  `total` counts every matching device, not just this page.  GET /api/peers?current=1&pageSize=100&status=1
+         * One page of the caller's devices ordered by ID, for clients: the devices the caller is logged in on (every role, admins included). The console lists every device with `GET /api/peer-list`.  ## Parameters  - `current`: page number, from 1 (default 1). - `pageSize`: devices per page (default 10, at most 1000). - `status`: only devices with this status (`1` = enabled). - `q`: case-insensitive substring of the ID or hostname.  `total` counts every matching device of the caller, not just this page.  GET /api/peers?current=1&pageSize=100&status=1
          * @summary Get Peers
          * @param {number} [current] 
          * @param {number} [page_size] 
@@ -526,7 +619,7 @@ export const PeerApiFactory = function (configuration?: Configuration, basePath?
             return PeerApiFp(configuration).peers(current, page_size, status, q, options).then((request) => request(axios, basePath));
         },
         /**
-         * This function is an API endpoint that retrieves the count of peers per platform. It is tagged with \"peer\" for OpenAPI documentation.  ## Parameters  - `platform`: The platform to filter the peers by (windows, macos, linux, android or all). <br>  ## Returns  If successful, this function returns a `Json<PeersCountResponse>` object, which includes the total number of peers for the specified platform.  <br>
+         * Admin-only. This function is an API endpoint that retrieves the count of peers per platform. It is tagged with \"peer\" for OpenAPI documentation.  ## Parameters  - `platform`: The platform to filter the peers by (windows, macos, linux, android or all). <br>  ## Returns  If successful, this function returns a `Json<PeersCountResponse>` object, which includes the total number of peers for the specified platform.  <br>
          * @summary Count Peers per platform
          * @param {string} platform 
          * @param {*} [options] Override http request option.
@@ -536,7 +629,7 @@ export const PeerApiFactory = function (configuration?: Configuration, basePath?
             return PeerApiFp(configuration).peersCount(platform, options).then((request) => request(axios, basePath));
         },
         /**
-         * This function is an API endpoint that retrieves the count of cpus used by the peers. It is tagged with \"peer\" for OpenAPI documentation.  ## Parameters  ## Returns  If successful, this function returns a `Json<Vec<CpuCount>>` object, which includes the total number of cpus used by the peers.  <br>
+         * Admin-only. This function is an API endpoint that retrieves the count of cpus used by the peers. It is tagged with \"peer\" for OpenAPI documentation.  ## Parameters  ## Returns  If successful, this function returns a `Json<Vec<CpuCount>>` object, which includes the total number of cpus used by the peers.  <br>
          * @summary Get the List of cpus used by the peers
          * @param {*} [options] Override http request option.
          * @throws {RequiredError}
@@ -587,6 +680,20 @@ export class PeerApi extends BaseAPI {
         return PeerApiFp(this.configuration).heartbeat(body, options).then((request) => request(this.axios, this.basePath));
     }
     /**
+     * Admin-only. One page of all devices ordered by ID, for the console.  ## Parameters  - `current`: page number, from 1 (default 1). - `pageSize`: devices per page (default 10, at most 1000). - `status`: only devices with this status (`1` = enabled). - `q`: case-insensitive substring of the ID or hostname.  `total` counts every matching device, not just this page.  GET /api/peer-list?current=1&pageSize=10&q=laptop
+     * @summary Get the List of Peers
+     * @param {number} [current] 
+     * @param {number} [page_size] 
+     * @param {number} [status] 
+     * @param {string} [q] 
+     * @param {*} [options] Override http request option.
+     * @throws {RequiredError}
+     * @memberof PeerApi
+     */
+    public async peerList(current?: number, page_size?: number, status?: number, q?: string, options?: AxiosRequestConfig) : Promise<AxiosResponse<PeersResponse>> {
+        return PeerApiFp(this.configuration).peerList(current, page_size, status, q, options).then((request) => request(this.axios, this.basePath));
+    }
+    /**
      * Admin-only. Empties the key hbbs registered for device `id` and its owner, so the device's next registration sets a new key (design-device-key-change.md). 404 for an unknown device.
      * @summary Reset a device's key
      * @param {string} id 
@@ -598,7 +705,7 @@ export class PeerApi extends BaseAPI {
         return PeerApiFp(this.configuration).peerResetKey(id, options).then((request) => request(this.axios, this.basePath));
     }
     /**
-     * One page of devices ordered by ID, for clients and the console.  ## Parameters  - `current`: page number, from 1 (default 1). - `pageSize`: devices per page (default 10, at most 1000). - `status`: only devices with this status (`1` = enabled). - `q`: case-insensitive substring of the ID or hostname.  `total` counts every matching device, not just this page.  GET /api/peers?current=1&pageSize=100&status=1
+     * One page of the caller's devices ordered by ID, for clients: the devices the caller is logged in on (every role, admins included). The console lists every device with `GET /api/peer-list`.  ## Parameters  - `current`: page number, from 1 (default 1). - `pageSize`: devices per page (default 10, at most 1000). - `status`: only devices with this status (`1` = enabled). - `q`: case-insensitive substring of the ID or hostname.  `total` counts every matching device of the caller, not just this page.  GET /api/peers?current=1&pageSize=100&status=1
      * @summary Get Peers
      * @param {number} [current] 
      * @param {number} [page_size] 
@@ -612,7 +719,7 @@ export class PeerApi extends BaseAPI {
         return PeerApiFp(this.configuration).peers(current, page_size, status, q, options).then((request) => request(this.axios, this.basePath));
     }
     /**
-     * This function is an API endpoint that retrieves the count of peers per platform. It is tagged with \"peer\" for OpenAPI documentation.  ## Parameters  - `platform`: The platform to filter the peers by (windows, macos, linux, android or all). <br>  ## Returns  If successful, this function returns a `Json<PeersCountResponse>` object, which includes the total number of peers for the specified platform.  <br>
+     * Admin-only. This function is an API endpoint that retrieves the count of peers per platform. It is tagged with \"peer\" for OpenAPI documentation.  ## Parameters  - `platform`: The platform to filter the peers by (windows, macos, linux, android or all). <br>  ## Returns  If successful, this function returns a `Json<PeersCountResponse>` object, which includes the total number of peers for the specified platform.  <br>
      * @summary Count Peers per platform
      * @param {string} platform 
      * @param {*} [options] Override http request option.
@@ -623,7 +730,7 @@ export class PeerApi extends BaseAPI {
         return PeerApiFp(this.configuration).peersCount(platform, options).then((request) => request(this.axios, this.basePath));
     }
     /**
-     * This function is an API endpoint that retrieves the count of cpus used by the peers. It is tagged with \"peer\" for OpenAPI documentation.  ## Parameters  ## Returns  If successful, this function returns a `Json<Vec<CpuCount>>` object, which includes the total number of cpus used by the peers.  <br>
+     * Admin-only. This function is an API endpoint that retrieves the count of cpus used by the peers. It is tagged with \"peer\" for OpenAPI documentation.  ## Parameters  ## Returns  If successful, this function returns a `Json<Vec<CpuCount>>` object, which includes the total number of cpus used by the peers.  <br>
      * @summary Get the List of cpus used by the peers
      * @param {*} [options] Override http request option.
      * @throws {RequiredError}

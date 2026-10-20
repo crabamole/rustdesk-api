@@ -335,6 +335,7 @@ pub fn api_routes() -> (Vec<rocket::Route>, rocket_okapi::okapi::openapi3::OpenA
         user_enable,
         user_update,
         peers,
+        peer_list,
         peers_count,
         peers_cpus,
         viewers,
@@ -1257,7 +1258,42 @@ async fn group_delete(
 
 /// # Get Peers
 ///
-/// One page of devices ordered by ID, for clients and the console.
+/// One page of the caller's devices ordered by ID, for clients: the devices the caller is logged
+/// in on (every role, admins included). The console lists every device with `GET /api/peer-list`.
+///
+/// ## Parameters
+///
+/// - `current`: page number, from 1 (default 1).
+/// - `pageSize`: devices per page (default 10, at most 1000).
+/// - `status`: only devices with this status (`1` = enabled).
+/// - `q`: case-insensitive substring of the ID or hostname.
+///
+/// `total` counts every matching device of the caller, not just this page.
+///
+/// GET /api/peers?current=1&pageSize=100&status=1
+#[openapi(tag = "peer")]
+#[allow(non_snake_case)]
+#[get("/api/peers?<current>&<pageSize>&<status>&<q>", format = "application/json")]
+async fn peers(
+    state: &State<ApiState>,
+    user: AuthenticatedUser,
+    current: Option<i64>,
+    pageSize: Option<i64>,
+    status: Option<i16>,
+    q: Option<&str>,
+) -> Result<Json<PeersResponse>, status::NotFound<()>> {
+    log::debug!("peers");
+    let (offset, limit) = page(current, pageSize);
+    let (total, data) = state
+        .get_own_peers(&user.info.user_id, non_empty(q), status, offset, limit)
+        .await
+        .ok_or(status::NotFound::<()>(()))?;
+    Ok(Json(PeersResponse { msg: "success".to_string(), total: total as u32, data }))
+}
+
+/// # Get the List of Peers
+///
+/// Admin-only. One page of all devices ordered by ID, for the console.
 ///
 /// ## Parameters
 ///
@@ -1268,19 +1304,19 @@ async fn group_delete(
 ///
 /// `total` counts every matching device, not just this page.
 ///
-/// GET /api/peers?current=1&pageSize=100&status=1
+/// GET /api/peer-list?current=1&pageSize=10&q=laptop
 #[openapi(tag = "peer")]
 #[allow(non_snake_case)]
-#[get("/api/peers?<current>&<pageSize>&<status>&<q>", format = "application/json")]
-async fn peers(
+#[get("/api/peer-list?<current>&<pageSize>&<status>&<q>", format = "application/json")]
+async fn peer_list(
     state: &State<ApiState>,
-    _user: AuthenticatedUser,
+    _user: AuthenticatedAdmin,
     current: Option<i64>,
     pageSize: Option<i64>,
     status: Option<i16>,
     q: Option<&str>,
 ) -> Result<Json<PeersResponse>, status::NotFound<()>> {
-    log::debug!("peers");
+    log::debug!("peer_list");
     let (offset, limit) = page(current, pageSize);
     let (total, data) = state
         .get_peers(non_empty(q), status, offset, limit)
@@ -1314,7 +1350,7 @@ async fn viewers(
 
 /// # Count Peers per platform
 ///
-/// This function is an API endpoint that retrieves the count of peers per platform.
+/// Admin-only. This function is an API endpoint that retrieves the count of peers per platform.
 /// It is tagged with "peer" for OpenAPI documentation.
 ///
 /// ## Parameters
@@ -1328,7 +1364,7 @@ async fn viewers(
 #[get("/api/peers/count/<platform>", format = "application/json")]
 async fn peers_count(
     state: &State<ApiState>,
-    _user: AuthenticatedUser,
+    _user: AuthenticatedAdmin,
     platform: String,
 ) -> Result<Json<PeersCountResponse>, status::NotFound<()>> {
     let count = match platform.to_lowercase().as_str() {
@@ -1364,7 +1400,7 @@ async fn peers_count(
 
 /// # Get the List of cpus used by the peers
 ///
-/// This function is an API endpoint that retrieves the count of cpus used by the peers.
+/// Admin-only. This function is an API endpoint that retrieves the count of cpus used by the peers.
 /// It is tagged with "peer" for OpenAPI documentation.
 ///
 /// ## Parameters
@@ -1376,7 +1412,7 @@ async fn peers_count(
 #[get("/api/peers/cpus", format = "application/json")]
 async fn peers_cpus(
     state: &State<ApiState>,
-    _user: AuthenticatedUser,
+    _user: AuthenticatedAdmin,
 ) -> Result<Json<Vec<CpuCount>>, status::NotFound<()>> {
     let cpus = state.get_cpus_count().await;
     return Ok(Json(cpus));
@@ -2555,7 +2591,8 @@ async fn user_update(
 
 /// # Get Users for client
 ///
-/// One page of users ordered by name, for clients.
+/// The caller's own entry in the user list, for clients (every role, admins included). The
+/// console lists every user with `GET /api/user-list`.
 ///
 /// ## Parameters
 ///
@@ -2563,14 +2600,14 @@ async fn user_update(
 /// - `pageSize`: users per page (default 10, at most 1000).
 /// - `status`: only users with this status (`1` = enabled).
 ///
-/// `total` counts every matching user, not just this page.
+/// `total` is 1, or 0 when `status` does not match the caller.
 ///
 /// GET /api/users?current=1&pageSize=100&status=1
 #[openapi(tag = "user")]
 #[get("/api/users?<current>&<pageSize>&<status>", format = "application/json")]
 async fn users_client(
     state: &State<ApiState>,
-    _user: AuthenticatedUser,
+    user: AuthenticatedUser,
     current: Option<i64>,
     #[allow(non_snake_case)] pageSize: Option<i64>,
     status: Option<i16>,
@@ -2578,7 +2615,7 @@ async fn users_client(
     log::debug!("users");
     let (offset, limit) = page(current, pageSize);
     let (total, data) = state
-        .get_all_users(None, None, None, status, offset, limit)
+        .get_own_user(&user.info.user_id, status, offset, limit)
         .await
         .ok_or(status::NotFound::<()>(()))?;
     Ok(Json(UserList { msg: "success".to_string(), total: total as u32, data }))
@@ -3640,6 +3677,78 @@ mod tests {
             .dispatch()
             .await;
         assert_eq!(resp.status(), Status::Ok);
+    }
+
+    async fn get_json(client: &Client, token: &str, uri: &str) -> (Status, serde_json::Value) {
+        let resp = client.get(uri.to_string()).header(ContentType::JSON).header(auth_header(token)).dispatch().await;
+        let status = resp.status();
+        (status, resp.into_json().await.unwrap_or_default())
+    }
+
+    fn peer_ids(body: &serde_json::Value) -> Vec<String> {
+        body["data"].as_array().unwrap().iter().map(|p| p["id"].as_str().unwrap().to_string()).collect()
+    }
+
+    /// Devices "dev-admin" (owned by the admin), "dev-user" (owned by `user`) and "dev-none" (no owner).
+    async fn owned_devices(client: &Client) -> (String, String) {
+        let admin = login_admin(client).await;
+        let (user, _) = create_user_and_login(client, &admin, "deviceowner").await;
+        let state = client.rocket().state::<ApiState>().unwrap();
+        for id in ["dev-admin", "dev-user", "dev-none"] {
+            state.test_register_device(id, "dXVpZA==").await;
+        }
+        state.test_set_device_owner("dev-admin", &admin).await;
+        state.test_set_device_owner("dev-user", &user).await;
+        (admin, user)
+    }
+
+    #[rocket::async_test]
+    async fn test_peers_lists_only_the_callers_devices() {
+        let client = test_client().await;
+        let (admin, user) = owned_devices(&client).await;
+        for (token, own) in [(&admin, "dev-admin"), (&user, "dev-user")] {
+            let (status, body) = get_json(&client, token, "/api/peers?current=1&pageSize=100").await;
+            assert_eq!(status, Status::Ok);
+            assert_eq!(peer_ids(&body), [own]);
+            assert_eq!(body["total"], 1);
+        }
+    }
+
+    #[rocket::async_test]
+    async fn test_peer_list_is_admin_only_and_lists_every_device() {
+        let client = test_client().await;
+        let (admin, user) = owned_devices(&client).await;
+        assert_eq!(get_json(&client, &user, "/api/peer-list").await.0, Status::Unauthorized);
+        let (status, body) = get_json(&client, &admin, "/api/peer-list?current=1&pageSize=100").await;
+        assert_eq!(status, Status::Ok);
+        assert_eq!(peer_ids(&body), ["dev-admin", "dev-none", "dev-user"]);
+        assert_eq!(body["total"], 3);
+    }
+
+    #[rocket::async_test]
+    async fn test_users_returns_only_the_caller() {
+        let client = test_client().await;
+        let admin = login_admin(&client).await;
+        let (user, _) = create_user_and_login(&client, &admin, "listself").await;
+        for (token, name) in [(&admin, "admin"), (&user, "listself")] {
+            let (status, body) = get_json(&client, token, "/api/users?current=1&pageSize=100").await;
+            assert_eq!(status, Status::Ok);
+            let names: Vec<_> = body["data"].as_array().unwrap().iter().map(|u| u["name"].as_str().unwrap()).collect();
+            assert_eq!(names, [name]);
+            assert_eq!(body["total"], 1);
+        }
+        assert_eq!(get_json(&client, &user, "/api/user-list").await.0, Status::Unauthorized);
+    }
+
+    #[rocket::async_test]
+    async fn test_peer_statistics_are_admin_only() {
+        let client = test_client().await;
+        let admin = login_admin(&client).await;
+        let (user, _) = create_user_and_login(&client, &admin, "statsuser").await;
+        for uri in ["/api/peers/count/all", "/api/peers/cpus"] {
+            assert_eq!(get_json(&client, &user, uri).await.0, Status::Unauthorized, "{uri}");
+            assert_eq!(get_json(&client, &admin, uri).await.0, Status::Ok, "{uri}");
+        }
     }
 
     #[rocket::async_test]
