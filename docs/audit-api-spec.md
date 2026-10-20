@@ -505,7 +505,7 @@ registered with hbbs (`peer.pk` for the body's `id` + `uuid`) over
 do nothing. Stock clients cannot sign, so their records and heartbeats are refused. Design: rustdesk
 `docs/design-signed-device-calls.md`. §4 notes are accepted only if
 `(id, session_id)` matches an existing row. The UUID is never returned by device
-lists (`GET /api/peers`) or stored in a device's system info, so knowing an ID
+lists (`GET /api/peers`, `GET /api/peer-list`) or stored in a device's system info, so knowing an ID
 is not enough to write for it. Design: rustdesk `docs/design-audit-authentication.md`.
 
 ### 12.2 Client IP behind proxies

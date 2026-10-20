@@ -3711,6 +3711,25 @@ mod tests {
         assert_eq!(ids(db.get_peers(None, None, Some(1), 0, 100).await), ["111", "222", "444"]);
     });
 
+    db_test!(get_peers_hides_devices_of_expired_sessions_or_disabled_owners, |db| {
+        insert_peer(&db, "owned", 1, "h").await;
+        let admin = db.find_user_by_name("admin").await.1.unwrap().0;
+        let own = |r: Option<(i64, Vec<Peer>)>| r.unwrap().1.into_iter().map(|p| p.id).collect::<Vec<_>>();
+        db.insert_session("s1", &admin, 3600).await.unwrap();
+        db.test_set_device_owner("owned", "s1").await;
+        assert_eq!(own(db.get_peers(Some(&admin), None, None, 0, 10).await), ["owned"]);
+        sqlx::query("UPDATE session SET expiry_at = (NOW() - INTERVAL '1 second')::text WHERE id = 's1'")
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        assert!(own(db.get_peers(Some(&admin), None, None, 0, 10).await).is_empty(), "expired session");
+        db.insert_session("s2", &admin, 3600).await.unwrap();
+        db.test_set_device_owner("owned", "s2").await;
+        let guid = Uuid::from_slice(&admin).unwrap().to_string();
+        db.user_change_status(&guid, 0).await.unwrap();
+        assert!(own(db.get_peers(Some(&admin), None, None, 0, 10).await).is_empty(), "disabled owner");
+    });
+
     db_test!(get_groups_pages_and_search, |db| {
         for name in ["Sales", "Finance", "Engineering"] {
             db.create_group(name, "Default", "").await;
