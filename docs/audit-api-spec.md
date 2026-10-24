@@ -603,7 +603,7 @@ Legend: ✅ conforms · ⚠️ partial / deviates · ❌ missing
 |---|---|
 | Unit (`database.rs` `db_test!`) | insert / end_time / find_active / nonce helpers in isolation |
 | Integration (`tests/integration.rs`) | legacy `POST /api/audit` only |
-| E2E (rustdesk-e2e) | legacy `POST /api/audit` only — no lifecycle, file, alarm, note, GUID, or read tests |
+| E2E | legacy `POST /api/audit` only — no lifecycle, file, alarm, note, GUID, or read tests |
 
 ### 14.5 Summary
 
