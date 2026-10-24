@@ -18,7 +18,7 @@ export default defineConfig({
   plugins: [vue(), viteStaticCopy({
     targets: [
       {
-        src: './src/assets/sctg.svg',
+        src: './src/assets/crabamole.svg',
         dest: 'assets'
       }
     ],
