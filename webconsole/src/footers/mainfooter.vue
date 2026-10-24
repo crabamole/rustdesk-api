@@ -13,7 +13,10 @@ This website use:
   >
     <div class="flex flex-col items-center justify-center mx-auto">
       <div class="text-sm text-gray-600 dark:text-gray-400">
-        © 2024 Ronan LE MEILLAT for SCTG Development - sctgdesk-api-server v{{ serverVersion }}
+        crabamole/rustdesk-api v{{ serverVersion }}
+        · <a class="underline" href="https://github.com/crabamole/rustdesk-api">source</a>
+        · based on <a class="underline" href="https://github.com/sctg-development/sctgdesk-api-server">sctgdesk-api-server</a>
+        · <a class="underline" href="https://github.com/crabamole/rustdesk-api/blob/main/LICENSE.md">AGPL-3.0</a>
       </div>
     </div>
     </footer>
