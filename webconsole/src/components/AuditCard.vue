@@ -67,6 +67,18 @@ This website use:
                             <td class="py-2 px-3">{{ row.ip }}</td>
                         </tr>
                     </tbody>
+                    <tbody v-else-if="activeTab === 'clipboard'">
+                        <tr v-for="row in clipboardRows" :key="row.guid" data-testid="audit-row" class="border-b border-[#E8E8E8]">
+                            <td class="py-2 px-3">{{ formatTime(row.created_at) }}</td>
+                            <td class="py-2 px-3">{{ row.remote }}</td>
+                            <td class="py-2 px-3">{{ row.peer_id }}</td>
+                            <td class="py-2 px-3">{{ row.user }}</td>
+                            <td class="py-2 px-3">{{ fileDirectionLabel(row.type) }}</td>
+                            <td class="py-2 px-3">{{ row.format }}</td>
+                            <td class="py-2 px-3">{{ row.size }} B</td>
+                            <td class="py-2 px-3">{{ row.ip }}</td>
+                        </tr>
+                    </tbody>
                     <tbody v-else-if="activeTab === 'login'">
                         <tr v-for="row in loginRows" :key="row.guid" data-testid="audit-row" class="border-b border-[#E8E8E8]">
                             <td class="py-2 px-3">{{ formatTime(row.created_at) }}</td>
@@ -111,7 +123,7 @@ This website use:
 
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue';
-import { AuditApi, AuditAlarmLog, AuditConnLog, AuditConsoleLog, AuditFileLog, AuditLoginLog } from '@/api';
+import { AuditApi, AuditAlarmLog, AuditClipboardLog, AuditConnLog, AuditConsoleLog, AuditFileLog, AuditLoginLog } from '@/api';
 import { useUserStore } from '@/stores/sctgDeskStore';
 import { CONN_TYPES, LOGIN_OUTCOMES, alarmLabel, authLabel, connTypeLabel, consoleActionLabel, consoleAreaLabel, consoleDetails, fileDirectionLabel, formatTime, likePattern, loginClientLabel, loginOutcomeLabel, machineLabel } from '@/utilities/audit';
 
@@ -119,12 +131,13 @@ const PAGE_SIZE = 20;
 const TABS = [
     { key: 'conn', label: 'Connections' },
     { key: 'file', label: 'Files' },
+    { key: 'clipboard', label: 'Clipboard' },
     { key: 'alarm', label: 'Alarms' },
     { key: 'login', label: 'Logins' },
     { key: 'console', label: 'Console' },
 ] as const;
 
-const activeTab = ref<'conn' | 'file' | 'alarm' | 'login' | 'console'>('conn');
+const activeTab = ref<'conn' | 'file' | 'clipboard' | 'alarm' | 'login' | 'console'>('conn');
 const deviceFilter = ref('');
 const connType = ref<number | ''>('');
 const outcome = ref('');
@@ -132,6 +145,7 @@ const current = ref(1);
 const total = ref(0);
 const connRows = ref([] as AuditConnLog[]);
 const fileRows = ref([] as AuditFileLog[]);
+const clipboardRows = ref([] as AuditClipboardLog[]);
 const alarmRows = ref([] as AuditAlarmLog[]);
 const consoleRows = ref([] as AuditConsoleLog[]);
 const loginRows = ref([] as AuditLoginLog[]);
@@ -142,6 +156,7 @@ const pageCount = computed(() => Math.max(1, Math.ceil(total.value / PAGE_SIZE))
 const columns = computed(() => {
     if (activeTab.value === 'conn') return ['Start', 'End', 'Device', 'Viewer', 'Viewer machine (self-reported)', 'User', 'Address', 'Type', 'Authentication', 'Note'];
     if (activeTab.value === 'file') return ['Time', 'Device', 'Viewer', 'User', 'Direction', 'Path', 'Files', 'Address'];
+    if (activeTab.value === 'clipboard') return ['Time', 'Device', 'Viewer', 'User', 'Direction', 'Format', 'Size', 'Address'];
     if (activeTab.value === 'login') return ['Time', 'User', 'Outcome', 'Client', 'ID (self-reported)', 'Machine (self-reported)', 'Address', 'Details'];
     if (activeTab.value === 'console') return ['Time', 'Operator', 'Area', 'Action', 'Details'];
     return ['Time', 'Device', 'User', 'Type', 'Details'];
@@ -186,6 +201,10 @@ function load(): void {
     } else if (activeTab.value === 'file') {
         api().auditsFile(current.value, PAGE_SIZE, undefined, pattern)
             .then((r) => { if (id === requestId) { fileRows.value = r.data.data; total.value = r.data.total; } })
+            .catch((error) => { if (id === requestId) fail(error); });
+    } else if (activeTab.value === 'clipboard') {
+        api().auditsClipboard(current.value, PAGE_SIZE, undefined, pattern)
+            .then((r) => { if (id === requestId) { clipboardRows.value = r.data.data; total.value = r.data.total; } })
             .catch((error) => { if (id === requestId) fail(error); });
     } else if (activeTab.value === 'login') {
         api().auditsLogin(current.value, PAGE_SIZE, undefined, pattern, outcome.value || undefined)

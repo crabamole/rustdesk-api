@@ -18,10 +18,12 @@ import { Configuration } from '../configuration';
 // @ts-ignore
 import { BASE_PATH, COLLECTION_FORMATS, RequestArgs, BaseAPI, RequiredError } from '../base';
 import { AuditAlarmRequest } from '../models';
+import { AuditClipboardRequest } from '../models';
 import { AuditConnRequest } from '../models';
 import { AuditFileRequest } from '../models';
 import { AuditNoteRequest } from '../models';
 import { AuditPageForAuditAlarmLog } from '../models';
+import { AuditPageForAuditClipboardLog } from '../models';
 import { AuditPageForAuditConnLog } from '../models';
 import { AuditPageForAuditConsoleLog } from '../models';
 import { AuditPageForAuditFileLog } from '../models';
@@ -88,6 +90,48 @@ export const AuditApiAxiosParamCreator = function (configuration?: Configuration
                 throw new RequiredError('body','Required parameter body was null or undefined when calling auditAlarm.');
             }
             const localVarPath = `/api/audit/alarm`;
+            // use dummy base URL string because the URL constructor only accepts absolute URLs.
+            const localVarUrlObj = new URL(localVarPath, 'https://example.com');
+            let baseOptions;
+            if (configuration) {
+                baseOptions = configuration.baseOptions;
+            }
+            const localVarRequestOptions :AxiosRequestConfig = { method: 'POST', ...baseOptions, ...options};
+            const localVarHeaderParameter = {} as any;
+            const localVarQueryParameter = {} as any;
+
+            localVarHeaderParameter['Content-Type'] = 'application/json';
+
+            const query = new URLSearchParams(localVarUrlObj.search);
+            for (const key in localVarQueryParameter) {
+                query.set(key, localVarQueryParameter[key]);
+            }
+            for (const key in options.params) {
+                query.set(key, options.params[key]);
+            }
+            localVarUrlObj.search = (new URLSearchParams(query)).toString();
+            let headersFromBaseOptions = baseOptions && baseOptions.headers ? baseOptions.headers : {};
+            localVarRequestOptions.headers = {...localVarHeaderParameter, ...headersFromBaseOptions, ...options.headers};
+            const needsSerialization = (typeof body !== "string") || localVarRequestOptions.headers['Content-Type'] === 'application/json';
+            localVarRequestOptions.data =  needsSerialization ? JSON.stringify(body !== undefined ? body : {}) : (body || "");
+
+            return {
+                url: localVarUrlObj.pathname + localVarUrlObj.search + localVarUrlObj.hash,
+                options: localVarRequestOptions,
+            };
+        },
+        /**
+         * Audit clipboard text that arrived on a device  Answers an empty body once the record is stored and `{\"error\": ...}` otherwise; the client retries on any non-empty body (docs/audit-api-spec.md §2.3, §15).
+         * @param {AuditClipboardRequest} body 
+         * @param {*} [options] Override http request option.
+         * @throws {RequiredError}
+         */
+        auditClipboard: async (body: AuditClipboardRequest, options: AxiosRequestConfig = {}): Promise<RequestArgs> => {
+            // verify required parameter 'body' is not null or undefined
+            if (body === null || body === undefined) {
+                throw new RequiredError('body','Required parameter body was null or undefined when calling auditClipboard.');
+            }
+            const localVarPath = `/api/audit/clipboard`;
             // use dummy base URL string because the URL constructor only accepts absolute URLs.
             const localVarUrlObj = new URL(localVarPath, 'https://example.com');
             let baseOptions;
@@ -439,6 +483,69 @@ export const AuditApiAxiosParamCreator = function (configuration?: Configuration
             };
         },
         /**
+         * Not in RustDesk Pro (audit-api-spec.md §15): newest first; `remote` is an SQL LIKE pattern.
+         * @summary Clipboard text audit log
+         * @param {number} [current] 
+         * @param {number} [page_size] 
+         * @param {string} [created_at] 
+         * @param {string} [remote] 
+         * @param {*} [options] Override http request option.
+         * @throws {RequiredError}
+         */
+        auditsClipboard: async (current?: number, page_size?: number, created_at?: string, remote?: string, options: AxiosRequestConfig = {}): Promise<RequestArgs> => {
+            const localVarPath = `/api/audits/clipboard`;
+            // use dummy base URL string because the URL constructor only accepts absolute URLs.
+            const localVarUrlObj = new URL(localVarPath, 'https://example.com');
+            let baseOptions;
+            if (configuration) {
+                baseOptions = configuration.baseOptions;
+            }
+            const localVarRequestOptions :AxiosRequestConfig = { method: 'GET', ...baseOptions, ...options};
+            const localVarHeaderParameter = {} as any;
+            const localVarQueryParameter = {} as any;
+
+            // authentication authorization_admin required
+            // http bearer authentication required
+            if (configuration && configuration.accessToken) {
+                const accessToken = typeof configuration.accessToken === 'function'
+                    ? await configuration.accessToken()
+                    : await configuration.accessToken;
+                localVarHeaderParameter["Authorization"] = "Bearer " + accessToken;
+            }
+
+            if (current !== undefined) {
+                localVarQueryParameter['current'] = current;
+            }
+
+            if (page_size !== undefined) {
+                localVarQueryParameter['pageSize'] = page_size;
+            }
+
+            if (created_at !== undefined) {
+                localVarQueryParameter['created_at'] = created_at;
+            }
+
+            if (remote !== undefined) {
+                localVarQueryParameter['remote'] = remote;
+            }
+
+            const query = new URLSearchParams(localVarUrlObj.search);
+            for (const key in localVarQueryParameter) {
+                query.set(key, localVarQueryParameter[key]);
+            }
+            for (const key in options.params) {
+                query.set(key, options.params[key]);
+            }
+            localVarUrlObj.search = (new URLSearchParams(query)).toString();
+            let headersFromBaseOptions = baseOptions && baseOptions.headers ? baseOptions.headers : {};
+            localVarRequestOptions.headers = {...localVarHeaderParameter, ...headersFromBaseOptions, ...options.headers};
+
+            return {
+                url: localVarUrlObj.pathname + localVarUrlObj.search + localVarUrlObj.hash,
+                options: localVarRequestOptions,
+            };
+        },
+        /**
          * Pro-compatible (`audits.py conn`): newest first; `remote` is an SQL LIKE pattern.
          * @summary Connection audit log
          * @param {number} [current] 
@@ -556,7 +663,7 @@ export const AuditApiAxiosParamCreator = function (configuration?: Configuration
             };
         },
         /**
-         * Pro-compatible (`audits.py console`): One row per admin change, newest first; `operator` is an SQL LIKE pattern on the user name (`CLI` for CLI rows).
+         * Pro-compatible (`audits.py console`): one row per admin change, newest first; `operator` is an SQL LIKE pattern on the user name (`CLI` for CLI rows).
          * @summary Console audit log
          * @param {number} [current] 
          * @param {number} [page_size] 
@@ -785,6 +892,19 @@ export const AuditApiFp = function(configuration?: Configuration) {
             };
         },
         /**
+         * Audit clipboard text that arrived on a device  Answers an empty body once the record is stored and `{\"error\": ...}` otherwise; the client retries on any non-empty body (docs/audit-api-spec.md §2.3, §15).
+         * @param {AuditClipboardRequest} body 
+         * @param {*} [options] Override http request option.
+         * @throws {RequiredError}
+         */
+        async auditClipboard(body: AuditClipboardRequest, options?: AxiosRequestConfig): Promise<(axios?: AxiosInstance, basePath?: string) => Promise<AxiosResponse<string>>> {
+            const localVarAxiosArgs = await AuditApiAxiosParamCreator(configuration).auditClipboard(body, options);
+            return (axios: AxiosInstance = globalAxios, basePath: string = BASE_PATH) => {
+                const axiosRequestArgs :AxiosRequestConfig = {...localVarAxiosArgs.options, url: basePath + localVarAxiosArgs.url};
+                return axios.request(axiosRequestArgs);
+            };
+        },
+        /**
          * Audit connection events  Answers an empty body once the record is stored and `{\"error\": ...}` otherwise; the client retries on any non-empty body (docs/audit-api-spec.md §2.3).
          * @param {AuditConnRequest} body 
          * @param {*} [options] Override http request option.
@@ -871,6 +991,23 @@ export const AuditApiFp = function(configuration?: Configuration) {
             };
         },
         /**
+         * Not in RustDesk Pro (audit-api-spec.md §15): newest first; `remote` is an SQL LIKE pattern.
+         * @summary Clipboard text audit log
+         * @param {number} [current] 
+         * @param {number} [page_size] 
+         * @param {string} [created_at] 
+         * @param {string} [remote] 
+         * @param {*} [options] Override http request option.
+         * @throws {RequiredError}
+         */
+        async auditsClipboard(current?: number, page_size?: number, created_at?: string, remote?: string, options?: AxiosRequestConfig): Promise<(axios?: AxiosInstance, basePath?: string) => Promise<AxiosResponse<AuditPageForAuditClipboardLog>>> {
+            const localVarAxiosArgs = await AuditApiAxiosParamCreator(configuration).auditsClipboard(current, page_size, created_at, remote, options);
+            return (axios: AxiosInstance = globalAxios, basePath: string = BASE_PATH) => {
+                const axiosRequestArgs :AxiosRequestConfig = {...localVarAxiosArgs.options, url: basePath + localVarAxiosArgs.url};
+                return axios.request(axiosRequestArgs);
+            };
+        },
+        /**
          * Pro-compatible (`audits.py conn`): newest first; `remote` is an SQL LIKE pattern.
          * @summary Connection audit log
          * @param {number} [current] 
@@ -903,7 +1040,7 @@ export const AuditApiFp = function(configuration?: Configuration) {
             };
         },
         /**
-         * Pro-compatible (`audits.py console`): One row per admin change, newest first; `operator` is an SQL LIKE pattern on the user name (`CLI` for CLI rows).
+         * Pro-compatible (`audits.py console`): one row per admin change, newest first; `operator` is an SQL LIKE pattern on the user name (`CLI` for CLI rows).
          * @summary Console audit log
          * @param {number} [current] 
          * @param {number} [page_size] 
@@ -982,6 +1119,15 @@ export const AuditApiFactory = function (configuration?: Configuration, basePath
             return AuditApiFp(configuration).auditAlarm(body, options).then((request) => request(axios, basePath));
         },
         /**
+         * Audit clipboard text that arrived on a device  Answers an empty body once the record is stored and `{\"error\": ...}` otherwise; the client retries on any non-empty body (docs/audit-api-spec.md §2.3, §15).
+         * @param {AuditClipboardRequest} body 
+         * @param {*} [options] Override http request option.
+         * @throws {RequiredError}
+         */
+        async auditClipboard(body: AuditClipboardRequest, options?: AxiosRequestConfig): Promise<AxiosResponse<string>> {
+            return AuditApiFp(configuration).auditClipboard(body, options).then((request) => request(axios, basePath));
+        },
+        /**
          * Audit connection events  Answers an empty body once the record is stored and `{\"error\": ...}` otherwise; the client retries on any non-empty body (docs/audit-api-spec.md §2.3).
          * @param {AuditConnRequest} body 
          * @param {*} [options] Override http request option.
@@ -1044,6 +1190,19 @@ export const AuditApiFactory = function (configuration?: Configuration, basePath
             return AuditApiFp(configuration).auditsAlarm(current, page_size, created_at, device, options).then((request) => request(axios, basePath));
         },
         /**
+         * Not in RustDesk Pro (audit-api-spec.md §15): newest first; `remote` is an SQL LIKE pattern.
+         * @summary Clipboard text audit log
+         * @param {number} [current] 
+         * @param {number} [page_size] 
+         * @param {string} [created_at] 
+         * @param {string} [remote] 
+         * @param {*} [options] Override http request option.
+         * @throws {RequiredError}
+         */
+        async auditsClipboard(current?: number, page_size?: number, created_at?: string, remote?: string, options?: AxiosRequestConfig): Promise<AxiosResponse<AuditPageForAuditClipboardLog>> {
+            return AuditApiFp(configuration).auditsClipboard(current, page_size, created_at, remote, options).then((request) => request(axios, basePath));
+        },
+        /**
          * Pro-compatible (`audits.py conn`): newest first; `remote` is an SQL LIKE pattern.
          * @summary Connection audit log
          * @param {number} [current] 
@@ -1068,7 +1227,7 @@ export const AuditApiFactory = function (configuration?: Configuration, basePath
             return AuditApiFp(configuration).auditsConnDisconnect(guid, options).then((request) => request(axios, basePath));
         },
         /**
-         * Pro-compatible (`audits.py console`): One row per admin change, newest first; `operator` is an SQL LIKE pattern on the user name (`CLI` for CLI rows).
+         * Pro-compatible (`audits.py console`): one row per admin change, newest first; `operator` is an SQL LIKE pattern on the user name (`CLI` for CLI rows).
          * @summary Console audit log
          * @param {number} [current] 
          * @param {number} [page_size] 
@@ -1136,6 +1295,16 @@ export class AuditApi extends BaseAPI {
      */
     public async auditAlarm(body: AuditAlarmRequest, options?: AxiosRequestConfig) : Promise<AxiosResponse<string>> {
         return AuditApiFp(this.configuration).auditAlarm(body, options).then((request) => request(this.axios, this.basePath));
+    }
+    /**
+     * Audit clipboard text that arrived on a device  Answers an empty body once the record is stored and `{\"error\": ...}` otherwise; the client retries on any non-empty body (docs/audit-api-spec.md §2.3, §15).
+     * @param {AuditClipboardRequest} body 
+     * @param {*} [options] Override http request option.
+     * @throws {RequiredError}
+     * @memberof AuditApi
+     */
+    public async auditClipboard(body: AuditClipboardRequest, options?: AxiosRequestConfig) : Promise<AxiosResponse<string>> {
+        return AuditApiFp(this.configuration).auditClipboard(body, options).then((request) => request(this.axios, this.basePath));
     }
     /**
      * Audit connection events  Answers an empty body once the record is stored and `{\"error\": ...}` otherwise; the client retries on any non-empty body (docs/audit-api-spec.md §2.3).
@@ -1206,6 +1375,20 @@ export class AuditApi extends BaseAPI {
         return AuditApiFp(this.configuration).auditsAlarm(current, page_size, created_at, device, options).then((request) => request(this.axios, this.basePath));
     }
     /**
+     * Not in RustDesk Pro (audit-api-spec.md §15): newest first; `remote` is an SQL LIKE pattern.
+     * @summary Clipboard text audit log
+     * @param {number} [current] 
+     * @param {number} [page_size] 
+     * @param {string} [created_at] 
+     * @param {string} [remote] 
+     * @param {*} [options] Override http request option.
+     * @throws {RequiredError}
+     * @memberof AuditApi
+     */
+    public async auditsClipboard(current?: number, page_size?: number, created_at?: string, remote?: string, options?: AxiosRequestConfig) : Promise<AxiosResponse<AuditPageForAuditClipboardLog>> {
+        return AuditApiFp(this.configuration).auditsClipboard(current, page_size, created_at, remote, options).then((request) => request(this.axios, this.basePath));
+    }
+    /**
      * Pro-compatible (`audits.py conn`): newest first; `remote` is an SQL LIKE pattern.
      * @summary Connection audit log
      * @param {number} [current] 
@@ -1232,7 +1415,7 @@ export class AuditApi extends BaseAPI {
         return AuditApiFp(this.configuration).auditsConnDisconnect(guid, options).then((request) => request(this.axios, this.basePath));
     }
     /**
-     * Pro-compatible (`audits.py console`): One row per admin change, newest first; `operator` is an SQL LIKE pattern on the user name (`CLI` for CLI rows).
+     * Pro-compatible (`audits.py console`): one row per admin change, newest first; `operator` is an SQL LIKE pattern on the user name (`CLI` for CLI rows).
      * @summary Console audit log
      * @param {number} [current] 
      * @param {number} [page_size] 
