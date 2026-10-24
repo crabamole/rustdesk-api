@@ -498,7 +498,7 @@ token.
 
 ### 12.1 Device writes
 
-§3–§6, the heartbeat (§10) and sysinfo carry no credentials in stock RustDesk. Validation **[I]**:
+§3–§6, §15, the heartbeat (§10) and sysinfo carry no credentials in stock RustDesk. Validation **[I]**:
 accept only with `X-Device-Signature: <ts>.<sig>`, an Ed25519 signature by the key the device
 registered with hbbs (`peer.pk` for the body's `id` + `uuid`) over
 `"device-call" 0 ts 0 path 0 hex(sha256(body))`, with `ts` within 300 s; otherwise answer 401 and
@@ -510,7 +510,7 @@ is not enough to write for it. Design: rustdesk `docs/design-audit-authenticatio
 
 ### 12.2 Client IP behind proxies
 
-`ip` in conn/file/alarm records is what the controlled device saw, which is
+`ip` in conn/file/alarm/clipboard records is what the controlled device saw, which is
 the address hbbs resolved for the controller. Behind reverse proxies it is the
 real client address only when the proxies are configured as trusted
 (`TRUSTED_PROXIES`, chart `realIp`); otherwise it is a proxy address **[I]**.
@@ -582,11 +582,11 @@ Legend: ✅ conforms · ⚠️ partial / deviates · ❌ missing
 | §9 `GET /api/audits/{conn,file,alarm,console}` | ✅ | Implemented, `audits.py`-compatible, admin only; `console` kind returns one row per admin change, newest first, with Pro paging. |
 | §15 `GET /api/audits/clipboard` (ours) | ✅ | Admin only; newest first; same query parameters as §9.1. |
 | §9 `GET /api/audits/login` (ours) | ✅ | OIDC sign-ins with outcome; console "Logins" tab. |
-| §9.3 console UI (logs pages, disconnect, edit note, CSV export) | ⚠️ | Webconsole has a new "Audit log" page (conn/file/alarm/login). Edit-note-from-console and CSV export are not implemented. |
+| §9.3 console UI (logs pages, disconnect, edit note, CSV export) | ⚠️ | Webconsole has a new "Audit log" page (conn/file/clipboard/alarm/login). Edit-note-from-console and CSV export are not implemented. |
 | §9.3 retention | ❌ | No setting, no purge job. |
 | §9.3 visibility / permissions | ❌ | No `audits.view` / `audits.edit` model; nothing to read anyway. |
 | §9.4 console audit (`audit_console`) | ✅ | Admin and CLI changes logged (typ 0–4, Pro's codes plus 23–26); CLI rows have no operator and `info.via = "cli"`; console shown as "CLI". |
-| §12.1 write validation | ✅ | conn/file/alarm records, heartbeats and sysinfo only with a valid device signature (401 otherwise). Refs bound to their target device. |
+| §12.1 write validation | ✅ | conn/file/alarm/clipboard records, heartbeats and sysinfo only with a valid device signature (401 otherwise). Refs bound to their target device. |
 
 ### 14.3 Schema (`libs/state/migrations/0001_initial.sql`)
 
@@ -611,7 +611,7 @@ All client-facing write paths (§3.1–§8) now work, including both note paths
 (§4, §8), the GUID lookup (§7, now authenticated and scoped to the caller),
 and controller-user attribution end to end (§11, §3.1, §5, §6). The admin
 read API (§9) and a webconsole "Audit log" page (§9.3) are implemented.
-Console Disconnect and console (admin action) logging are also implemented.
+Console Disconnect, console (admin action) logging and the clipboard text audit (§15) are also implemented.
 Still open: CSV export, retention, alarms 3–5, hbbs's raw-TCP API
 proxy (§2.2).
 

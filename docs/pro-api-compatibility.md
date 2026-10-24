@@ -29,7 +29,7 @@ Update this file with every API change.
 | POST | /api/currentUser | [C] `flutter/lib/models/user_model.dart` | implemented | also refreshes the last-seen time of a machine recorded by a login |
 | POST | /api/audit/conn | [C] `src/server/connection.rs` | implemented | connection lifecycle (`new`, `authorized`, `close`) and session-menu note (§4) per audit-api-spec.md §3-4; stored only from a registered `(id, uuid)` (§12.1) |
 | POST | /api/audit/file | [C] `src/server/connection.rs` | implemented | see audit-api-spec.md §5; stored only from a registered `(id, uuid)` (§12.1) |
-| POST | /api/audit/clipboard | ours (crabamole client) | implemented | crabamole addition, not in Pro; see audit-api-spec.md §15; stored only from a registered `(id, uuid)` (§12.1) |
+| POST | /api/audit/clipboard | [C] `src/server/connection.rs` | implemented | crabamole addition, not in Pro; see audit-api-spec.md §15; stored only from a registered `(id, uuid)` (§12.1) |
 | POST | /api/audit/alarm | [C] `src/server/connection.rs` | implemented | see audit-api-spec.md §6; stored only from a registered `(id, uuid)` (§12.1) |
 | GET | /api/audit/conn/active | [C] `src/ui_session_interface.rs` | implemented | requires a bearer token; scoped to the row's own user or an unattributed row, per audit-api-spec.md §7 |
 | POST | /api/audit/ref | [I] hbbs `ControlledContext` | ours | not a Pro endpoint; `?target=<device id>` required (422 without); mints an opaque ref for the bearer's user that attributes only records of `target`, consumed by hbbs per audit-api-spec.md §11 |
