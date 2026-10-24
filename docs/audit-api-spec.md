@@ -612,3 +612,40 @@ read API (§9) and a webconsole "Audit log" page (§9.3) are implemented.
 Console Disconnect and console (admin action) logging are also implemented.
 Still open: CSV export, retention, alarms 3–5, hbbs's raw-TCP API
 proxy (§2.2).
+
+---
+
+## 15. `POST /api/audit/clipboard` — clipboard text arrivals (crabamole, not upstream)
+
+Upstream clients and RustDesk Pro have no clipboard-text audit. crabamole devices (cRustDesk
+1.5.0-4 and later) write one record each time clipboard text from a viewer arrives on the device:
+a program on the device read the clipboard, the device requested the text, and the viewer's
+non-empty reply arrived for that request. Design: crabamole/rustdesk
+`docs/design-clipboard-monitoring.md`.
+
+```json
+{
+  "id": "<controlled id>", "uuid": "<b64>",
+  "peer_id": "<controller id>",
+  "conn_id": 17,
+  "type": 1,
+  "format": "text",
+  "size": 123,
+  "info": "{\"ip\":\"203.0.113.5\",\"name\":\"alice-laptop\"}",
+  "nonce": "<uuidv4>"
+}
+```
+
+| Field | Meaning |
+|---|---|
+| `type` | 1: controller → controlled, as `RemoteReceive` in §5. No other value is sent today. |
+| `format` | `text`, `rtf` or `html` |
+| `size` | bytes of the text after decompression; never the content |
+| `info` | **JSON-encoded string**: controller `ip` and `name` |
+
+- Transport: §2 (signed device call, `nonce` deduplication, response contract §2.3).
+- Server: store; attribute the controller user through the connection as for §5.
+- Admin read: `GET /api/audits/clipboard`, same query parameters as §9.1; the console shows it in
+  a Clipboard tab (Time, Device, Viewer, User, Direction, Format, Size, Address).
+- No record for timeouts, empty replies, clipboard files (§5) or the controlled → controller
+  direction.
