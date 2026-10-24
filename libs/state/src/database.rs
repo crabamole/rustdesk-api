@@ -69,6 +69,16 @@ pub(crate) struct AuditFileRow {
 }
 
 #[cfg(test)]
+pub(crate) struct AuditClipboardRow {
+    pub remote: Vec<u8>,
+    pub local: Option<Vec<u8>>,
+    pub user: Option<Vec<u8>>,
+    pub info: String,
+    pub format: String,
+    pub size: i64,
+}
+
+#[cfg(test)]
 pub(crate) struct AuditAlarmRow {
     pub user: Option<Vec<u8>>,
     pub info: String,
@@ -2016,6 +2026,14 @@ impl Database {
             .map_or(false, |row| row.is_some())
     }
 
+    pub async fn find_audit_clipboard_by_nonce(&self, nonce: &str) -> bool {
+        sqlx::query("SELECT 1 FROM audit_clipboard WHERE info::jsonb->>'nonce' = $1 LIMIT 1")
+            .bind(nonce)
+            .fetch_optional(&self.pool)
+            .await
+            .map_or(false, |row| row.is_some())
+    }
+
     pub async fn find_audit_alarm_by_nonce(&self, nonce: &str) -> bool {
         sqlx::query("SELECT 1 FROM audit_alarm WHERE info::jsonb->>'nonce' = $1 LIMIT 1")
             .bind(nonce)
@@ -2051,6 +2069,53 @@ impl Database {
         .await
         .ok()?;
         Some(())
+    }
+
+    pub async fn insert_audit_clipboard(
+        &self,
+        guid: &[u8],
+        remote: &[u8],
+        local: Option<&[u8]>,
+        clipboard_type: i8,
+        format: &str,
+        size: i64,
+        info: &str,
+        user: Option<&[u8]>,
+    ) -> Option<()> {
+        execute_async_commit(&self.pool, sqlx::query(
+            "INSERT INTO audit_clipboard (guid, remote, local, type, format, size, info, \"user\") VALUES ($1, $2, $3, $4, $5, $6, $7, $8) ON CONFLICT DO NOTHING",
+        )
+        .bind(guid)
+        .bind(remote)
+        .bind(local)
+        .bind(clipboard_type as i16)
+        .bind(format)
+        .bind(size)
+        .bind(info)
+        .bind(user)
+        )
+        .await
+        .ok()?;
+        Some(())
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn audit_clipboard_row_for_test(&self, nonce: &str) -> AuditClipboardRow {
+        let r = sqlx::query(
+            "SELECT remote, local, \"user\", info, format, size FROM audit_clipboard WHERE info::jsonb->>'nonce' = $1 LIMIT 1",
+        )
+        .bind(nonce)
+        .fetch_one(&self.pool)
+        .await
+        .unwrap();
+        AuditClipboardRow {
+            remote: r.get("remote"),
+            local: r.get("local"),
+            user: r.get("user"),
+            info: r.get("info"),
+            format: r.get("format"),
+            size: r.get("size"),
+        }
     }
 
     #[cfg(test)]
@@ -2751,6 +2816,45 @@ impl Database {
         Some((total, data))
     }
 
+    /// Admin read API (audit-api-spec.md §15): clipboard text arrivals; `info.info` is read as
+    /// plain jsonb for the reason given at `list_audit_files`.
+    pub async fn list_audit_clipboards(&self, q: &utils::AuditQuery) -> Option<(i64, Vec<utils::AuditClipboardLog>)> {
+        const WHERE: &str = "WHERE ($1::text IS NULL OR a.created_at::timestamptz >= ($1::timestamp AT TIME ZONE 'UTC')) \
+             AND ($2::text IS NULL OR convert_from(a.remote, 'UTF8') LIKE $2)";
+
+        let total: i64 = sqlx::query_scalar(&format!("SELECT count(*) FROM audit_clipboard a {WHERE}"))
+            .bind(&q.created_at)
+            .bind(&q.pattern)
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|e| log::error!("list_audit_clipboards count error: {e:?}"))
+            .ok()?;
+
+        let rows = sqlx::query(&format!(
+            "SELECT a.guid, convert_from(a.remote, 'UTF8') AS remote, convert_from(a.local, 'UTF8') AS peer_id, \
+               u.name AS user_name, a.type, a.format, a.size, \
+               extract(epoch FROM a.created_at::timestamptz)::bigint AS created_at, \
+               j.i->'info' AS raw_info \
+             FROM audit_clipboard a CROSS JOIN LATERAL (SELECT a.info::jsonb AS i) j \
+             LEFT JOIN \"user\" u ON u.guid = a.\"user\" {WHERE} \
+             ORDER BY a.created_at::timestamptz DESC LIMIT $3 OFFSET $4"
+        ))
+        .bind(&q.created_at)
+        .bind(&q.pattern)
+        .bind(q.limit)
+        .bind(q.offset)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| log::error!("list_audit_clipboards query error: {e:?}"))
+        .ok()?;
+
+        let mut data = Vec::with_capacity(rows.len());
+        for row in &rows {
+            data.push(audit_clipboard_log_from_row(row)?);
+        }
+        Some((total, data))
+    }
+
     /// Admin read API (audit-api-spec.md §9): security alarm rows.
     ///
     /// Same reasoning as `list_audit_files`: `info.info` is read as plain jsonb and parsed in
@@ -2900,6 +3004,23 @@ fn audit_file_log_from_row(row: &sqlx::postgres::PgRow) -> Option<utils::AuditFi
     })
 }
 
+fn audit_clipboard_log_from_row(row: &sqlx::postgres::PgRow) -> Option<utils::AuditClipboardLog> {
+    let guid: Vec<u8> = audit_try_get(row, "guid")?;
+    let raw_info: Option<serde_json::Value> = audit_try_get(row, "raw_info")?;
+    let info = normalise_audit_info(raw_info);
+    Some(utils::AuditClipboardLog {
+        guid: guid_into_uuid(guid)?,
+        remote: audit_try_get(row, "remote")?,
+        peer_id: audit_try_get(row, "peer_id")?,
+        user: audit_try_get(row, "user_name")?,
+        direction: audit_try_get(row, "type")?,
+        format: audit_try_get(row, "format")?,
+        size: audit_try_get(row, "size")?,
+        ip: info.get("ip").and_then(serde_json::Value::as_str).map(str::to_owned),
+        created_at: audit_try_get(row, "created_at")?,
+    })
+}
+
 fn audit_alarm_log_from_row(row: &sqlx::postgres::PgRow) -> Option<utils::AuditAlarmLog> {
     let guid: Vec<u8> = audit_try_get(row, "guid")?;
     let raw_info: Option<serde_json::Value> = audit_try_get(row, "raw_info")?;
@@ -3037,7 +3158,7 @@ mod tests {
                 .fetch_all(&first.pool)
                 .await
                 .unwrap();
-        assert_eq!(applied, (1..=17).map(|v| (v, true)).collect::<Vec<_>>());
+        assert_eq!(applied, (1..=18).map(|v| (v, true)).collect::<Vec<_>>());
         first.pool.close().await;
 
         // Second start on the same database must not fail or duplicate rows.

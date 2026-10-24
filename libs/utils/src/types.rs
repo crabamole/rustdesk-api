@@ -367,6 +367,46 @@ pub struct AuditFileLog {
     pub created_at: i64,
 }
 
+#[derive(Deserialize, Debug, JsonSchema)]
+pub struct AuditClipboardRequest {
+    #[serde(default)]
+    pub id: String,
+    #[serde(default)]
+    pub uuid: String,
+    #[serde(default)]
+    pub peer_id: String,
+    #[serde(default)]
+    pub conn_id: i64,
+    #[serde(default, rename = "type")]
+    pub clipboard_type: i8,
+    #[serde(default)]
+    pub format: String,
+    #[serde(default)]
+    pub size: i64,
+    #[serde(default)]
+    pub info: String,
+    #[serde(default)]
+    pub nonce: String,
+}
+
+/// `GET /api/audits/clipboard` row (audit-api-spec.md §15).
+#[derive(Serialize, Debug, JsonSchema)]
+pub struct AuditClipboardLog {
+    pub guid: String,
+    pub remote: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub peer_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub user: Option<String>,
+    #[serde(rename = "type")]
+    pub direction: i16,
+    pub format: String,
+    pub size: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ip: Option<String>,
+    pub created_at: i64,
+}
+
 /// `GET /api/audits/alarm` row (audit-api-spec.md §9.2).
 #[derive(Serialize, Debug, JsonSchema)]
 pub struct AuditAlarmLog {

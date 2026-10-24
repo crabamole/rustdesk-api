@@ -839,6 +839,33 @@ impl ApiState {
         ).await
     }
 
+    pub async fn audit_clipboard(&self, request: &utils::AuditClipboardRequest) -> Option<()> {
+        if !self.from_registered_device("clipboard", &request.id, &request.uuid).await {
+            return Some(());
+        }
+        if !request.nonce.is_empty() && self.db.find_audit_clipboard_by_nonce(&request.nonce).await {
+            return Some(());
+        }
+        let guid = uuid::Uuid::new_v4();
+        let info = serde_json::json!({
+            "conn_id": request.conn_id,
+            "nonce": request.nonce,
+            "uuid": request.uuid,
+            "info": audit_info(&request.info),
+        });
+        let user = self.db.audit_conn_user(&request.id, &request.uuid, request.conn_id).await;
+        self.db.insert_audit_clipboard(
+            guid.as_bytes(),
+            request.id.as_bytes(),
+            Some(request.peer_id.as_bytes()),
+            request.clipboard_type,
+            &request.format,
+            request.size,
+            &info.to_string(),
+            user.as_deref(),
+        ).await
+    }
+
     pub async fn audit_alarm(&self, request: &utils::AuditAlarmRequest) -> Option<()> {
         if !self.from_registered_device("alarm", &request.id, &request.uuid).await {
             return Some(());
@@ -939,6 +966,10 @@ impl ApiState {
 
     pub async fn list_audit_files(&self, q: &utils::AuditQuery) -> Option<(i64, Vec<utils::AuditFileLog>)> {
         self.db.list_audit_files(q).await
+    }
+
+    pub async fn list_audit_clipboards(&self, q: &utils::AuditQuery) -> Option<(i64, Vec<utils::AuditClipboardLog>)> {
+        self.db.list_audit_clipboards(q).await
     }
 
     pub async fn list_audit_alarms(&self, q: &utils::AuditQuery) -> Option<(i64, Vec<utils::AuditAlarmLog>)> {
@@ -2234,6 +2265,28 @@ mod tests {
         assert_eq!(row.user, Some(user));
         let info: serde_json::Value = serde_json::from_str(&row.info).unwrap();
         assert_eq!(info["info"]["num"], 1);
+    }
+
+    #[tokio::test]
+    async fn audit_clipboard_is_stored_once_and_attributed() {
+        let state = audit_state().await;
+        let (user, _, _) = state.db.get_user_for_oauth2("erin", "erin", Some("erin@example.org")).await.unwrap();
+        let r = state.mint_audit_conn_ref(&user, "dev3").await.unwrap();
+        state.audit_conn(&conn_record(&format!(
+            r#"{{"action":"new","id":"dev3","uuid":"dXVpZA==","conn_id":4,"nonce":"n4c","conn_audit_ref":"{r}"}}"#
+        ))).await.unwrap();
+        let rec: utils::AuditClipboardRequest = serde_json::from_str(
+            r#"{"id":"dev3","uuid":"dXVpZA==","peer_id":"viewer9","conn_id":4,"type":1,"format":"text","size":12,
+                "info":"{\"ip\":\"203.0.113.5\",\"name\":\"v\"}","nonce":"c1"}"#,
+        ).unwrap();
+        state.audit_clipboard(&rec).await.unwrap();
+        state.audit_clipboard(&rec).await.unwrap();
+        assert_eq!(state.db.count_nonce_rows_for_test("audit_clipboard", "c1").await, 1);
+        let row = state.db.audit_clipboard_row_for_test("c1").await;
+        assert_eq!(row.remote, b"dev3".to_vec());
+        assert_eq!(row.local, Some(b"viewer9".to_vec()));
+        assert_eq!(row.user, Some(user));
+        assert_eq!((row.format.as_str(), row.size), ("text", 12));
     }
 
     #[tokio::test]

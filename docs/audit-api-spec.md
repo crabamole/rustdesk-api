@@ -566,6 +566,7 @@ Legend: ✅ conforms · ⚠️ partial / deviates · ❌ missing
 | — `login` action branch | — | Removed 2026-10-02; no client sends `action:"login"`. |
 | §4 menu note | ✅ | Recognised by empty `action`, a `note`, no `peer`/`type`, empty `uuid`. Applied to the most recent row matching `remote = id` (`@server` suffix stripped) and `info.session_id = session_id`. Always answers 2xx empty. |
 | §5 file | ✅ | Stored with `remote`=`id` (controlled device), `local`=`peer_id` (viewer) — migration 0006. `info` is stored as an object. An unknown connection key is stored unattributed (`user` NULL); only a DB failure answers `{"error":...}` so the client retries (§2.3). Attributed to the connection row's `user` (by `(id, uuid, conn_id)`) when known. |
+| §15 clipboard | ✅ | `POST /api/audit/clipboard` stored with `remote`=`id`, `local`=`peer_id`, `format`, `size`; same nonce dedupe and attribution as §5. |
 | §6 alarm | ✅ | Stored with `typ`, `device`=`id`; `info` stored as an object. Not-stored answers `{"error":...}`. Attributed from `conn_audit_ref` (typ 0, 10, via `audit_conn_ref`) or else the connection row's `user` (§11) when known. |
 | §6 alarms 3–5 (account login) | ❌ | `/api/login` generates no alarms. |
 | §7 `GET /api/audit/conn/active` | ✅ | Requires a login (Bearer) and returns only the caller's own rows or rows with no attributed user — rows attributed to someone else answer `""`. |
@@ -579,6 +580,7 @@ Legend: ✅ conforms · ⚠️ partial / deviates · ❌ missing
 | Spec | Status | Finding |
 |---|---|---|
 | §9 `GET /api/audits/{conn,file,alarm,console}` | ✅ | Implemented, `audits.py`-compatible, admin only; `console` kind returns one row per admin change, newest first, with Pro paging. |
+| §15 `GET /api/audits/clipboard` (ours) | ✅ | Admin only; newest first; same query parameters as §9.1. |
 | §9 `GET /api/audits/login` (ours) | ✅ | OIDC sign-ins with outcome; console "Logins" tab. |
 | §9.3 console UI (logs pages, disconnect, edit note, CSV export) | ⚠️ | Webconsole has a new "Audit log" page (conn/file/alarm/login). Edit-note-from-console and CSV export are not implemented. |
 | §9.3 retention | ❌ | No setting, no purge job. |

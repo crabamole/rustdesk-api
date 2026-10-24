@@ -312,12 +312,14 @@ pub fn api_routes() -> (Vec<rocket::Route>, rocket_okapi::okapi::openapi3::OpenA
         audit_note,
         audit_file,
         audit_alarm,
+        audit_clipboard,
         audit_ref,
         audits_conn,
         audits_conn_disconnect,
         peer_reset_key,
         audits_file,
         audits_alarm,
+        audits_clipboard,
         audits_console,
         audits_login,
         logout,
@@ -843,6 +845,45 @@ async fn peer_reset_key(state: &State<ApiState>, user: AuthenticatedAdmin, id: &
             .await;
     }
     Ok(())
+}
+
+/// Audit clipboard text that arrived on a device
+///
+/// Answers an empty body once the record is stored and `{"error": ...}` otherwise; the client
+/// retries on any non-empty body (docs/audit-api-spec.md §2.3, §15).
+#[openapi(tag = "audit")]
+#[post("/api/audit/clipboard", format = "application/json", data = "<request>")]
+async fn audit_clipboard(
+    state: &State<ApiState>,
+    request: device_call::SignedDevice<utils::AuditClipboardRequest>,
+) -> String {
+    log::debug!("audit_clipboard: {:?}", request);
+    match state.audit_clipboard(&request).await {
+        Some(()) => String::new(),
+        None => r#"{"error":"audit record not stored"}"#.to_owned(),
+    }
+}
+
+/// # Clipboard text audit log
+///
+/// Not in RustDesk Pro (audit-api-spec.md §15): newest first; `remote` is an SQL LIKE pattern.
+#[openapi(tag = "audit")]
+#[allow(non_snake_case)]
+#[get("/api/audits/clipboard?<current>&<pageSize>&<created_at>&<remote>")]
+async fn audits_clipboard(
+    state: &State<ApiState>,
+    _user: AuthenticatedAdmin,
+    current: Option<i64>,
+    pageSize: Option<i64>,
+    created_at: Option<String>,
+    remote: Option<String>,
+) -> Result<Json<utils::AuditPage<utils::AuditClipboardLog>>, (Status, String)> {
+    let q = audit_query(current, pageSize, created_at, remote, None)?;
+    state
+        .list_audit_clipboards(&q)
+        .await
+        .map(|(total, data)| Json(utils::AuditPage { total, data }))
+        .ok_or((Status::InternalServerError, "cannot read audit log".to_string()))
 }
 
 /// # File transfer audit log

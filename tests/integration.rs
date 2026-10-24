@@ -1984,6 +1984,33 @@ async fn test_audits_file_shows_remote_peer_num_and_files() {
 }
 
 #[rocket::async_test]
+async fn test_audit_clipboard_is_stored_listed_and_needs_a_signature() {
+    let (client, _dir) = test_client().await;
+    client.rocket().state::<state::ApiState>().unwrap().test_register_device("devclip", "dWNsaXA=").await;
+    let admin = login_admin(&client).await;
+    let body = r#"{"id":"devclip","uuid":"dWNsaXA=","peer_id":"viewerclip","conn_id":1,"type":1,"format":"html","size":42,"info":"{\"ip\":\"203.0.113.21\",\"name\":\"alice-laptop\"}","nonce":"clipnonce"}"#;
+
+    let resp = client.post("/api/audit/clipboard").header(ContentType::JSON).body(body).dispatch().await;
+    assert_eq!(resp.status(), Status::Unauthorized);
+
+    let resp = client.post("/api/audit/clipboard").header(ContentType::JSON)
+        .signed_body("/api/audit/clipboard", body).dispatch().await;
+    assert_eq!(resp.status(), Status::Ok);
+    assert_eq!(resp.into_string().await.unwrap_or_default(), "");
+
+    let resp = client.get("/api/audits/clipboard?current=1&pageSize=10&remote=%25devclip%25").header(auth_header(&admin)).dispatch().await;
+    assert_eq!(resp.status(), Status::Ok);
+    let body: Value = resp.into_json().await.unwrap();
+    assert_eq!(body["total"], 1);
+    assert_eq!(body["data"][0]["remote"], "devclip");
+    assert_eq!(body["data"][0]["peer_id"], "viewerclip");
+    assert_eq!(body["data"][0]["type"], 1);
+    assert_eq!(body["data"][0]["format"], "html");
+    assert_eq!(body["data"][0]["size"], 42);
+    assert_eq!(body["data"][0]["ip"], "203.0.113.21");
+}
+
+#[rocket::async_test]
 async fn test_audits_alarm_shows_info_as_an_object() {
     let (client, _dir) = test_client().await;
     client.rocket().state::<state::ApiState>().unwrap().test_register_device("devalarm", "dWFsYXJt").await;

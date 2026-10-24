@@ -29,6 +29,7 @@ Update this file with every API change.
 | POST | /api/currentUser | [C] `flutter/lib/models/user_model.dart` | implemented | also refreshes the last-seen time of a machine recorded by a login |
 | POST | /api/audit/conn | [C] `src/server/connection.rs` | implemented | connection lifecycle (`new`, `authorized`, `close`) and session-menu note (§4) per audit-api-spec.md §3-4; stored only from a registered `(id, uuid)` (§12.1) |
 | POST | /api/audit/file | [C] `src/server/connection.rs` | implemented | see audit-api-spec.md §5; stored only from a registered `(id, uuid)` (§12.1) |
+| POST | /api/audit/clipboard | ours (crabamole client) | implemented | crabamole addition, not in Pro; see audit-api-spec.md §15; stored only from a registered `(id, uuid)` (§12.1) |
 | POST | /api/audit/alarm | [C] `src/server/connection.rs` | implemented | see audit-api-spec.md §6; stored only from a registered `(id, uuid)` (§12.1) |
 | GET | /api/audit/conn/active | [C] `src/ui_session_interface.rs` | implemented | requires a bearer token; scoped to the row's own user or an unattributed row, per audit-api-spec.md §7 |
 | POST | /api/audit/ref | [I] hbbs `ControlledContext` | ours | not a Pro endpoint; `?target=<device id>` required (422 without); mints an opaque ref for the bearer's user that attributes only records of `target`, consumed by hbbs per audit-api-spec.md §11 |
@@ -145,6 +146,7 @@ Upstream clients log in by polling `GET /api/oidc/auth-query`; that login is not
 |---|---|---|---|---|
 | GET | /api/audits/conn | [S] `audits.py` | implemented | admin-only; newest first; `remote`/`conn_type` filters, per audit-api-spec.md §9; rows also carry the viewer machine (`peer_hostname`, `peer_os`, `peer_login_ip`) |
 | GET | /api/audits/file | [S] `audits.py` | implemented | admin-only; newest first; `remote` filter, per audit-api-spec.md §9 |
+| GET | /api/audits/clipboard | ours | implemented | crabamole addition, not in Pro; admin-only; newest first; `remote` filter, per audit-api-spec.md §15 |
 | GET | /api/audits/alarm | [S] `audits.py` | implemented | admin-only; newest first; `device` filter, per audit-api-spec.md §9 |
 | GET | /api/audits/console | [S] `audits.py` | implemented | admin-only; newest first; returns rows logged by admin and CLI actions per audit-api-spec.md §9/§14.2 |
 | POST | /api/audits/conn/<guid>/disconnect | ours | implemented | admin-only; 404 unknown, 409 ended; sets disconnect_at and queues the conn_id for heartbeat delivery per audit-api-spec.md §10 |

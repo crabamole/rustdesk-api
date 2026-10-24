@@ -50,6 +50,12 @@ impl DeviceCall for utils::AuditFileRequest {
     }
 }
 
+impl DeviceCall for utils::AuditClipboardRequest {
+    fn device(&self) -> (&str, &str) {
+        (&self.id, &self.uuid)
+    }
+}
+
 impl DeviceCall for utils::AuditAlarmRequest {
     fn device(&self) -> (&str, &str) {
         (&self.id, &self.uuid)
