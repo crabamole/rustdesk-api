@@ -85,6 +85,10 @@ export function fileDirectionLabel(t: number): string {
     return t === 1 ? 'Upload to device' : 'Download from device';
 }
 
+export function clipboardDirectionLabel(t: number): string {
+    return t === 1 ? 'Viewer → device' : 'Device → viewer';
+}
+
 export function formatTime(unixSeconds?: number): string {
     return unixSeconds ? new Date(unixSeconds * 1000).toLocaleString() : '';
 }

@@ -73,7 +73,7 @@ This website use:
                             <td class="py-2 px-3">{{ row.remote }}</td>
                             <td class="py-2 px-3">{{ row.peer_id }}</td>
                             <td class="py-2 px-3">{{ row.user }}</td>
-                            <td class="py-2 px-3">{{ fileDirectionLabel(row.type) }}</td>
+                            <td class="py-2 px-3">{{ clipboardDirectionLabel(row.type) }}</td>
                             <td class="py-2 px-3">{{ row.format }}</td>
                             <td class="py-2 px-3">{{ row.size }} B</td>
                             <td class="py-2 px-3">{{ row.ip }}</td>
@@ -125,7 +125,7 @@ This website use:
 import { computed, onMounted, ref, watch } from 'vue';
 import { AuditApi, AuditAlarmLog, AuditClipboardLog, AuditConnLog, AuditConsoleLog, AuditFileLog, AuditLoginLog } from '@/api';
 import { useUserStore } from '@/stores/sctgDeskStore';
-import { CONN_TYPES, LOGIN_OUTCOMES, alarmLabel, authLabel, connTypeLabel, consoleActionLabel, consoleAreaLabel, consoleDetails, fileDirectionLabel, formatTime, likePattern, loginClientLabel, loginOutcomeLabel, machineLabel } from '@/utilities/audit';
+import { CONN_TYPES, LOGIN_OUTCOMES, alarmLabel, authLabel, clipboardDirectionLabel, connTypeLabel, consoleActionLabel, consoleAreaLabel, consoleDetails, fileDirectionLabel, formatTime, likePattern, loginClientLabel, loginOutcomeLabel, machineLabel } from '@/utilities/audit';
 
 const PAGE_SIZE = 20;
 const TABS = [
