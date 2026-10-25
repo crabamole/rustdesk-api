@@ -22,7 +22,7 @@ This website use:
                 </select>
                 <p v-if="webhook.enabled" data-testid="admission-webhook" class="mb-3 text-sm">
                   Admission webhook: {{ webhook.url }} · public key
-                  <ClipboardButton data-testid="admission-webhook-key"><code>{{ webhook.public_key }}</code></ClipboardButton>
+                  <ClipboardButton><code data-testid="admission-webhook-key">{{ webhook.public_key }}</code></ClipboardButton>
                 </p>
                 <div class="max-w-full overflow-x-auto">
                   <table class="w-full table-auto">
