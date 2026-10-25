@@ -80,7 +80,14 @@ def validate_rules(rules) -> None:
     for i, rule in enumerate(rules.get("rules") or [], start=1):
         if not isinstance(rule, dict) or rule.get("decision") not in ("admit", "reject"):
             raise ValueError(f"rule {i}: decision must be admit or reject")
-        for net in (rule.get("match") or {}).get("subnets", []):
+        match = rule.get("match") or {}
+        if not isinstance(match, dict):
+            raise ValueError(f"rule {i}: match must be a mapping")
+        for field in ("hostnames", "subnets", "owner_groups"):
+            values = match.get(field, [])
+            if not isinstance(values, list) or not all(isinstance(v, str) for v in values):
+                raise ValueError(f"rule {i}: {field} must be a list of strings")
+        for net in match.get("subnets", []):
             try:
                 ipaddress.ip_network(net, strict=False)
             except ValueError:
@@ -132,6 +139,8 @@ class Handler(BaseHTTPRequestHandler):
 def main():
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
     Handler.keys = load_keys(os.environ["PUBLIC_KEYS"])
+    if not Handler.keys:
+        raise SystemExit("PUBLIC_KEYS holds no key")
     with open(os.environ.get("RULES_FILE", "/etc/admission-webhook/rules.yaml")) as f:
         Handler.rules = yaml.safe_load(f) or {}
     try:

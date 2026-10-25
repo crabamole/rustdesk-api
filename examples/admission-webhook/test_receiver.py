@@ -73,6 +73,12 @@ class DecideTest(unittest.TestCase):
         self.assertEqual(receiver.decide(self.dev(ip="not-an-ip"), RULES), ("pending", "default"))
         self.assertEqual(receiver.decide(self.dev(), {"rules": []}), ("pending", "default"))
 
+    def test_match_values_must_be_lists(self):
+        for match in ({"owner_groups": "IT-admins"}, {"hostnames": None}, {"subnets": "192.0.2.0/24"}):
+            with self.assertRaises(ValueError):
+                receiver.validate_rules({"rules": [{"decision": "admit", "match": match}]})
+        receiver.validate_rules(RULES)
+
 
 class HttpTest(unittest.TestCase):
     @classmethod
