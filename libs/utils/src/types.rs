@@ -1156,6 +1156,34 @@ pub struct UpdateStrategyRequest {
     pub options: BTreeMap<String, String>,
 }
 
+/// A device's admission state (rustdesk docs/design-device-admission.md); `peer.admission`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum Admission {
+    Pending,
+    Admitted,
+    Rejected,
+}
+
+impl Admission {
+    pub fn code(self) -> i16 {
+        match self {
+            Admission::Pending => 0,
+            Admission::Admitted => 1,
+            Admission::Rejected => 2,
+        }
+    }
+
+    pub fn from_code(code: i16) -> Option<Self> {
+        match code {
+            0 => Some(Admission::Pending),
+            1 => Some(Admission::Admitted),
+            2 => Some(Admission::Rejected),
+            _ => None,
+        }
+    }
+}
+
 /// Reply to `/api/heartbeat`; the client applies `strategy` when present (`hbbs_http/sync.rs`).
 #[derive(Debug, PartialEq, Serialize, JsonSchema)]
 pub struct HeartbeatResponse {
@@ -1563,5 +1591,14 @@ mod tests {
         assert!(r.name.is_none());
         assert!(r.note.is_none());
         assert_eq!(r.guid, "");
+    }
+    #[test]
+    fn admission_codes_and_json() {
+        for a in [Admission::Pending, Admission::Admitted, Admission::Rejected] {
+            assert_eq!(Admission::from_code(a.code()), Some(a));
+        }
+        assert_eq!(Admission::from_code(3), None);
+        assert_eq!(serde_json::to_string(&Admission::Pending).unwrap(), r#""pending""#);
+        assert_eq!(serde_json::from_str::<Admission>(r#""rejected""#).unwrap(), Admission::Rejected);
     }
 }

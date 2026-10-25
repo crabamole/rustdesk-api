@@ -2283,6 +2283,36 @@ impl Database {
         Some(if rows.is_empty() { None } else { Some(rows.contains(&true)) })
     }
 
+    /// Sets the admission state of device `id` (design-device-admission.md). None on error,
+    /// Some(None) for an unknown device, else the state it had.
+    pub async fn set_peer_admission(&self, id: &str, admission: i16, by: &str) -> Option<Option<i16>> {
+        let rows: Vec<i16> = sqlx::query_scalar(
+            "WITH old AS (SELECT guid, admission FROM peer WHERE id = $1 FOR UPDATE) \
+             UPDATE peer p SET admission = $2, admission_at = current_timestamp::text, admission_by = $3 \
+             FROM old WHERE p.guid = old.guid RETURNING old.admission",
+        )
+        .bind(id)
+        .bind(admission)
+        .bind(by)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| log::error!("set_peer_admission error: {e:?}"))
+        .ok()?;
+        Some(rows.first().copied())
+    }
+
+    /// The admission state of device `id` registered from machine `uuid`.
+    pub async fn peer_admission(&self, id: &str, uuid: &[u8]) -> Option<i16> {
+        sqlx::query_scalar("SELECT admission FROM peer WHERE id = $1 AND uuid = $2")
+            .bind(id)
+            .bind(uuid)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|e| log::error!("peer_admission error: {e:?}"))
+            .ok()
+            .flatten()
+    }
+
     /// The owner key of device `id` when its owner session is live and belongs to active `user`.
     pub async fn same_user_owner_pk(&self, user: &[u8], id: &str) -> Option<Vec<u8>> {
         sqlx::query_scalar(
@@ -3158,7 +3188,7 @@ mod tests {
                 .fetch_all(&first.pool)
                 .await
                 .unwrap();
-        assert_eq!(applied, (1..=18).map(|v| (v, true)).collect::<Vec<_>>());
+        assert_eq!(applied, (1..=19).map(|v| (v, true)).collect::<Vec<_>>());
         first.pool.close().await;
 
         // Second start on the same database must not fail or duplicate rows.

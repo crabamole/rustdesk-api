@@ -31,7 +31,7 @@ use oauth2::oauth_provider::OAuthProvider;
 
 use tokio::sync::RwLock;
 use utils::{
-    AbPeer, AbRule, AbTag, AddUserRequest, AddressBook, CpuCount, Group, HeartbeatResponse, OidcState, Peer, Platform,
+    Admission, AbPeer, AbRule, AbTag, AddUserRequest, AddressBook, CpuCount, Group, HeartbeatResponse, OidcState, Peer, Platform,
     StrategyPush, StrategySummary, Token, UpdateUserRequest, UserListResponse,
 };
 
@@ -660,6 +660,26 @@ impl ApiState {
     /// Resets the registered key of device `id`; see `Database::reset_peer_key`.
     pub async fn reset_device_key(&self, id: &str) -> Option<Option<bool>> {
         self.db.reset_peer_key(id).await
+    }
+
+    /// Sets device `id`'s admission state; see `Database::set_peer_admission`.
+    pub async fn set_device_admission(&self, id: &str, admission: Admission, by: &str) -> Option<Option<Admission>> {
+        let old = self.db.set_peer_admission(id, admission.code(), by).await?;
+        Some(old.and_then(Admission::from_code))
+    }
+
+    /// Device `id`'s admission state, for its heartbeat; `uuid` is base64 as in the request.
+    pub async fn device_admission(&self, id: &str, uuid: &str) -> Option<Admission> {
+        let uuid = base64::prelude::BASE64_STANDARD.decode(uuid).ok()?;
+        self.db.peer_admission(id, &uuid).await.and_then(Admission::from_code)
+    }
+
+    /// The heartbeat answer's `admission`: only while the switch is on.
+    pub async fn admission_for_heartbeat(&self, enabled: bool, id: &str, uuid: &str) -> Option<Admission> {
+        if !enabled {
+            return None;
+        }
+        self.device_admission(id, uuid).await
     }
 
     /// Marks a connection for disconnect (design-console-audit.md); None for an unknown guid.
@@ -2418,5 +2438,27 @@ mod tests {
         assert_eq!(rows[0].operator.as_deref(), Some("(deleted user)"));
         let cli = utils::AuditQuery { pattern: Some("CLI".into()), ..q };
         assert_eq!(state.list_audit_consoles(&cli).await.unwrap().0, 0);
+    }
+
+    #[rocket::async_test]
+    async fn device_admission_set_and_read() {
+        let state = ApiState::new_with_db(&crate::testing::fresh_database_url().await).await;
+        state.test_register_device("adm1", "dXVpZA==").await;
+        assert_eq!(state.device_admission("adm1", "dXVpZA==").await, Some(Admission::Admitted), "migration default");
+        assert_eq!(state.set_device_admission("adm1", Admission::Pending, "cli").await, Some(Some(Admission::Admitted)));
+        assert_eq!(state.device_admission("adm1", "dXVpZA==").await, Some(Admission::Pending));
+        assert_eq!(state.device_admission("adm1", "b3RoZXI=").await, None, "other uuid");
+        assert_eq!(state.set_device_admission("nobody", Admission::Admitted, "cli").await, Some(None));
+        assert_eq!(state.admission_for_heartbeat(false, "adm1", "dXVpZA==").await, None, "switch off");
+        assert_eq!(state.admission_for_heartbeat(true, "adm1", "dXVpZA==").await, Some(Admission::Pending));
+    }
+
+    #[rocket::async_test]
+    async fn reset_key_keeps_admission() {
+        let state = ApiState::new_with_db(&crate::testing::fresh_database_url().await).await;
+        state.test_register_device("adm2", "dXVpZA==").await;
+        state.set_device_admission("adm2", Admission::Rejected, "cli").await;
+        state.reset_device_key("adm2").await;
+        assert_eq!(state.device_admission("adm2", "dXVpZA==").await, Some(Admission::Rejected));
     }
 }
