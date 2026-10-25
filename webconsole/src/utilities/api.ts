@@ -90,3 +90,13 @@ export function getServerVersion(): Promise<string> {
         });
     });
 }
+
+/** Asks the admission webhook about pending device `id` now; resolves to its stored result. */
+export function askAdmissionWebhook(id: string): Promise<string> {
+    return new PeerApi(useUserStore().api_configuration).peerAdmissionCheck(id).then((r) => (r.data as { result: string }).result);
+}
+
+/** Whether a webhook is set, its URL and its public key. */
+export function getAdmissionWebhook(): Promise<{ enabled: boolean; url: string; public_key: string }> {
+    return new PeerApi(useUserStore().api_configuration).admissionWebhookInfo().then((r) => r.data as { enabled: boolean; url: string; public_key: string });
+}

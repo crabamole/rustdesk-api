@@ -20,6 +20,10 @@ This website use:
                   <option :value="0">Pending</option>
                   <option :value="2">Rejected</option>
                 </select>
+                <p v-if="webhook.enabled" data-testid="admission-webhook" class="mb-3 text-sm">
+                  Admission webhook: {{ webhook.url }} · public key
+                  <ClipboardButton data-testid="admission-webhook-key"><code>{{ webhook.public_key }}</code></ClipboardButton>
+                </p>
                 <div class="max-w-full overflow-x-auto">
                   <table class="w-full table-auto">
                     <thead class="bg-slate-400">
@@ -63,6 +67,9 @@ This website use:
                         <td data-testid="device-admission"
                           class="text-dark border-b border-[#E8E8E8] bg-[#F3F6FF] dark:bg-dark-3 dark:border-dark dark:text-dark-7 py-5 px-2 text-center text-base font-medium">
                           {{ peer.admission }}
+                          <div v-if="peer.admission_webhook_result" data-testid="device-webhook-result" class="text-xs font-normal">
+                            {{ peer.admission_webhook_result }}<br v-if="peer.admission_webhook_at" />{{ peer.admission_webhook_at }}
+                          </div>
                         </td>
                         <td
                           class="text-dark border-b border-[#E8E8E8] bg-[#F3F6FF] dark:bg-dark-3 dark:border-dark dark:text-dark-7 py-5 px-2 text-center text-base font-medium">
@@ -85,6 +92,10 @@ This website use:
                           <button v-for="a in admissions.filter((x) => x.state !== peer.admission)" :key="a.state" @click="admit(peer.id, a.state)" :data-testid="a.testid"
                             class="mr-2 inline-block px-6 py-2.5 border rounded-md border-primary text-primary hover:bg-primary hover:text-white font-medium">
                             {{ a.label }}
+                          </button>
+                          <button v-if="webhook.enabled && peer.admission === Admission.Pending" @click="askWebhook(peer.id)" data-testid="device-ask-webhook"
+                            class="mr-2 inline-block px-6 py-2.5 border rounded-md border-primary text-primary hover:bg-primary hover:text-white font-medium">
+                            Ask webhook
                           </button>
                           <button @click="resetKey(peer.id)" data-testid="device-reset-key"
                             class="mr-2 inline-block px-6 py-2.5 border rounded-md border-primary text-primary hover:bg-primary hover:text-white font-medium">
@@ -110,7 +121,7 @@ This website use:
 import { onMounted, ref, watch } from 'vue';
 import ClipboardButton from './ClipboardButton.vue';
 import ListPager from './ListPager.vue';
-import { listPeers, resetPeerKey, setPeerAdmission } from '@/utilities/api';
+import { askAdmissionWebhook, getAdmissionWebhook, listPeers, resetPeerKey, setPeerAdmission } from '@/utilities/api';
 import { usePagedList } from '@/utilities/paged';
 import { Admission } from '@/api';
 
@@ -122,6 +133,8 @@ const admissions = [
     { state: Admission.Pending, label: 'Pending', testid: 'device-pending' },
 ];
 
+const webhook = ref({ enabled: false, url: '', public_key: '' });
+
 watch(filter, () => list.load(1));
 
 function admit(id: string, admission: Admission): void {
@@ -131,6 +144,15 @@ function admit(id: string, admission: Admission): void {
         .catch((error) => window.alert(`Admission of ${id} not changed: ${error?.response?.status ?? error}`));
 }
 
+function askWebhook(id: string): void {
+    askAdmissionWebhook(id)
+        .then((result) => {
+            window.alert(`Webhook for ${id}: ${result}`);
+            return list.load(list.current.value);
+        })
+        .catch((error) => window.alert(`Webhook for ${id} not asked: ${error?.response?.status ?? error}`));
+}
+
 function resetKey(id: string): void {
     if (!window.confirm(`Reset the key of device ${id}? Its next registration sets a new key. Do this only while the device is set up again.`)) return;
     resetPeerKey(id)
@@ -138,5 +160,8 @@ function resetKey(id: string): void {
         .catch((error) => window.alert(`Key of ${id} not reset: ${error?.response?.status ?? error}`));
 }
 
-onMounted(() => list.load(1));
+onMounted(() => {
+    list.load(1);
+    getAdmissionWebhook().then((info) => (webhook.value = info)).catch(() => undefined);
+});
 </script>

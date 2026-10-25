@@ -688,6 +688,73 @@
         ]
       }
     },
+    "/api/peers/{id}/admission-check": {
+      "post": {
+        "tags": [
+          "peer"
+        ],
+        "summary": "Ask the admission webhook about a device",
+        "description": "Admin-only. Calls the webhook now for a pending device and returns its stored result (design-device-admission.md §5). 404 unknown device, 503 no webhook, 409 not pending.",
+        "operationId": "peer_admission_check",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdmissionCheckResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "authorization_admin": []
+          }
+        ]
+      }
+    },
+    "/api/admission/webhook": {
+      "get": {
+        "tags": [
+          "peer"
+        ],
+        "summary": "Admission webhook settings",
+        "description": "Admin-only. Whether a webhook is set, its URL and the public key receivers verify with.",
+        "operationId": "admission_webhook_info",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdmissionWebhookInfo"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "authorization_admin": []
+          }
+        ]
+      }
+    },
     "/api/audits/file": {
       "get": {
         "tags": [
@@ -3575,6 +3642,38 @@
           "rejected"
         ]
       },
+      "AdmissionCheckResponse": {
+        "description": "Result of an admission webhook check.",
+        "type": "object",
+        "required": [
+          "result"
+        ],
+        "properties": {
+          "result": {
+            "type": "string"
+          }
+        }
+      },
+      "AdmissionWebhookInfo": {
+        "description": "Admission webhook settings.",
+        "type": "object",
+        "required": [
+          "enabled",
+          "public_key",
+          "url"
+        ],
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "url": {
+            "type": "string"
+          },
+          "public_key": {
+            "type": "string"
+          }
+        }
+      },
       "AuditPage_for_AuditFileLog": {
         "type": "object",
         "required": [
@@ -4388,6 +4487,15 @@
           },
           "admission": {
             "$ref": "#/components/schemas/Admission"
+          },
+          "admission_webhook_at": {
+            "description": "When the admission webhook was last called for this device, and its result.",
+            "type": "string",
+            "nullable": true
+          },
+          "admission_webhook_result": {
+            "type": "string",
+            "nullable": true
           }
         }
       },

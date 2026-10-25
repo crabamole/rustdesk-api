@@ -63,4 +63,18 @@ export interface Peer {
      * @memberof Peer
      */
     admission: Admission;
+
+    /**
+     * When the admission webhook was last called for this device, and its result.
+     *
+     * @type {string}
+     * @memberof Peer
+     */
+    admission_webhook_at?: string | null;
+
+    /**
+     * @type {string}
+     * @memberof Peer
+     */
+    admission_webhook_result?: string | null;
 }

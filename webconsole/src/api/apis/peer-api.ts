@@ -17,7 +17,9 @@ import { Configuration } from '../configuration';
 // Some imports not used depending on template conditions
 // @ts-ignore
 import { BASE_PATH, COLLECTION_FORMATS, RequestArgs, BaseAPI, RequiredError } from '../base';
+import { AdmissionCheckResponse } from '../models';
 import { AdmissionRequest } from '../models';
+import { AdmissionWebhookInfo } from '../models';
 import { CpuCount } from '../models';
 import { HeartbeatRequest } from '../models';
 import { HeartbeatResponse } from '../models';
@@ -31,6 +33,49 @@ import { ViewerList } from '../models';
  */
 export const PeerApiAxiosParamCreator = function (configuration?: Configuration) {
     return {
+        /**
+         * Admin-only. Whether a webhook is set, its URL and the public key receivers verify with.
+         * @summary Admission webhook settings
+         * @param {*} [options] Override http request option.
+         * @throws {RequiredError}
+         */
+        admissionWebhookInfo: async (options: AxiosRequestConfig = {}): Promise<RequestArgs> => {
+            const localVarPath = `/api/admission/webhook`;
+            // use dummy base URL string because the URL constructor only accepts absolute URLs.
+            const localVarUrlObj = new URL(localVarPath, 'https://example.com');
+            let baseOptions;
+            if (configuration) {
+                baseOptions = configuration.baseOptions;
+            }
+            const localVarRequestOptions :AxiosRequestConfig = { method: 'GET', ...baseOptions, ...options};
+            const localVarHeaderParameter = {} as any;
+            const localVarQueryParameter = {} as any;
+
+            // authentication authorization_admin required
+            // http bearer authentication required
+            if (configuration && configuration.accessToken) {
+                const accessToken = typeof configuration.accessToken === 'function'
+                    ? await configuration.accessToken()
+                    : await configuration.accessToken;
+                localVarHeaderParameter["Authorization"] = "Bearer " + accessToken;
+            }
+
+            const query = new URLSearchParams(localVarUrlObj.search);
+            for (const key in localVarQueryParameter) {
+                query.set(key, localVarQueryParameter[key]);
+            }
+            for (const key in options.params) {
+                query.set(key, options.params[key]);
+            }
+            localVarUrlObj.search = (new URLSearchParams(query)).toString();
+            let headersFromBaseOptions = baseOptions && baseOptions.headers ? baseOptions.headers : {};
+            localVarRequestOptions.headers = {...localVarHeaderParameter, ...headersFromBaseOptions, ...options.headers};
+
+            return {
+                url: localVarUrlObj.pathname + localVarUrlObj.search + localVarUrlObj.hash,
+                options: localVarRequestOptions,
+            };
+        },
         /**
          * This function is an API endpoint that is frequently hit by the client at the /api/heartbeat endpoint. It updates the `last_online` field of the peer. It is tagged with \"peer\" for OpenAPI documentation.  ## Parameters  - `request`: The request data, which includes the heartbeat information.  ## Returns  the device policy when the device's `modified_at` differs from it.  <br>
          * @summary Heartbeat
@@ -126,6 +171,55 @@ export const PeerApiAxiosParamCreator = function (configuration?: Configuration)
             localVarRequestOptions.headers = {...localVarHeaderParameter, ...headersFromBaseOptions, ...options.headers};
             const needsSerialization = (typeof body !== "string") || localVarRequestOptions.headers['Content-Type'] === 'application/json';
             localVarRequestOptions.data =  needsSerialization ? JSON.stringify(body !== undefined ? body : {}) : (body || "");
+
+            return {
+                url: localVarUrlObj.pathname + localVarUrlObj.search + localVarUrlObj.hash,
+                options: localVarRequestOptions,
+            };
+        },
+        /**
+         * Admin-only. Calls the webhook now for a pending device and returns its stored result (design-device-admission.md §5). 404 unknown device, 503 no webhook, 409 not pending.
+         * @summary Ask the admission webhook about a device
+         * @param {string} id 
+         * @param {*} [options] Override http request option.
+         * @throws {RequiredError}
+         */
+        peerAdmissionCheck: async (id: string, options: AxiosRequestConfig = {}): Promise<RequestArgs> => {
+            // verify required parameter 'id' is not null or undefined
+            if (id === null || id === undefined) {
+                throw new RequiredError('id','Required parameter id was null or undefined when calling peerAdmissionCheck.');
+            }
+            const localVarPath = `/api/peers/{id}/admission-check`
+                .replace(`{${"id"}}`, encodeURIComponent(String(id)));
+            // use dummy base URL string because the URL constructor only accepts absolute URLs.
+            const localVarUrlObj = new URL(localVarPath, 'https://example.com');
+            let baseOptions;
+            if (configuration) {
+                baseOptions = configuration.baseOptions;
+            }
+            const localVarRequestOptions :AxiosRequestConfig = { method: 'POST', ...baseOptions, ...options};
+            const localVarHeaderParameter = {} as any;
+            const localVarQueryParameter = {} as any;
+
+            // authentication authorization_admin required
+            // http bearer authentication required
+            if (configuration && configuration.accessToken) {
+                const accessToken = typeof configuration.accessToken === 'function'
+                    ? await configuration.accessToken()
+                    : await configuration.accessToken;
+                localVarHeaderParameter["Authorization"] = "Bearer " + accessToken;
+            }
+
+            const query = new URLSearchParams(localVarUrlObj.search);
+            for (const key in localVarQueryParameter) {
+                query.set(key, localVarQueryParameter[key]);
+            }
+            for (const key in options.params) {
+                query.set(key, options.params[key]);
+            }
+            localVarUrlObj.search = (new URLSearchParams(query)).toString();
+            let headersFromBaseOptions = baseOptions && baseOptions.headers ? baseOptions.headers : {};
+            localVarRequestOptions.headers = {...localVarHeaderParameter, ...headersFromBaseOptions, ...options.headers};
 
             return {
                 url: localVarUrlObj.pathname + localVarUrlObj.search + localVarUrlObj.hash,
@@ -510,6 +604,19 @@ export const PeerApiAxiosParamCreator = function (configuration?: Configuration)
 export const PeerApiFp = function(configuration?: Configuration) {
     return {
         /**
+         * Admin-only. Whether a webhook is set, its URL and the public key receivers verify with.
+         * @summary Admission webhook settings
+         * @param {*} [options] Override http request option.
+         * @throws {RequiredError}
+         */
+        async admissionWebhookInfo(options?: AxiosRequestConfig): Promise<(axios?: AxiosInstance, basePath?: string) => Promise<AxiosResponse<AdmissionWebhookInfo>>> {
+            const localVarAxiosArgs = await PeerApiAxiosParamCreator(configuration).admissionWebhookInfo(options);
+            return (axios: AxiosInstance = globalAxios, basePath: string = BASE_PATH) => {
+                const axiosRequestArgs :AxiosRequestConfig = {...localVarAxiosArgs.options, url: basePath + localVarAxiosArgs.url};
+                return axios.request(axiosRequestArgs);
+            };
+        },
+        /**
          * This function is an API endpoint that is frequently hit by the client at the /api/heartbeat endpoint. It updates the `last_online` field of the peer. It is tagged with \"peer\" for OpenAPI documentation.  ## Parameters  - `request`: The request data, which includes the heartbeat information.  ## Returns  the device policy when the device's `modified_at` differs from it.  <br>
          * @summary Heartbeat
          * @param {HeartbeatRequest} body 
@@ -533,6 +640,20 @@ export const PeerApiFp = function(configuration?: Configuration) {
          */
         async peerAdmission(body: AdmissionRequest, id: string, options?: AxiosRequestConfig): Promise<(axios?: AxiosInstance, basePath?: string) => Promise<AxiosResponse<void>>> {
             const localVarAxiosArgs = await PeerApiAxiosParamCreator(configuration).peerAdmission(body, id, options);
+            return (axios: AxiosInstance = globalAxios, basePath: string = BASE_PATH) => {
+                const axiosRequestArgs :AxiosRequestConfig = {...localVarAxiosArgs.options, url: basePath + localVarAxiosArgs.url};
+                return axios.request(axiosRequestArgs);
+            };
+        },
+        /**
+         * Admin-only. Calls the webhook now for a pending device and returns its stored result (design-device-admission.md §5). 404 unknown device, 503 no webhook, 409 not pending.
+         * @summary Ask the admission webhook about a device
+         * @param {string} id 
+         * @param {*} [options] Override http request option.
+         * @throws {RequiredError}
+         */
+        async peerAdmissionCheck(id: string, options?: AxiosRequestConfig): Promise<(axios?: AxiosInstance, basePath?: string) => Promise<AxiosResponse<AdmissionCheckResponse>>> {
+            const localVarAxiosArgs = await PeerApiAxiosParamCreator(configuration).peerAdmissionCheck(id, options);
             return (axios: AxiosInstance = globalAxios, basePath: string = BASE_PATH) => {
                 const axiosRequestArgs :AxiosRequestConfig = {...localVarAxiosArgs.options, url: basePath + localVarAxiosArgs.url};
                 return axios.request(axiosRequestArgs);
@@ -653,6 +774,15 @@ export const PeerApiFp = function(configuration?: Configuration) {
 export const PeerApiFactory = function (configuration?: Configuration, basePath?: string, axios?: AxiosInstance) {
     return {
         /**
+         * Admin-only. Whether a webhook is set, its URL and the public key receivers verify with.
+         * @summary Admission webhook settings
+         * @param {*} [options] Override http request option.
+         * @throws {RequiredError}
+         */
+        async admissionWebhookInfo(options?: AxiosRequestConfig): Promise<AxiosResponse<AdmissionWebhookInfo>> {
+            return PeerApiFp(configuration).admissionWebhookInfo(options).then((request) => request(axios, basePath));
+        },
+        /**
          * This function is an API endpoint that is frequently hit by the client at the /api/heartbeat endpoint. It updates the `last_online` field of the peer. It is tagged with \"peer\" for OpenAPI documentation.  ## Parameters  - `request`: The request data, which includes the heartbeat information.  ## Returns  the device policy when the device's `modified_at` differs from it.  <br>
          * @summary Heartbeat
          * @param {HeartbeatRequest} body 
@@ -672,6 +802,16 @@ export const PeerApiFactory = function (configuration?: Configuration, basePath?
          */
         async peerAdmission(body: AdmissionRequest, id: string, options?: AxiosRequestConfig): Promise<AxiosResponse<void>> {
             return PeerApiFp(configuration).peerAdmission(body, id, options).then((request) => request(axios, basePath));
+        },
+        /**
+         * Admin-only. Calls the webhook now for a pending device and returns its stored result (design-device-admission.md §5). 404 unknown device, 503 no webhook, 409 not pending.
+         * @summary Ask the admission webhook about a device
+         * @param {string} id 
+         * @param {*} [options] Override http request option.
+         * @throws {RequiredError}
+         */
+        async peerAdmissionCheck(id: string, options?: AxiosRequestConfig): Promise<AxiosResponse<AdmissionCheckResponse>> {
+            return PeerApiFp(configuration).peerAdmissionCheck(id, options).then((request) => request(axios, basePath));
         },
         /**
          * Admin-only. One page of all devices ordered by ID, for the console.  ## Parameters  - `current`: page number, from 1 (default 1). - `pageSize`: devices per page (default 10, at most 1000). - `status`: only devices with this status (`1` = enabled). - `admission`: only devices in this admission state (0 pending, 1 admitted, 2 rejected). - `q`: case-insensitive substring of the ID or hostname.  `total` counts every matching device, not just this page.  GET /api/peer-list?current=1&pageSize=10&q=laptop
@@ -761,6 +901,16 @@ export const PeerApiFactory = function (configuration?: Configuration, basePath?
  */
 export class PeerApi extends BaseAPI {
     /**
+     * Admin-only. Whether a webhook is set, its URL and the public key receivers verify with.
+     * @summary Admission webhook settings
+     * @param {*} [options] Override http request option.
+     * @throws {RequiredError}
+     * @memberof PeerApi
+     */
+    public async admissionWebhookInfo(options?: AxiosRequestConfig) : Promise<AxiosResponse<AdmissionWebhookInfo>> {
+        return PeerApiFp(this.configuration).admissionWebhookInfo(options).then((request) => request(this.axios, this.basePath));
+    }
+    /**
      * This function is an API endpoint that is frequently hit by the client at the /api/heartbeat endpoint. It updates the `last_online` field of the peer. It is tagged with \"peer\" for OpenAPI documentation.  ## Parameters  - `request`: The request data, which includes the heartbeat information.  ## Returns  the device policy when the device's `modified_at` differs from it.  <br>
      * @summary Heartbeat
      * @param {HeartbeatRequest} body 
@@ -782,6 +932,17 @@ export class PeerApi extends BaseAPI {
      */
     public async peerAdmission(body: AdmissionRequest, id: string, options?: AxiosRequestConfig) : Promise<AxiosResponse<void>> {
         return PeerApiFp(this.configuration).peerAdmission(body, id, options).then((request) => request(this.axios, this.basePath));
+    }
+    /**
+     * Admin-only. Calls the webhook now for a pending device and returns its stored result (design-device-admission.md §5). 404 unknown device, 503 no webhook, 409 not pending.
+     * @summary Ask the admission webhook about a device
+     * @param {string} id 
+     * @param {*} [options] Override http request option.
+     * @throws {RequiredError}
+     * @memberof PeerApi
+     */
+    public async peerAdmissionCheck(id: string, options?: AxiosRequestConfig) : Promise<AxiosResponse<AdmissionCheckResponse>> {
+        return PeerApiFp(this.configuration).peerAdmissionCheck(id, options).then((request) => request(this.axios, this.basePath));
     }
     /**
      * Admin-only. One page of all devices ordered by ID, for the console.  ## Parameters  - `current`: page number, from 1 (default 1). - `pageSize`: devices per page (default 10, at most 1000). - `status`: only devices with this status (`1` = enabled). - `admission`: only devices in this admission state (0 pending, 1 admitted, 2 rejected). - `q`: case-insensitive substring of the ID or hostname.  `total` counts every matching device, not just this page.  GET /api/peer-list?current=1&pageSize=10&q=laptop
