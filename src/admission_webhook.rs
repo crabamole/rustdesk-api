@@ -266,4 +266,25 @@ mod tests {
         let (_, peers) = state.get_peers(Some("wc1"), None, None, 0, 10).await.unwrap();
         assert_eq!(peers[0].admission_webhook_result.as_deref(), Some(msg.as_str()));
     }
+
+    #[rocket::async_test]
+    async fn redirect_is_not_followed() {
+        let (target, target_seen) = stub(200, r#"{"decision":"admit"}"#, Default::default()).await;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/admission", listener.local_addr().unwrap());
+        tokio::spawn(async move {
+            while let Ok((mut sock, _)) = listener.accept().await {
+                let mut chunk = [0u8; 4096];
+                let _ = sock.read(&mut chunk).await;
+                let resp = format!("HTTP/1.1 307 X\r\nlocation: {target}\r\ncontent-length: 0\r\nconnection: close\r\n\r\n");
+                let _ = sock.write_all(resp.as_bytes()).await;
+            }
+        });
+        let (state, store) = pending("wr1").await;
+        assert_eq!(webhook(&url).check(&store, "wr1").await, CheckOutcome::Failed("HTTP 307".into()));
+        let (_, peers) = state.get_peers(Some("wr1"), None, None, 0, 10).await.unwrap();
+        assert_eq!(peers[0].admission_webhook_result.as_deref(), Some("HTTP 307"));
+        assert_eq!(state.device_admission("wr1", "dXVpZA==").await, Some(Admission::Pending));
+        assert!(target_seen.lock().unwrap().is_none(), "redirect target must not be called");
+    }
 }
