@@ -173,6 +173,8 @@ Upstream clients log in by polling `GET /api/oidc/auth-query`; that login is not
 | GET | /api/peers/cpus | admin-only cpu count per peer |
 | POST | /api/peers/{id}/reset-key | admin-only: empties the device's registered key and owner, so its next registration sets a new key (rustdesk `docs/design-device-key-change.md`); 404 for an unknown ID |
 | POST | /api/peers/{id}/admission | admin-only: body `{"admission":"pending\|admitted\|rejected"}`; logged to the console log (iop 29-31); 404 for an unknown ID (rustdesk `docs/design-device-admission.md`) |
+| POST | /api/peers/{id}/admission-check | ours; admin-only: asks the admission webhook about a pending device now; `{"result": "admit\|reject\|pending\|<error>"}`; 404 unknown device, 503 no webhook, 409 not pending (`docs/admission-webhook.md`) |
+| GET | /api/admission/webhook | ours; admin-only: `{"enabled", "url", "public_key"}` of the admission webhook |
 | GET | /api/audits/login | admin-only login audit: one row per OIDC login that reached the callback, with its outcome; `user` (LIKE) and `outcome` filters, per audit-api-spec.md §9 |
 | GET | /api/viewers | admin-only paginated list of machines whose native client logged in through OIDC but never registered with hbbs; one row per machine and user, with the latest login address (`login_ip`) |
 | GET | /api/software/version/server | server version (web console footer) |

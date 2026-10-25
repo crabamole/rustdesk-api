@@ -2892,3 +2892,18 @@ async fn test_console_log_skips_changes_that_changed_nothing() {
 
     assert_eq!(console_total(&client, &admin).await, before);
 }
+
+#[rocket::async_test]
+async fn test_admission_check_route_without_webhook() {
+    let (client, _dir) = test_client().await;
+    let admin = login_admin(&client).await;
+    let state = client.rocket().state::<state::ApiState>().unwrap();
+    state.test_register_device("devwh", "ZGM=").await;
+    state.set_device_admission("devwh", utils::Admission::Pending, "cli").await;
+    let post = |uri: &'static str| client.post(uri).header(auth_header(&admin));
+    assert_eq!(post("/api/peers/devwh/admission-check").dispatch().await.status(), Status::ServiceUnavailable);
+    assert_eq!(post("/api/peers/nobody/admission-check").dispatch().await.status(), Status::NotFound);
+    let resp = client.get("/api/admission/webhook").header(auth_header(&admin)).dispatch().await;
+    let body: Value = resp.into_json().await.unwrap();
+    assert_eq!(body["enabled"], false);
+}

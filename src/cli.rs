@@ -34,6 +34,9 @@ pub enum Command {
     /// Manage registered devices (needs DATABASE_URL)
     #[command(subcommand)]
     Peer(PeerCommand),
+    /// Device admission webhook key (design-device-admission.md §5)
+    #[command(subcommand)]
+    Admission(AdmissionCommand),
     /// Check the OIDC provider file
     #[command(subcommand)]
     Oidc(OidcCommand),
@@ -144,9 +147,38 @@ pub async fn run_policy(cmd: &PolicyCommand, db_url: &str) -> Result<String, Str
 }
 
 #[derive(Subcommand, Debug)]
+pub enum AdmissionCommand {
+    /// Print a new webhook signing keypair for the admission webhook Secret
+    Keygen,
+    /// Print the public key of ADMISSION_WEBHOOK_KEY, for the webhook receiver
+    Pubkey,
+}
+
+/// `id_ed25519=<private>` and `id_ed25519.pub=<public>` lines.
+pub fn run_admission_keygen() -> String {
+    let (private, public) = crate::admission_webhook::generate_key_b64();
+    format!("id_ed25519={private}\nid_ed25519.pub={public}")
+}
+
+pub fn run_admission(cmd: &AdmissionCommand) -> Result<String, String> {
+    match cmd {
+        AdmissionCommand::Keygen => Ok(run_admission_keygen()),
+        AdmissionCommand::Pubkey => {
+            let key = std::env::var("ADMISSION_WEBHOOK_KEY").map_err(|_| "ADMISSION_WEBHOOK_KEY is not set".to_string())?;
+            Ok(crate::admission_webhook::AdmissionWebhook::new("", &key)?.public_key_b64())
+        }
+    }
+}
+
+#[derive(Subcommand, Debug)]
 pub enum PeerCommand {
     /// Let device ID take a new key at its next registration, e.g. after a reinstall; also ends its owner
     ResetKey {
+        /// The device's RustDesk ID
+        id: String,
+    },
+    /// Ask the admission webhook about a pending device now
+    AdmissionCheck {
         /// The device's RustDesk ID
         id: String,
     },
@@ -179,6 +211,19 @@ pub async fn run_peer(cmd: &PeerCommand, db_url: &str) -> Result<String, String>
             state.log_console(None, utils::console_log::TYP_DEVICE, utils::console_log::IOP_RESET_DEVICE_KEY, serde_json::json!({ "device": id, "via": "cli" })).await;
             return Ok(format!("{id}: key reset; its next registration sets the key"));
         }
+        PeerCommand::AdmissionCheck { id } => {
+            let w = crate::admission_webhook::AdmissionWebhook::from_env()?.ok_or("ADMISSION_WEBHOOK_URL is not set")?;
+            let store = state.admission_store();
+            if !store.is_registered(id).await {
+                return Err(format!("no device {id}"));
+            }
+            return Ok(match w.check(&store, id).await {
+                crate::admission_webhook::CheckOutcome::NotPending => format!("{id}: not pending; nothing asked"),
+                crate::admission_webhook::CheckOutcome::Decided(a) => format!("{id}: webhook decided {}", if a == utils::Admission::Admitted { "admit" } else { "reject" }),
+                crate::admission_webhook::CheckOutcome::StillPending => format!("{id}: webhook answered pending"),
+                crate::admission_webhook::CheckOutcome::Failed(e) => format!("{id}: webhook failed: {e}"),
+            });
+        }
         PeerCommand::Admit { id } => (id, utils::Admission::Admitted),
         PeerCommand::Reject { id } => (id, utils::Admission::Rejected),
         PeerCommand::Pending { id } => (id, utils::Admission::Pending),
@@ -196,6 +241,22 @@ pub async fn run_peer(cmd: &PeerCommand, db_url: &str) -> Result<String, String>
 mod tests {
     use super::*;
     use clap::error::ErrorKind;
+
+    #[test]
+    fn admission_commands_parse() {
+        assert!(matches!(Cli::try_parse_from(["rustdesk-api", "admission", "keygen"]).unwrap().command, Command::Admission(AdmissionCommand::Keygen)));
+        assert!(matches!(Cli::try_parse_from(["rustdesk-api", "admission", "pubkey"]).unwrap().command, Command::Admission(AdmissionCommand::Pubkey)));
+        assert!(matches!(Cli::try_parse_from(["rustdesk-api", "peer", "admission-check", "7"]).unwrap().command, Command::Peer(PeerCommand::AdmissionCheck { id }) if id == "7"));
+    }
+
+    #[test]
+    fn keygen_prints_a_usable_keypair() {
+        let out = run_admission_keygen();
+        let private = out.lines().find_map(|l| l.strip_prefix("id_ed25519=")).unwrap();
+        let public = out.lines().find_map(|l| l.strip_prefix("id_ed25519.pub=")).unwrap();
+        let w = crate::admission_webhook::AdmissionWebhook::new("https://x", private).unwrap();
+        assert_eq!(w.public_key_b64(), public);
+    }
 
     #[test]
     fn no_arguments_shows_help() {

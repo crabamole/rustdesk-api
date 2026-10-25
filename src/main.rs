@@ -14,7 +14,7 @@
 // You should have received a copy of the Affero General Public License
 // along with SCTGDesk. If not, see <https://www.gnu.org/licenses/agpl-3.0.html>.
 use rocket::data::{Limits, ToByteUnit};
-use rustdesk_api::cli::{providers_file, run_admin, run_peer, run_policy, run_oidc_check, run_openapi, Cli, Command, OidcCommand};
+use rustdesk_api::cli::{providers_file, run_admin, run_admission, run_peer, run_policy, run_oidc_check, run_openapi, Cli, Command, OidcCommand};
 use rustdesk_api::{build_rocket, database_url_from_env};
 use clap::Parser;
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
@@ -48,6 +48,7 @@ async fn main() -> Result<(), rocket::Error> {
         Command::Admin(cmd) => finish(run_admin(&cmd, &db_url_or_exit()).await),
         Command::Policy(cmd) => finish(run_policy(&cmd, &db_url_or_exit()).await),
         Command::Peer(cmd) => finish(run_peer(&cmd, &db_url_or_exit()).await),
+        Command::Admission(cmd) => finish(run_admission(&cmd)),
         Command::Oidc(OidcCommand::Check { file }) => finish(run_oidc_check(&providers_file(file.as_deref())).await),
         Command::Openapi => finish(run_openapi()),
     };

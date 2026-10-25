@@ -78,6 +78,7 @@ use utils::{
 type AuthenticatedUser = state::AuthenticatedUser<BearerAuthToken>;
 type AuthenticatedAdmin = state::AuthenticatedAdmin<BearerAuthToken>;
 
+use rocket_okapi::okapi::schemars;
 use rocket_okapi::{openapi, openapi_get_routes_spec};
 use uuid::Uuid;
 
@@ -319,6 +320,8 @@ pub fn api_routes() -> (Vec<rocket::Route>, rocket_okapi::okapi::openapi3::OpenA
         audits_conn_disconnect,
         peer_reset_key,
         peer_admission,
+        peer_admission_check,
+        admission_webhook_info,
         audits_file,
         audits_alarm,
         audits_clipboard,
@@ -381,6 +384,19 @@ pub async fn build_rocket(figment: Figment, db_url: &str) -> Rocket<Build> {
 /// The server's external origin from `PUBLIC_URL`; required, since request headers can be forged.
 pub struct PublicUrl(pub String);
 
+/// The admission webhook, when `ADMISSION_WEBHOOK_URL` is set (design-device-admission.md §5).
+pub struct WebhookState(pub Option<Arc<admission_webhook::AdmissionWebhook>>);
+
+/// Asks the webhook about device `id` in the background; the caller does not wait.
+fn spawn_admission_check(state: &ApiState, webhook: &WebhookState, id: &str) {
+    let Some(w) = webhook.0.clone() else { return };
+    let store = state.admission_store();
+    let id = id.to_string();
+    tokio::spawn(async move {
+        w.check(&store, &id).await;
+    });
+}
+
 pub async fn build_rocket_with_db(figment: Figment, db_path: &str) -> Rocket<Build> {
     let state = ApiState::new_with_db(db_path).await;
     let public_url = figment.extract_inner::<String>("public_url").ok().and_then(|v| parse_public_url(&v).ok());
@@ -388,6 +404,7 @@ pub async fn build_rocket_with_db(figment: Figment, db_path: &str) -> Rocket<Bui
     // SIGTERM is handled by `Drain`, which stops Rocket once proxies have moved on.
     let figment = figment.merge(("shutdown.ctrlc", false)).merge(("shutdown.signals", Vec::<String>::new()));
     let drain = Arc::new(Drain::new());
+    let webhook = admission_webhook::AdmissionWebhook::from_env();
     let rocket = rocket::custom(figment)
         .attach(CORS)
         .attach(AccessLog)
@@ -403,6 +420,13 @@ pub async fn build_rocket_with_db(figment: Figment, db_path: &str) -> Rocket<Bui
         ])
         .manage(state)
         .manage(drain);
+    let rocket = match webhook {
+        Ok(w) => rocket.manage(WebhookState(w.map(Arc::new))),
+        Err(e) => rocket.attach(rocket::fairing::AdHoc::try_on_ignite("ADMISSION_WEBHOOK", move |r| async move {
+            log::error!("{e}");
+            Err(r)
+        })),
+    };
     let rocket = match public_url {
         Some(url) => rocket.manage(PublicUrl(url)),
         None => rocket.attach(rocket::fairing::AdHoc::try_on_ignite("PUBLIC_URL", |r| async {
@@ -871,6 +895,59 @@ async fn peer_admission(
     Ok(())
 }
 
+/// Result of an admission webhook check.
+#[derive(serde::Serialize, rocket_okapi::JsonSchema)]
+struct AdmissionCheckResponse {
+    result: String,
+}
+
+/// Admission webhook settings.
+#[derive(serde::Serialize, rocket_okapi::JsonSchema)]
+struct AdmissionWebhookInfo {
+    enabled: bool,
+    url: String,
+    public_key: String,
+}
+
+/// # Ask the admission webhook about a device
+///
+/// Admin-only. Calls the webhook now for a pending device and returns its stored result
+/// (design-device-admission.md §5). 404 unknown device, 503 no webhook, 409 not pending.
+#[openapi(tag = "peer")]
+#[post("/api/peers/<id>/admission-check")]
+async fn peer_admission_check(
+    state: &State<ApiState>,
+    webhook: &State<WebhookState>,
+    _user: AuthenticatedAdmin,
+    id: &str,
+) -> Result<Json<AdmissionCheckResponse>, Status> {
+    let store = state.admission_store();
+    if !store.is_registered(id).await {
+        return Err(Status::NotFound);
+    }
+    let Some(w) = webhook.0.as_ref() else { return Err(Status::ServiceUnavailable) };
+    let result = match w.check(&store, id).await {
+        admission_webhook::CheckOutcome::NotPending => return Err(Status::Conflict),
+        admission_webhook::CheckOutcome::Decided(utils::Admission::Admitted) => "admit".to_string(),
+        admission_webhook::CheckOutcome::Decided(_) => "reject".to_string(),
+        admission_webhook::CheckOutcome::StillPending => "pending".to_string(),
+        admission_webhook::CheckOutcome::Failed(e) => e,
+    };
+    Ok(Json(AdmissionCheckResponse { result }))
+}
+
+/// # Admission webhook settings
+///
+/// Admin-only. Whether a webhook is set, its URL and the public key receivers verify with.
+#[openapi(tag = "peer")]
+#[get("/api/admission/webhook")]
+async fn admission_webhook_info(webhook: &State<WebhookState>, _user: AuthenticatedAdmin) -> Json<AdmissionWebhookInfo> {
+    Json(match webhook.0.as_ref() {
+        Some(w) => AdmissionWebhookInfo { enabled: true, url: w.url().to_string(), public_key: w.public_key_b64() },
+        None => AdmissionWebhookInfo { enabled: false, url: String::new(), public_key: String::new() },
+    })
+}
+
 /// Audit clipboard text that arrived on a device
 ///
 /// Answers an empty body once the record is stored and `{"error": ...}` otherwise; the client
@@ -1089,13 +1166,17 @@ async fn heartbeat(state: &State<ApiState>, request: device_call::SignedDevice<H
 ///
 #[openapi(tag = "peer")]
 #[post("/api/sysinfo", format = "application/json", data = "<request>")]
-async fn sysinfo(state: &State<ApiState>, request: device_call::SignedDevice<utils::SystemInfo>) -> String {
+async fn sysinfo(state: &State<ApiState>, webhook: &State<WebhookState>, request: device_call::SignedDevice<utils::SystemInfo>) -> String {
     let sysinfo = request.0;
+    let id = sysinfo.id.clone();
     let res = state.update_systeminfo(sysinfo).await;
 
     if res.is_none() {
         return "ID_NOT_FOUND".to_string();
     } else {
+        if let Some(id) = id.as_deref() {
+            spawn_admission_check(state, webhook, id);
+        }
         return "SYSINFO_UPDATED".to_string();
     }
 }
@@ -1832,11 +1913,15 @@ enum OidcCallbackResponse {
 #[post("/api/oidc/token", format = "application/json", data = "<request>")]
 async fn oidc_token(
     state: &State<ApiState>,
+    webhook: &State<WebhookState>,
     request: Json<utils::OidcTokenRequest>,
 ) -> Result<Json<OidcResponse>, status::Custom<Json<serde_json::Value>>> {
     let Some((token, username, userinfo)) = state.oidc_redeem(&request).await else {
         return Err(status::Custom(Status::BadRequest, Json(serde_json::json!({ "error": "Login failed" }))));
     };
+    if !request.owner_signature.is_empty() {
+        spawn_admission_check(state, webhook, &request.id);
+    }
     Ok(Json(OidcResponse {
         access_token: token.to_base64(),
         type_field: "access_token".to_string(),
