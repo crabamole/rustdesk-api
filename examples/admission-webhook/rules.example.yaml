@@ -1,3 +1,4 @@
+# Example only; not a supported product.
 # Example rules for receiver.py. First matching rule wins; a rule matches when any listed
 # condition matches. Hostnames are reported by the device itself.
 rules:

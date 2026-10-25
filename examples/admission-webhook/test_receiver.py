@@ -1,6 +1,12 @@
 """Tests for the example admission webhook receiver (an example, not a supported product).
 Run: python3 -m unittest test_receiver.py"""
 import base64
+import json
+import socket
+import threading
+import urllib.error
+import urllib.request
+from http.server import ThreadingHTTPServer
 import time
 import unittest
 
@@ -20,7 +26,7 @@ def header(body: bytes, t: int, key=KEY) -> str:
 
 RULES = {
     "rules": [
-        {"decision": "admit", "match": {"hostnames": ["CORP-WS-*"], "subnets": ["10.20.0.0/16"], "owner_groups": ["IT"]}},
+        {"decision": "admit", "match": {"hostnames": ["CORP-WS-*"], "subnets": ["192.0.2.0/24"], "owner_groups": ["IT"]}},
         {"decision": "reject", "match": {"hostnames": ["*-guest"]}},
     ],
     "default": "pending",
@@ -58,7 +64,7 @@ class DecideTest(unittest.TestCase):
 
     def test_first_match_wins_and_any_condition(self):
         self.assertEqual(receiver.decide(self.dev(hostname="corp-ws-7"), RULES), ("admit", "rule 1: admit"))
-        self.assertEqual(receiver.decide(self.dev(ip="10.20.3.4"), RULES), ("admit", "rule 1: admit"))
+        self.assertEqual(receiver.decide(self.dev(ip="192.0.2.4"), RULES), ("admit", "rule 1: admit"))
         self.assertEqual(receiver.decide(self.dev(owner={"name": "a", "email": "", "group": "IT"}), RULES), ("admit", "rule 1: admit"))
         self.assertEqual(receiver.decide(self.dev(hostname="LAB-GUEST"), RULES), ("reject", "rule 2: reject"))
 
@@ -66,6 +72,41 @@ class DecideTest(unittest.TestCase):
         self.assertEqual(receiver.decide(self.dev(hostname="other", ip="", owner=None), RULES), ("pending", "default"))
         self.assertEqual(receiver.decide(self.dev(ip="not-an-ip"), RULES), ("pending", "default"))
         self.assertEqual(receiver.decide(self.dev(), {"rules": []}), ("pending", "default"))
+
+
+class HttpTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        class H(receiver.Handler):
+            keys = KEYS
+            rules = RULES
+        cls.server = ThreadingHTTPServer(("127.0.0.1", 0), H)
+        cls.port = cls.server.server_address[1]
+        threading.Thread(target=cls.server.serve_forever, daemon=True).start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.server.shutdown()
+        cls.server.server_close()
+
+    def post(self, body: bytes, signed=True):
+        headers = {"X-Admission-Signature": header(body, int(time.time()))} if signed else {}
+        req = urllib.request.Request(f"http://127.0.0.1:{self.port}/admission", data=body, headers=headers)
+        try:
+            with urllib.request.urlopen(req) as r:
+                return r.status, json.loads(r.read())
+        except urllib.error.HTTPError as e:
+            with e:
+                return e.code, json.loads(e.read())
+
+    def test_http(self):
+        body = json.dumps({"id": "1", "hostname": "corp-ws-1"}).encode()
+        self.assertEqual(self.post(body), (200, {"decision": "admit", "reason": "rule 1: admit"}))
+        self.assertEqual(self.post(body, signed=False)[0], 401)
+        self.assertEqual(self.post(b"[]")[0], 400)
+        with socket.create_connection(("127.0.0.1", self.port), timeout=5) as s:
+            s.sendall(b"POST / HTTP/1.1\r\nHost: x\r\nContent-Length: abc\r\n\r\n")
+            self.assertTrue(s.recv(1024).startswith(b"HTTP/1.0 400"))
 
 
 if __name__ == "__main__":

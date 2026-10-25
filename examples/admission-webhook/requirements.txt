@@ -1,2 +1,3 @@
+# Example only; not a supported product.
 cryptography>=42
 PyYAML>=6

@@ -18,6 +18,7 @@ from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
 HEADER = "X-Admission-Signature"
+MAX_BODY = 64 * 1024
 _HEADER_RE = re.compile(r"^t=(\d+),ed25519=([A-Za-z0-9+/=]+)$")
 
 
@@ -70,13 +71,38 @@ def decide(device: dict, rules: dict):
     return rules.get("default", "pending"), "default"
 
 
+def validate_rules(rules) -> None:
+    """Raise ValueError with a clear message when the rules file is not usable."""
+    if not isinstance(rules, dict):
+        raise ValueError("rules file must be a mapping")
+    if rules.get("default", "pending") not in ("admit", "reject", "pending"):
+        raise ValueError("default must be admit, reject or pending")
+    for i, rule in enumerate(rules.get("rules") or [], start=1):
+        if not isinstance(rule, dict) or rule.get("decision") not in ("admit", "reject"):
+            raise ValueError(f"rule {i}: decision must be admit or reject")
+        for net in (rule.get("match") or {}).get("subnets", []):
+            try:
+                ipaddress.ip_network(net, strict=False)
+            except ValueError:
+                raise ValueError(f"rule {i}: invalid subnet {net!r}") from None
+
+
 class Handler(BaseHTTPRequestHandler):
     keys: list = []
     rules: dict = {}
     max_age: int = 300
+    timeout = 10
 
     def do_POST(self):
-        body = self.rfile.read(int(self.headers.get("Content-Length") or 0))
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            return self._send(400, {"error": "invalid Content-Length"})
+        if length < 0:
+            return self._send(400, {"error": "invalid Content-Length"})
+        if length > MAX_BODY:
+            return self._send(413, {"error": "body too large"})
+        body = self.rfile.read(length)
         problem = verify(self.headers.get(HEADER, ""), body, self.keys, time.time(), self.max_age)
         if problem:
             logging.info("401 %s", problem)
@@ -85,6 +111,8 @@ class Handler(BaseHTTPRequestHandler):
             device = json.loads(body)
         except ValueError:
             return self._send(400, {"error": "invalid JSON"})
+        if not isinstance(device, dict):
+            return self._send(400, {"error": "body must be a JSON object"})
         decision, reason = decide(device, self.rules)
         logging.info("%s %s (%s)", device.get("id", "?"), decision, reason)
         self._send(200, {"decision": decision, "reason": reason})
@@ -106,6 +134,10 @@ def main():
     Handler.keys = load_keys(os.environ["PUBLIC_KEYS"])
     with open(os.environ.get("RULES_FILE", "/etc/admission-webhook/rules.yaml")) as f:
         Handler.rules = yaml.safe_load(f) or {}
+    try:
+        validate_rules(Handler.rules)
+    except ValueError as e:
+        raise SystemExit(f"invalid rules file: {e}")
     Handler.max_age = int(os.environ.get("MAX_AGE", "300"))
     port = int(os.environ.get("PORT", "8080"))
     logging.info("listening on %d with %d key(s), %d rule(s)", port, len(Handler.keys), len(Handler.rules.get("rules") or []))

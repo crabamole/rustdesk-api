@@ -7,6 +7,7 @@ Copy it and adapt it to your own inventory.
 The receiver checks the Ed25519 signature of each request.
 It answers `401` to an unsigned request, a wrongly signed request, or a request older than `MAX_AGE`.
 A signed request gets `200` with `{"decision": "admit|reject|pending", "reason": "..."}`.
+A body that is not a JSON object, or a bad `Content-Length`, gets `400`. A body over 64 KiB gets `413`.
 Any URL path is accepted.
 
 ## Environment
@@ -52,3 +53,5 @@ docker build -t admission-webhook-example .
 ```
 
 Mount the rules file at `/etc/admission-webhook/rules.yaml` and set `PUBLIC_KEYS`.
+The container runs as uid 1000, so the mounted rules file must be readable by uid 1000.
+The receiver exits with an error at start when the rules file is invalid.
