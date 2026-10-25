@@ -18,7 +18,6 @@ This website use:
                   class="mb-3 block w-full max-w-sm rounded-md border border-gray-300 p-2 text-sm">
                   <option :value="undefined">All devices</option>
                   <option :value="0">Pending</option>
-                  <option :value="1">Admitted</option>
                   <option :value="2">Rejected</option>
                 </select>
                 <div class="max-w-full overflow-x-auto">
@@ -83,10 +82,9 @@ This website use:
                         </td>
                         <td
                           class="text-dark border-b border-r border-[#E8E8E8] bg-[#F3F6FF] dark:border-dark dark:bg-dark-2 dark:text-dark-7 py-5 px-2 text-center text-base font-medium">
-                          <button v-for="a in admissions" :key="a" @click="admit(peer.id, a)" :data-testid="`device-${a}`"
-                            :disabled="peer.admission === a"
-                            class="mr-2 inline-block px-6 py-2.5 border rounded-md border-primary text-primary hover:bg-primary hover:text-white font-medium capitalize disabled:opacity-50">
-                            {{ a }}
+                          <button v-for="a in admissions.filter((x) => x.state !== peer.admission)" :key="a.state" @click="admit(peer.id, a.state)" :data-testid="a.testid"
+                            class="mr-2 inline-block px-6 py-2.5 border rounded-md border-primary text-primary hover:bg-primary hover:text-white font-medium">
+                            {{ a.label }}
                           </button>
                           <button @click="resetKey(peer.id)" data-testid="device-reset-key"
                             class="mr-2 inline-block px-6 py-2.5 border rounded-md border-primary text-primary hover:bg-primary hover:text-white font-medium">
@@ -118,14 +116,19 @@ import { Admission } from '@/api';
 
 const filter = ref<number | undefined>(undefined);
 const list = usePagedList((current, pageSize, q) => listPeers(current, pageSize, q, filter.value));
-const admissions = [Admission.Admitted, Admission.Rejected, Admission.Pending];
+const admissions = [
+    { state: Admission.Admitted, label: 'Admit', testid: 'device-admit' },
+    { state: Admission.Rejected, label: 'Reject', testid: 'device-reject' },
+    { state: Admission.Pending, label: 'Pending', testid: 'device-pending' },
+];
 
 watch(filter, () => list.load(1));
 
 function admit(id: string, admission: Admission): void {
+    if (admission === Admission.Rejected && !window.confirm(`Reject device ${id}? Nobody can connect to it.`)) return;
     setPeerAdmission(id, admission)
         .then(() => list.load())
-        .catch((error) => window.alert(`Admission of ${id} not set: ${error?.response?.status ?? error}`));
+        .catch((error) => window.alert(`Admission of ${id} not changed: ${error?.response?.status ?? error}`));
 }
 
 function resetKey(id: string): void {
