@@ -16,6 +16,7 @@
 mod api;
 mod device_call;
 mod extended_json;
+pub mod admission_webhook;
 pub mod cli;
 
 use std::collections::HashMap;

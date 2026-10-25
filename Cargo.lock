@@ -2755,6 +2755,7 @@ version = "3.8.1"
 dependencies = [
  "base64 0.22.1",
  "clap",
+ "ed25519-dalek",
  "env_logger",
  "getrandom 0.2.15",
  "include_dir",
