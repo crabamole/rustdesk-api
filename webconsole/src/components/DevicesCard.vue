@@ -14,6 +14,13 @@ This website use:
               <div class="w-full px-4">
                 <input v-model="list.q.value" type="search" placeholder="Search ID or hostname"
                   class="mb-3 block w-full max-w-sm rounded-md border border-gray-300 p-2 text-sm" />
+                <select v-model="filter" data-testid="device-admission-filter"
+                  class="mb-3 block w-full max-w-sm rounded-md border border-gray-300 p-2 text-sm">
+                  <option :value="undefined">All devices</option>
+                  <option :value="0">Pending</option>
+                  <option :value="1">Admitted</option>
+                  <option :value="2">Rejected</option>
+                </select>
                 <div class="max-w-full overflow-x-auto">
                   <table class="w-full table-auto">
                     <thead class="bg-slate-400">
@@ -24,6 +31,9 @@ This website use:
                         </th>
                         <th class="w-1/6 min-w-[160px] py-4 px-3 text-lg font-medium text-white lg:py-7 lg:px-4">
                           Status
+                        </th>
+                        <th class="w-1/6 min-w-[160px] py-4 px-3 text-lg font-medium text-white lg:py-7 lg:px-4">
+                          Admission
                         </th>
                         <th class="w-1/6 min-w-[160px] py-4 px-3 text-lg font-medium text-white lg:py-7 lg:px-4">
                           Username
@@ -51,6 +61,10 @@ This website use:
                           class="text-dark border-b border-[#E8E8E8] bg-white dark:border-dark dark:bg-dark-2 dark:text-dark-7 py-5 px-2 text-center text-base font-medium">
                           {{ peer.status }}<br/>{{ peer.last_online }}
                         </td>
+                        <td data-testid="device-admission"
+                          class="text-dark border-b border-[#E8E8E8] bg-[#F3F6FF] dark:bg-dark-3 dark:border-dark dark:text-dark-7 py-5 px-2 text-center text-base font-medium">
+                          {{ peer.admission }}
+                        </td>
                         <td
                           class="text-dark border-b border-[#E8E8E8] bg-[#F3F6FF] dark:bg-dark-3 dark:border-dark dark:text-dark-7 py-5 px-2 text-center text-base font-medium">
                           {{ peer.info.username }}
@@ -69,6 +83,11 @@ This website use:
                         </td>
                         <td
                           class="text-dark border-b border-r border-[#E8E8E8] bg-[#F3F6FF] dark:border-dark dark:bg-dark-2 dark:text-dark-7 py-5 px-2 text-center text-base font-medium">
+                          <button v-for="a in admissions" :key="a" @click="admit(peer.id, a)" :data-testid="`device-${a}`"
+                            :disabled="peer.admission === a"
+                            class="mr-2 inline-block px-6 py-2.5 border rounded-md border-primary text-primary hover:bg-primary hover:text-white font-medium capitalize disabled:opacity-50">
+                            {{ a }}
+                          </button>
                           <button @click="resetKey(peer.id)" data-testid="device-reset-key"
                             class="mr-2 inline-block px-6 py-2.5 border rounded-md border-primary text-primary hover:bg-primary hover:text-white font-medium">
                             Reset key
@@ -90,13 +109,24 @@ This website use:
         <!-- ====== Table Section End -->
 </template>
 <script setup lang="ts">
-import { onMounted } from 'vue';
+import { onMounted, ref, watch } from 'vue';
 import ClipboardButton from './ClipboardButton.vue';
 import ListPager from './ListPager.vue';
-import { listPeers, resetPeerKey } from '@/utilities/api';
+import { listPeers, resetPeerKey, setPeerAdmission } from '@/utilities/api';
 import { usePagedList } from '@/utilities/paged';
+import { Admission } from '@/api';
 
-const list = usePagedList(listPeers);
+const filter = ref<number | undefined>(undefined);
+const list = usePagedList((current, pageSize, q) => listPeers(current, pageSize, q, filter.value));
+const admissions = [Admission.Admitted, Admission.Rejected, Admission.Pending];
+
+watch(filter, () => list.load(1));
+
+function admit(id: string, admission: Admission): void {
+    setPeerAdmission(id, admission)
+        .then(() => list.load())
+        .catch((error) => window.alert(`Admission of ${id} not set: ${error?.response?.status ?? error}`));
+}
 
 function resetKey(id: string): void {
     if (!window.confirm(`Reset the key of device ${id}? Its next registration sets a new key. Do this only while the device is set up again.`)) return;

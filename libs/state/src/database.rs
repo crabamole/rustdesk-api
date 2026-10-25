@@ -24,6 +24,7 @@ use std::env;
 use std::time::Duration;
 use utils::guid_into_uuid;
 use utils::types::AddressBook;
+use utils::Admission;
 use utils::AbPeer;
 use utils::AbRule;
 use utils::AbTag;
@@ -1175,27 +1176,30 @@ impl Database {
 
     /// One page of peers ordered by ID; `q` is a substring of the ID or the reported hostname.
     /// With `owner`, only devices whose owner session is live and belongs to that active user.
-    pub async fn get_peers(&self, owner: Option<&[u8]>, q: Option<&str>, status: Option<i16>, offset: i64, limit: i64) -> Option<(i64, Vec<Peer>)> {
+    pub async fn get_peers(&self, owner: Option<&[u8]>, q: Option<&str>, status: Option<i16>, admission: Option<i16>, offset: i64, limit: i64) -> Option<(i64, Vec<Peer>)> {
         const WHERE: &str = "WHERE ($1::text IS NULL OR id ILIKE $1 \
                OR COALESCE(NULLIF(info, ''), '{}')::jsonb->>'hostname' ILIKE $1) \
              AND ($2::smallint IS NULL OR status = $2) \
              AND ($3::bytea IS NULL OR EXISTS (SELECT 1 FROM session s JOIN \"user\" u ON u.guid = s.\"user\" \
-               WHERE s.id = peer.owner_session AND s.\"user\" = $3 AND s.expiry_at > NOW()::text AND u.status = 1))";
+               WHERE s.id = peer.owner_session AND s.\"user\" = $3 AND s.expiry_at > NOW()::text AND u.status = 1)) \
+             AND ($4::smallint IS NULL OR admission = $4)";
         let q = q.map(like_contains);
         let total: i64 = sqlx::query_scalar(&format!("SELECT count(*) FROM peer {WHERE}"))
             .bind(&q)
             .bind(status)
             .bind(owner)
+            .bind(admission)
             .fetch_one(&self.pool)
             .await
             .map_err(|e| log::error!("get_peers count error: {e:?}"))
             .ok()?;
         let res = sqlx::query(&format!(
-            "SELECT guid, id, uuid, status, info, last_online FROM peer {WHERE} ORDER BY id, guid LIMIT $4 OFFSET $5"
+            "SELECT guid, id, uuid, status, info, last_online, admission FROM peer {WHERE} ORDER BY id, guid LIMIT $5 OFFSET $6"
         ))
         .bind(&q)
         .bind(status)
         .bind(owner)
+        .bind(admission)
         .bind(limit)
         .bind(offset)
         .fetch_all(&self.pool)
@@ -1226,6 +1230,7 @@ impl Database {
                 last_online: last_online.into(),
                 status: status as i32,
                 strategy_name: "-".to_string(),
+                admission: row.try_get::<i16, _>("admission").ok().and_then(Admission::from_code).unwrap_or(Admission::Admitted),
             });
         }
         Some((total, peers))
@@ -3814,14 +3819,14 @@ mod tests {
     });
 
     db_test!(get_peers_empty, |db| {
-        let (total, peers) = db.get_peers(None, None, None, 0, 100).await.unwrap();
+        let (total, peers) = db.get_peers(None, None, None, None, 0, 100).await.unwrap();
         assert_eq!(total, 0);
         assert!(peers.is_empty());
     });
 
     db_test!(get_peers_returns_status, |db| {
         insert_peer(&db, "peer-status-test", 2, "h").await;
-        let (_, peers) = db.get_peers(None, None, None, 0, 100).await.unwrap();
+        let (_, peers) = db.get_peers(None, None, None, None, 0, 100).await.unwrap();
         let peer = peers
             .iter()
             .find(|p| p.id == "peer-status-test")
@@ -3835,13 +3840,13 @@ mod tests {
         }
         let mut seen = Vec::new();
         for offset in (0..25).step_by(10) {
-            let (total, page) = db.get_peers(None, None, None, offset, 10).await.unwrap();
+            let (total, page) = db.get_peers(None, None, None, None, offset, 10).await.unwrap();
             assert_eq!(total, 25);
             seen.extend(page.into_iter().map(|p| p.id));
         }
         let expected: Vec<_> = (0..25).map(|i| format!("p{i:02}")).collect();
         assert_eq!(seen, expected);
-        let (total, past_end) = db.get_peers(None, None, None, 30, 10).await.unwrap();
+        let (total, past_end) = db.get_peers(None, None, None, None, 30, 10).await.unwrap();
         assert_eq!((total, past_end.len()), (25, 0));
     });
 
@@ -3855,11 +3860,11 @@ mod tests {
             .await
             .unwrap();
         let ids = |r: Option<(i64, Vec<Peer>)>| r.unwrap().1.into_iter().map(|p| p.id).collect::<Vec<_>>();
-        assert_eq!(ids(db.get_peers(None, Some("finance"), None, 0, 100).await), ["111", "333"]);
-        assert_eq!(ids(db.get_peers(None, Some("22"), None, 0, 100).await), ["222"]);
-        assert_eq!(ids(db.get_peers(None, Some("finance"), Some(1), 0, 100).await), ["111"]);
+        assert_eq!(ids(db.get_peers(None, Some("finance"), None, None, 0, 100).await), ["111", "333"]);
+        assert_eq!(ids(db.get_peers(None, Some("22"), None, None, 0, 100).await), ["222"]);
+        assert_eq!(ids(db.get_peers(None, Some("finance"), Some(1), None, 0, 100).await), ["111"]);
         // An empty `info` (no sysinfo yet) is listed, not an error.
-        assert_eq!(ids(db.get_peers(None, None, Some(1), 0, 100).await), ["111", "222", "444"]);
+        assert_eq!(ids(db.get_peers(None, None, Some(1), None, 0, 100).await), ["111", "222", "444"]);
     });
 
     db_test!(get_peers_hides_devices_of_expired_sessions_or_disabled_owners, |db| {
@@ -3868,17 +3873,17 @@ mod tests {
         let own = |r: Option<(i64, Vec<Peer>)>| r.unwrap().1.into_iter().map(|p| p.id).collect::<Vec<_>>();
         db.insert_session("s1", &admin, 3600).await.unwrap();
         db.test_set_device_owner("owned", "s1").await;
-        assert_eq!(own(db.get_peers(Some(&admin), None, None, 0, 10).await), ["owned"]);
+        assert_eq!(own(db.get_peers(Some(&admin), None, None, None, 0, 10).await), ["owned"]);
         sqlx::query("UPDATE session SET expiry_at = (NOW() - INTERVAL '1 second')::text WHERE id = 's1'")
             .execute(&db.pool)
             .await
             .unwrap();
-        assert!(own(db.get_peers(Some(&admin), None, None, 0, 10).await).is_empty(), "expired session");
+        assert!(own(db.get_peers(Some(&admin), None, None, None, 0, 10).await).is_empty(), "expired session");
         db.insert_session("s2", &admin, 3600).await.unwrap();
         db.test_set_device_owner("owned", "s2").await;
         let guid = Uuid::from_slice(&admin).unwrap().to_string();
         db.user_change_status(&guid, 0).await.unwrap();
-        assert!(own(db.get_peers(Some(&admin), None, None, 0, 10).await).is_empty(), "disabled owner");
+        assert!(own(db.get_peers(Some(&admin), None, None, None, 0, 10).await).is_empty(), "disabled owner");
     });
 
     db_test!(get_groups_pages_and_search, |db| {

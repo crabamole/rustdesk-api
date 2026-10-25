@@ -573,13 +573,13 @@ impl ApiState {
     }
 
     /// One page of peers and the total matching
-    pub async fn get_peers(&self, q: Option<&str>, status: Option<i16>, offset: i64, limit: i64) -> Option<(i64, Vec<Peer>)> {
-        self.db.get_peers(None, q, status, offset, limit).await
+    pub async fn get_peers(&self, q: Option<&str>, status: Option<i16>, admission: Option<i16>, offset: i64, limit: i64) -> Option<(i64, Vec<Peer>)> {
+        self.db.get_peers(None, q, status, admission, offset, limit).await
     }
 
     /// One page of the devices `user` is logged in on (live owner session), and the total matching
     pub async fn get_own_peers(&self, user: &UserId, q: Option<&str>, status: Option<i16>, offset: i64, limit: i64) -> Option<(i64, Vec<Peer>)> {
-        self.db.get_peers(Some(user), q, status, offset, limit).await
+        self.db.get_peers(Some(user), q, status, None, offset, limit).await
     }
 
     /// One page of groups and the total matching
@@ -651,9 +651,10 @@ impl ApiState {
                 modified_at: s.modified_at,
                 strategy: Some(StrategyPush { config_options: utils::policy::allowed_options(options) }),
                 disconnect: Vec::new(),
+                admission: None,
             },
-            Some((s, _)) => HeartbeatResponse { modified_at: s.modified_at, strategy: None, disconnect: Vec::new() },
-            None => HeartbeatResponse { modified_at: device_modified_at, strategy: None, disconnect: Vec::new() },
+            Some((s, _)) => HeartbeatResponse { modified_at: s.modified_at, strategy: None, disconnect: Vec::new(), admission: None },
+            None => HeartbeatResponse { modified_at: device_modified_at, strategy: None, disconnect: Vec::new(), admission: None },
         }
     }
 
@@ -1592,7 +1593,7 @@ mod tests {
     #[tokio::test]
     async fn get_peers_empty() {
         let state = test_state().await;
-        let (total, peers) = state.get_peers(None, None, 0, 100).await.unwrap();
+        let (total, peers) = state.get_peers(None, None, None, 0, 100).await.unwrap();
         assert_eq!(total, 0);
         assert!(peers.is_empty());
     }

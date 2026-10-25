@@ -12,6 +12,7 @@
  * Do not edit the class manually.
  */
 
+import { Admission } from './admission';
 import { StrategyPush } from './strategy-push';
  /**
  * Reply to `/api/heartbeat`; the client applies `strategy` when present (`hbbs_http/sync.rs`).
@@ -40,4 +41,12 @@ export interface HeartbeatResponse {
      * @memberof HeartbeatResponse
      */
     disconnect?: Array<number>;
+
+    /**
+     * The device's admission state, only with DEVICE_ADMISSION=Y (rustdesk docs/design-device-admission.md).
+     *
+     * @type {Admission}
+     * @memberof HeartbeatResponse
+     */
+    admission?: Admission | null;
 }

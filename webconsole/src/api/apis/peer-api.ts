@@ -17,6 +17,7 @@ import { Configuration } from '../configuration';
 // Some imports not used depending on template conditions
 // @ts-ignore
 import { BASE_PATH, COLLECTION_FORMATS, RequestArgs, BaseAPI, RequiredError } from '../base';
+import { AdmissionRequest } from '../models';
 import { CpuCount } from '../models';
 import { HeartbeatRequest } from '../models';
 import { HeartbeatResponse } from '../models';
@@ -74,16 +75,75 @@ export const PeerApiAxiosParamCreator = function (configuration?: Configuration)
             };
         },
         /**
-         * Admin-only. One page of all devices ordered by ID, for the console.  ## Parameters  - `current`: page number, from 1 (default 1). - `pageSize`: devices per page (default 10, at most 1000). - `status`: only devices with this status (`1` = enabled). - `q`: case-insensitive substring of the ID or hostname.  `total` counts every matching device, not just this page.  GET /api/peer-list?current=1&pageSize=10&q=laptop
+         * Admin-only. With DEVICE_ADMISSION=Y only admitted devices can be controlled (design-device-admission.md). 404 for an unknown device.
+         * @summary Set a device's admission state
+         * @param {AdmissionRequest} body 
+         * @param {string} id 
+         * @param {*} [options] Override http request option.
+         * @throws {RequiredError}
+         */
+        peerAdmission: async (body: AdmissionRequest, id: string, options: AxiosRequestConfig = {}): Promise<RequestArgs> => {
+            // verify required parameter 'body' is not null or undefined
+            if (body === null || body === undefined) {
+                throw new RequiredError('body','Required parameter body was null or undefined when calling peerAdmission.');
+            }
+            // verify required parameter 'id' is not null or undefined
+            if (id === null || id === undefined) {
+                throw new RequiredError('id','Required parameter id was null or undefined when calling peerAdmission.');
+            }
+            const localVarPath = `/api/peers/{id}/admission`
+                .replace(`{${"id"}}`, encodeURIComponent(String(id)));
+            // use dummy base URL string because the URL constructor only accepts absolute URLs.
+            const localVarUrlObj = new URL(localVarPath, 'https://example.com');
+            let baseOptions;
+            if (configuration) {
+                baseOptions = configuration.baseOptions;
+            }
+            const localVarRequestOptions :AxiosRequestConfig = { method: 'POST', ...baseOptions, ...options};
+            const localVarHeaderParameter = {} as any;
+            const localVarQueryParameter = {} as any;
+
+            // authentication authorization_admin required
+            // http bearer authentication required
+            if (configuration && configuration.accessToken) {
+                const accessToken = typeof configuration.accessToken === 'function'
+                    ? await configuration.accessToken()
+                    : await configuration.accessToken;
+                localVarHeaderParameter["Authorization"] = "Bearer " + accessToken;
+            }
+
+            localVarHeaderParameter['Content-Type'] = 'application/json';
+
+            const query = new URLSearchParams(localVarUrlObj.search);
+            for (const key in localVarQueryParameter) {
+                query.set(key, localVarQueryParameter[key]);
+            }
+            for (const key in options.params) {
+                query.set(key, options.params[key]);
+            }
+            localVarUrlObj.search = (new URLSearchParams(query)).toString();
+            let headersFromBaseOptions = baseOptions && baseOptions.headers ? baseOptions.headers : {};
+            localVarRequestOptions.headers = {...localVarHeaderParameter, ...headersFromBaseOptions, ...options.headers};
+            const needsSerialization = (typeof body !== "string") || localVarRequestOptions.headers['Content-Type'] === 'application/json';
+            localVarRequestOptions.data =  needsSerialization ? JSON.stringify(body !== undefined ? body : {}) : (body || "");
+
+            return {
+                url: localVarUrlObj.pathname + localVarUrlObj.search + localVarUrlObj.hash,
+                options: localVarRequestOptions,
+            };
+        },
+        /**
+         * Admin-only. One page of all devices ordered by ID, for the console.  ## Parameters  - `current`: page number, from 1 (default 1). - `pageSize`: devices per page (default 10, at most 1000). - `status`: only devices with this status (`1` = enabled). - `admission`: only devices in this admission state (0 pending, 1 admitted, 2 rejected). - `q`: case-insensitive substring of the ID or hostname.  `total` counts every matching device, not just this page.  GET /api/peer-list?current=1&pageSize=10&q=laptop
          * @summary Get the List of Peers
          * @param {number} [current] 
          * @param {number} [page_size] 
          * @param {number} [status] 
+         * @param {number} [admission] 
          * @param {string} [q] 
          * @param {*} [options] Override http request option.
          * @throws {RequiredError}
          */
-        peerList: async (current?: number, page_size?: number, status?: number, q?: string, options: AxiosRequestConfig = {}): Promise<RequestArgs> => {
+        peerList: async (current?: number, page_size?: number, status?: number, admission?: number, q?: string, options: AxiosRequestConfig = {}): Promise<RequestArgs> => {
             const localVarPath = `/api/peer-list`;
             // use dummy base URL string because the URL constructor only accepts absolute URLs.
             const localVarUrlObj = new URL(localVarPath, 'https://example.com');
@@ -114,6 +174,10 @@ export const PeerApiAxiosParamCreator = function (configuration?: Configuration)
 
             if (status !== undefined) {
                 localVarQueryParameter['status'] = status;
+            }
+
+            if (admission !== undefined) {
+                localVarQueryParameter['admission'] = admission;
             }
 
             if (q !== undefined) {
@@ -460,17 +524,33 @@ export const PeerApiFp = function(configuration?: Configuration) {
             };
         },
         /**
-         * Admin-only. One page of all devices ordered by ID, for the console.  ## Parameters  - `current`: page number, from 1 (default 1). - `pageSize`: devices per page (default 10, at most 1000). - `status`: only devices with this status (`1` = enabled). - `q`: case-insensitive substring of the ID or hostname.  `total` counts every matching device, not just this page.  GET /api/peer-list?current=1&pageSize=10&q=laptop
+         * Admin-only. With DEVICE_ADMISSION=Y only admitted devices can be controlled (design-device-admission.md). 404 for an unknown device.
+         * @summary Set a device's admission state
+         * @param {AdmissionRequest} body 
+         * @param {string} id 
+         * @param {*} [options] Override http request option.
+         * @throws {RequiredError}
+         */
+        async peerAdmission(body: AdmissionRequest, id: string, options?: AxiosRequestConfig): Promise<(axios?: AxiosInstance, basePath?: string) => Promise<AxiosResponse<void>>> {
+            const localVarAxiosArgs = await PeerApiAxiosParamCreator(configuration).peerAdmission(body, id, options);
+            return (axios: AxiosInstance = globalAxios, basePath: string = BASE_PATH) => {
+                const axiosRequestArgs :AxiosRequestConfig = {...localVarAxiosArgs.options, url: basePath + localVarAxiosArgs.url};
+                return axios.request(axiosRequestArgs);
+            };
+        },
+        /**
+         * Admin-only. One page of all devices ordered by ID, for the console.  ## Parameters  - `current`: page number, from 1 (default 1). - `pageSize`: devices per page (default 10, at most 1000). - `status`: only devices with this status (`1` = enabled). - `admission`: only devices in this admission state (0 pending, 1 admitted, 2 rejected). - `q`: case-insensitive substring of the ID or hostname.  `total` counts every matching device, not just this page.  GET /api/peer-list?current=1&pageSize=10&q=laptop
          * @summary Get the List of Peers
          * @param {number} [current] 
          * @param {number} [page_size] 
          * @param {number} [status] 
+         * @param {number} [admission] 
          * @param {string} [q] 
          * @param {*} [options] Override http request option.
          * @throws {RequiredError}
          */
-        async peerList(current?: number, page_size?: number, status?: number, q?: string, options?: AxiosRequestConfig): Promise<(axios?: AxiosInstance, basePath?: string) => Promise<AxiosResponse<PeersResponse>>> {
-            const localVarAxiosArgs = await PeerApiAxiosParamCreator(configuration).peerList(current, page_size, status, q, options);
+        async peerList(current?: number, page_size?: number, status?: number, admission?: number, q?: string, options?: AxiosRequestConfig): Promise<(axios?: AxiosInstance, basePath?: string) => Promise<AxiosResponse<PeersResponse>>> {
+            const localVarAxiosArgs = await PeerApiAxiosParamCreator(configuration).peerList(current, page_size, status, admission, q, options);
             return (axios: AxiosInstance = globalAxios, basePath: string = BASE_PATH) => {
                 const axiosRequestArgs :AxiosRequestConfig = {...localVarAxiosArgs.options, url: basePath + localVarAxiosArgs.url};
                 return axios.request(axiosRequestArgs);
@@ -583,17 +663,29 @@ export const PeerApiFactory = function (configuration?: Configuration, basePath?
             return PeerApiFp(configuration).heartbeat(body, options).then((request) => request(axios, basePath));
         },
         /**
-         * Admin-only. One page of all devices ordered by ID, for the console.  ## Parameters  - `current`: page number, from 1 (default 1). - `pageSize`: devices per page (default 10, at most 1000). - `status`: only devices with this status (`1` = enabled). - `q`: case-insensitive substring of the ID or hostname.  `total` counts every matching device, not just this page.  GET /api/peer-list?current=1&pageSize=10&q=laptop
+         * Admin-only. With DEVICE_ADMISSION=Y only admitted devices can be controlled (design-device-admission.md). 404 for an unknown device.
+         * @summary Set a device's admission state
+         * @param {AdmissionRequest} body 
+         * @param {string} id 
+         * @param {*} [options] Override http request option.
+         * @throws {RequiredError}
+         */
+        async peerAdmission(body: AdmissionRequest, id: string, options?: AxiosRequestConfig): Promise<AxiosResponse<void>> {
+            return PeerApiFp(configuration).peerAdmission(body, id, options).then((request) => request(axios, basePath));
+        },
+        /**
+         * Admin-only. One page of all devices ordered by ID, for the console.  ## Parameters  - `current`: page number, from 1 (default 1). - `pageSize`: devices per page (default 10, at most 1000). - `status`: only devices with this status (`1` = enabled). - `admission`: only devices in this admission state (0 pending, 1 admitted, 2 rejected). - `q`: case-insensitive substring of the ID or hostname.  `total` counts every matching device, not just this page.  GET /api/peer-list?current=1&pageSize=10&q=laptop
          * @summary Get the List of Peers
          * @param {number} [current] 
          * @param {number} [page_size] 
          * @param {number} [status] 
+         * @param {number} [admission] 
          * @param {string} [q] 
          * @param {*} [options] Override http request option.
          * @throws {RequiredError}
          */
-        async peerList(current?: number, page_size?: number, status?: number, q?: string, options?: AxiosRequestConfig): Promise<AxiosResponse<PeersResponse>> {
-            return PeerApiFp(configuration).peerList(current, page_size, status, q, options).then((request) => request(axios, basePath));
+        async peerList(current?: number, page_size?: number, status?: number, admission?: number, q?: string, options?: AxiosRequestConfig): Promise<AxiosResponse<PeersResponse>> {
+            return PeerApiFp(configuration).peerList(current, page_size, status, admission, q, options).then((request) => request(axios, basePath));
         },
         /**
          * Admin-only. Empties the key hbbs registered for device `id` and its owner, so the device's next registration sets a new key (design-device-key-change.md). 404 for an unknown device.
@@ -680,18 +772,31 @@ export class PeerApi extends BaseAPI {
         return PeerApiFp(this.configuration).heartbeat(body, options).then((request) => request(this.axios, this.basePath));
     }
     /**
-     * Admin-only. One page of all devices ordered by ID, for the console.  ## Parameters  - `current`: page number, from 1 (default 1). - `pageSize`: devices per page (default 10, at most 1000). - `status`: only devices with this status (`1` = enabled). - `q`: case-insensitive substring of the ID or hostname.  `total` counts every matching device, not just this page.  GET /api/peer-list?current=1&pageSize=10&q=laptop
+     * Admin-only. With DEVICE_ADMISSION=Y only admitted devices can be controlled (design-device-admission.md). 404 for an unknown device.
+     * @summary Set a device's admission state
+     * @param {AdmissionRequest} body 
+     * @param {string} id 
+     * @param {*} [options] Override http request option.
+     * @throws {RequiredError}
+     * @memberof PeerApi
+     */
+    public async peerAdmission(body: AdmissionRequest, id: string, options?: AxiosRequestConfig) : Promise<AxiosResponse<void>> {
+        return PeerApiFp(this.configuration).peerAdmission(body, id, options).then((request) => request(this.axios, this.basePath));
+    }
+    /**
+     * Admin-only. One page of all devices ordered by ID, for the console.  ## Parameters  - `current`: page number, from 1 (default 1). - `pageSize`: devices per page (default 10, at most 1000). - `status`: only devices with this status (`1` = enabled). - `admission`: only devices in this admission state (0 pending, 1 admitted, 2 rejected). - `q`: case-insensitive substring of the ID or hostname.  `total` counts every matching device, not just this page.  GET /api/peer-list?current=1&pageSize=10&q=laptop
      * @summary Get the List of Peers
      * @param {number} [current] 
      * @param {number} [page_size] 
      * @param {number} [status] 
+     * @param {number} [admission] 
      * @param {string} [q] 
      * @param {*} [options] Override http request option.
      * @throws {RequiredError}
      * @memberof PeerApi
      */
-    public async peerList(current?: number, page_size?: number, status?: number, q?: string, options?: AxiosRequestConfig) : Promise<AxiosResponse<PeersResponse>> {
-        return PeerApiFp(this.configuration).peerList(current, page_size, status, q, options).then((request) => request(this.axios, this.basePath));
+    public async peerList(current?: number, page_size?: number, status?: number, admission?: number, q?: string, options?: AxiosRequestConfig) : Promise<AxiosResponse<PeersResponse>> {
+        return PeerApiFp(this.configuration).peerList(current, page_size, status, admission, q, options).then((request) => request(this.axios, this.basePath));
     }
     /**
      * Admin-only. Empties the key hbbs registered for device `id` and its owner, so the device's next registration sets a new key (design-device-key-change.md). 404 for an unknown device.

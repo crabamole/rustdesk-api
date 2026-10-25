@@ -18,7 +18,7 @@ Update this file with every API change.
 
 | Method | Path | Source | Status | Notes |
 |---|---|---|---|---|
-| POST | /api/heartbeat | [C] `src/hbbs_http/sync.rs` | implemented | updates last_online; sends `strategy.config_options` (Default strategy, allow-listed keys) when the device's `modified_at` differs; `conns` ends open audit rows of connections that are gone (30 s grace) |
+| POST | /api/heartbeat | [C] `src/hbbs_http/sync.rs` | implemented | updates last_online; sends `strategy.config_options` (Default strategy, allow-listed keys) when the device's `modified_at` differs; `conns` ends open audit rows of connections that are gone (30 s grace); `admission` (ours) is `pending\|admitted\|rejected`, only with `DEVICE_ADMISSION=Y`; stock clients ignore it |
 | POST | /api/sysinfo | [C] `src/hbbs_http/sync.rs` (`url.replace("heartbeat","sysinfo")`) | implemented | only for a registered `(id, uuid)`; the `uuid` is not stored in the device's info |
 | POST | /api/login | [C] `flutter/lib/models/user_model.dart` | implemented | password login intentionally disabled, always 401; use OIDC |
 | GET | /api/login-options | [C] `src/hbbs_http/account.rs`, `flutter/lib/models/user_model.dart` | implemented | |
@@ -172,6 +172,7 @@ Upstream clients log in by polling `GET /api/oidc/auth-query`; that login is not
 | GET | /api/peers/count/{platform} | admin-only peer count by platform |
 | GET | /api/peers/cpus | admin-only cpu count per peer |
 | POST | /api/peers/{id}/reset-key | admin-only: empties the device's registered key and owner, so its next registration sets a new key (rustdesk `docs/design-device-key-change.md`); 404 for an unknown ID |
+| POST | /api/peers/{id}/admission | admin-only: body `{"admission":"pending\|admitted\|rejected"}`; logged to the console log (iop 29-31); 404 for an unknown ID (rustdesk `docs/design-device-admission.md`) |
 | GET | /api/audits/login | admin-only login audit: one row per OIDC login that reached the callback, with its outcome; `user` (LIKE) and `outcome` filters, per audit-api-spec.md §9 |
 | GET | /api/viewers | admin-only paginated list of machines whose native client logged in through OIDC but never registered with hbbs; one row per machine and user, with the latest login address (`login_ip`) |
 | GET | /api/software/version/server | server version (web console footer) |

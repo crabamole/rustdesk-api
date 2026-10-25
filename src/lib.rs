@@ -317,6 +317,7 @@ pub fn api_routes() -> (Vec<rocket::Route>, rocket_okapi::okapi::openapi3::OpenA
         audits_conn,
         audits_conn_disconnect,
         peer_reset_key,
+        peer_admission,
         audits_file,
         audits_alarm,
         audits_clipboard,
@@ -847,6 +848,28 @@ async fn peer_reset_key(state: &State<ApiState>, user: AuthenticatedAdmin, id: &
     Ok(())
 }
 
+/// # Set a device's admission state
+///
+/// Admin-only. With DEVICE_ADMISSION=Y only admitted devices can be controlled
+/// (design-device-admission.md). 404 for an unknown device.
+#[openapi(tag = "peer")]
+#[post("/api/peers/<id>/admission", format = "application/json", data = "<request>")]
+async fn peer_admission(
+    state: &State<ApiState>,
+    user: AuthenticatedAdmin,
+    id: &str,
+    request: Json<utils::AdmissionRequest>,
+) -> Result<(), Status> {
+    let admission = request.admission;
+    let old = state.set_device_admission(id, admission, &user.username).await.ok_or(Status::InternalServerError)?.ok_or(Status::NotFound)?;
+    if old != admission {
+        state
+            .log_console(Some(&user.info.user_id), utils::console_log::TYP_DEVICE, utils::console_log::iop_for_admission(admission), serde_json::json!({ "device": id }))
+            .await;
+    }
+    Ok(())
+}
+
 /// Audit clipboard text that arrived on a device
 ///
 /// Answers an empty body once the record is stored and `{"error": ...}` otherwise; the client
@@ -1036,10 +1059,12 @@ async fn heartbeat(state: &State<ApiState>, request: device_call::SignedDevice<H
     let heartbeat = request.0;
     let device_modified_at = heartbeat.modified_at as i64;
     let disconnect = state.disconnects_for_heartbeat(&heartbeat).await;
+    let admission = state.admission_for_heartbeat(device_admission(), &heartbeat.id, &heartbeat.uuid).await;
     let res = state.update_heartbeat(heartbeat).await;
     log::debug!("res: {:?}", res);
     let mut response = state.policy_for_heartbeat(device_modified_at).await;
     response.disconnect = disconnect;
+    response.admission = admission;
     Json(response)
 }
 
@@ -1341,6 +1366,7 @@ async fn peers(
 /// - `current`: page number, from 1 (default 1).
 /// - `pageSize`: devices per page (default 10, at most 1000).
 /// - `status`: only devices with this status (`1` = enabled).
+/// - `admission`: only devices in this admission state (0 pending, 1 admitted, 2 rejected).
 /// - `q`: case-insensitive substring of the ID or hostname.
 ///
 /// `total` counts every matching device, not just this page.
@@ -1348,19 +1374,20 @@ async fn peers(
 /// GET /api/peer-list?current=1&pageSize=10&q=laptop
 #[openapi(tag = "peer")]
 #[allow(non_snake_case)]
-#[get("/api/peer-list?<current>&<pageSize>&<status>&<q>", format = "application/json")]
+#[get("/api/peer-list?<current>&<pageSize>&<status>&<admission>&<q>", format = "application/json")]
 async fn peer_list(
     state: &State<ApiState>,
     _user: AuthenticatedAdmin,
     current: Option<i64>,
     pageSize: Option<i64>,
     status: Option<i16>,
+    admission: Option<i16>,
     q: Option<&str>,
 ) -> Result<Json<PeersResponse>, status::NotFound<()>> {
     log::debug!("peer_list");
     let (offset, limit) = page(current, pageSize);
     let (total, data) = state
-        .get_peers(non_empty(q), status, offset, limit)
+        .get_peers(non_empty(q), status, admission, offset, limit)
         .await
         .ok_or(status::NotFound::<()>(()))?;
     Ok(Json(PeersResponse { msg: "success".to_string(), total: total as u32, data }))
@@ -1716,6 +1743,11 @@ fn is_s256_challenge(c: &str) -> bool {
 /// `SAME_USER_ACCESS=Y`: a device's owner opens it without its password (design-same-user-access.md).
 fn same_user_access() -> bool {
     std::env::var("SAME_USER_ACCESS").is_ok_and(|v| v.eq_ignore_ascii_case("Y"))
+}
+
+/// `DEVICE_ADMISSION=Y`: only admitted devices can be controlled (design-device-admission.md).
+fn device_admission() -> bool {
+    std::env::var("DEVICE_ADMISSION").is_ok_and(|v| v.eq_ignore_ascii_case("Y"))
 }
 
 /// Proxies whose X-Forwarded-For is believed; empty trusts none. `None` (an invalid setting) trusts none too.

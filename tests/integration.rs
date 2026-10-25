@@ -2722,6 +2722,64 @@ async fn test_device_key_reset_needs_an_admin_and_a_known_device() {
     assert_ne!(state.device_pk("devrk2", "ZGM=").await, Some(Vec::new()));
 }
 
+#[rocket::async_test]
+async fn test_admin_sets_device_admission() {
+    let (client, _dir) = test_client().await;
+    let admin = login_admin(&client).await;
+    let state = client.rocket().state::<state::ApiState>().unwrap();
+    state.test_register_device("devadm", "ZGM=").await;
+    let post = |id: &'static str, body: &'static str, token: String| {
+        let client = &client;
+        async move {
+            client.post(format!("/api/peers/{id}/admission")).header(ContentType::JSON).header(auth_header(&token)).body(body).dispatch().await.status()
+        }
+    };
+    assert_eq!(post("nobody", r#"{"admission":"admitted"}"#, admin.clone()).await, Status::NotFound);
+    assert_eq!(post("devadm", r#"{"admission":"rejected"}"#, admin.clone()).await, Status::Ok);
+    assert_eq!(post("devadm", r#"{"admission":"rejected"}"#, admin.clone()).await, Status::Ok);
+    assert_eq!(state.device_admission("devadm", "ZGM=").await, Some(utils::Admission::Rejected));
+    let row = last_console_row(&client, &admin).await;
+    assert_eq!((row["typ"].as_i64(), row["iop"].as_i64(), row["info"]["device"].as_str()), (Some(2), Some(30), Some("devadm")));
+    assert_eq!(post("devadm", r#"{"admission":"maybe"}"#, admin.clone()).await, Status::UnprocessableEntity);
+    state.test_oidc_login(&"bob".to_string()).await;
+    state.set_admin("bob@example.org", true).await.unwrap();
+    state.set_admin("bob@example.org", false).await.unwrap();
+    let bob = oidc_token(&client, "bob").await;
+    let s = post("devadm", r#"{"admission":"admitted"}"#, bob).await;
+    assert!(s == Status::Unauthorized || s == Status::Forbidden, "{s}");
+}
+
+#[rocket::async_test]
+async fn test_heartbeat_has_no_admission_with_the_switch_off() {
+    let (client, _dir) = test_client().await;
+    client.rocket().state::<state::ApiState>().unwrap().test_register_device("devhb", "ZGM=").await;
+    let resp = client.post("/api/heartbeat").header(ContentType::JSON)
+        .signed_body("/api/heartbeat", r#"{"id":"devhb","uuid":"ZGM=","modified_at":0,"ver":0,"conns":[]}"#).dispatch().await;
+    assert_eq!(resp.status(), Status::Ok);
+    let body: Value = resp.into_json().await.unwrap();
+    assert!(body.get("admission").is_none(), "{body}");
+}
+
+#[rocket::async_test]
+async fn test_peer_list_filters_and_shows_admission() {
+    let (client, _dir) = test_client().await;
+    let admin = login_admin(&client).await;
+    let state = client.rocket().state::<state::ApiState>().unwrap();
+    state.test_register_device("devl1", "ZGM=").await;
+    state.test_register_device("devl2", "ZGQ=").await;
+    state.set_device_admission("devl2", utils::Admission::Pending, "cli").await;
+    let get = |uri: &'static str| {
+        let (client, admin) = (&client, admin.clone());
+        async move { client.get(uri).header(auth_header(&admin)).dispatch().await.into_json::<Value>().await.unwrap() }
+    };
+    let pending = get("/api/peer-list?current=1&pageSize=100&admission=0").await;
+    let ids: Vec<_> = pending["data"].as_array().unwrap().iter().map(|p| p["id"].as_str().unwrap()).collect();
+    assert_eq!(ids, ["devl2"]);
+    let all = get("/api/peer-list?current=1&pageSize=100").await;
+    let states: Vec<_> = all["data"].as_array().unwrap().iter().map(|p| (p["id"].as_str().unwrap(), p["admission"].as_str().unwrap())).collect();
+    assert_eq!(states, [("devl1", "admitted"), ("devl2", "pending")]);
+}
+
 /// The newest console log row, as the console reads it.
 async fn last_console_row(client: &Client, admin: &str) -> Value {
     let body: Value = client.get("/api/audits/console").header(auth_header(admin)).dispatch().await.into_json().await.unwrap();

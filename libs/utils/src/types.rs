@@ -1027,6 +1027,7 @@ pub struct Peer{
     pub strategy_name: String,
     pub last_online: String,
     pub info: PeerInfo,
+    pub admission: Admission,
 }
 
 #[derive(Serialize, Deserialize, Clone, JsonSchema)]
@@ -1193,6 +1194,15 @@ pub struct HeartbeatResponse {
     /// Connection ids the device closes (audit-api-spec.md §10).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub disconnect: Vec<i64>,
+    /// The device's admission state, only with DEVICE_ADMISSION=Y (rustdesk docs/design-device-admission.md).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub admission: Option<Admission>,
+}
+
+/// Body of `POST /api/peers/<id>/admission`.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct AdmissionRequest {
+    pub admission: Admission,
 }
 
 #[derive(Debug, PartialEq, Serialize, JsonSchema)]

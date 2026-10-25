@@ -8,7 +8,7 @@ This website use:
 */
 
 import { Configuration, SoftwareApi, UserApi, UserListResponse } from "@/api";
-import { GroupApi, Group, PeerApi, Peer } from '@/api';
+import { GroupApi, Group, PeerApi, Peer, Admission } from '@/api';
 import { useUserStore } from "@/stores/sctgDeskStore";
 
 /**
@@ -53,9 +53,14 @@ export function searchGroupNames(q: string): Promise<Option[]> {
     return listGroups(1, 50, q).then((page) => page.data.map((g) => ({ value: g.name, label: g.name })));
 }
 
-/** One page of devices ordered by ID; `q` matches the ID or hostname. */
-export function listPeers(current: number, pageSize: number, q = ""): Promise<Page<Peer>> {
-    return page(new PeerApi(useUserStore().api_configuration).peerList(current, pageSize, undefined, q || undefined));
+/** One page of devices ordered by ID; `q` matches the ID or hostname, `admission` is 0 pending, 1 admitted, 2 rejected. */
+export function listPeers(current: number, pageSize: number, q = "", admission?: number): Promise<Page<Peer>> {
+    return page(new PeerApi(useUserStore().api_configuration).peerList(current, pageSize, undefined, admission, q || undefined));
+}
+
+/** Sets the admission state of device `id` (design-device-admission.md). */
+export function setPeerAdmission(id: string, admission: Admission): Promise<unknown> {
+    return new PeerApi(useUserStore().api_configuration).peerAdmission({ admission }, id);
 }
 
 /** Lets device `id` take a new key at its next registration (design-device-key-change.md). */

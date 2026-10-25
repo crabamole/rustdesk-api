@@ -16,6 +16,8 @@ export * from './ab-tag';
 export * from './ab-tag-rename-request';
 export * from './add-goup-request';
 export * from './add-user-request';
+export * from './admission';
+export * from './admission-request';
 export * from './audit-alarm-log';
 export * from './audit-alarm-request';
 export * from './audit-clipboard-log';

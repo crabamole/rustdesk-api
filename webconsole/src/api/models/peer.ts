@@ -12,6 +12,7 @@
  * Do not edit the class manually.
  */
 
+import { Admission } from './admission';
 import { PeerInfo } from './peer-info';
  /**
  * 
@@ -56,4 +57,10 @@ export interface Peer {
      * @memberof Peer
      */
     info: PeerInfo;
+
+    /**
+     * @type {Admission}
+     * @memberof Peer
+     */
+    admission: Admission;
 }

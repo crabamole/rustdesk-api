@@ -645,6 +645,49 @@
         ]
       }
     },
+    "/api/peers/{id}/admission": {
+      "post": {
+        "tags": [
+          "peer"
+        ],
+        "summary": "Set a device's admission state",
+        "description": "Admin-only. With DEVICE_ADMISSION=Y only admitted devices can be controlled (design-device-admission.md). 404 for an unknown device.",
+        "operationId": "peer_admission",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdmissionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          },
+          "default": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "authorization_admin": []
+          }
+        ]
+      }
+    },
     "/api/audits/file": {
       "get": {
         "tags": [
@@ -1704,7 +1747,7 @@
           "peer"
         ],
         "summary": "Get the List of Peers",
-        "description": "Admin-only. One page of all devices ordered by ID, for the console.\n\n## Parameters\n\n- `current`: page number, from 1 (default 1). - `pageSize`: devices per page (default 10, at most 1000). - `status`: only devices with this status (`1` = enabled). - `q`: case-insensitive substring of the ID or hostname.\n\n`total` counts every matching device, not just this page.\n\nGET /api/peer-list?current=1&pageSize=10&q=laptop",
+        "description": "Admin-only. One page of all devices ordered by ID, for the console.\n\n## Parameters\n\n- `current`: page number, from 1 (default 1). - `pageSize`: devices per page (default 10, at most 1000). - `status`: only devices with this status (`1` = enabled). - `admission`: only devices in this admission state (0 pending, 1 admitted, 2 rejected). - `q`: case-insensitive substring of the ID or hostname.\n\n`total` counts every matching device, not just this page.\n\nGET /api/peer-list?current=1&pageSize=10&q=laptop",
         "operationId": "peer_list",
         "parameters": [
           {
@@ -1727,6 +1770,15 @@
           },
           {
             "name": "status",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "format": "int16",
+              "nullable": true
+            }
+          },
+          {
+            "name": "admission",
             "in": "query",
             "schema": {
               "type": "integer",
@@ -3502,6 +3554,27 @@
           }
         }
       },
+      "AdmissionRequest": {
+        "description": "Body of `POST /api/peers/<id>/admission`.",
+        "type": "object",
+        "required": [
+          "admission"
+        ],
+        "properties": {
+          "admission": {
+            "$ref": "#/components/schemas/Admission"
+          }
+        }
+      },
+      "Admission": {
+        "description": "A device's admission state (rustdesk docs/design-device-admission.md); `peer.admission`.",
+        "type": "string",
+        "enum": [
+          "pending",
+          "admitted",
+          "rejected"
+        ]
+      },
       "AuditPage_for_AuditFileLog": {
         "type": "object",
         "required": [
@@ -3852,6 +3925,15 @@
               "type": "integer",
               "format": "int64"
             }
+          },
+          "admission": {
+            "description": "The device's admission state, only with DEVICE_ADMISSION=Y (rustdesk docs/design-device-admission.md).",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/Admission"
+              }
+            ],
+            "nullable": true
           }
         }
       },
@@ -4276,6 +4358,7 @@
       "Peer": {
         "type": "object",
         "required": [
+          "admission",
           "guid",
           "id",
           "info",
@@ -4302,6 +4385,9 @@
           },
           "info": {
             "$ref": "#/components/schemas/PeerInfo"
+          },
+          "admission": {
+            "$ref": "#/components/schemas/Admission"
           }
         }
       },
