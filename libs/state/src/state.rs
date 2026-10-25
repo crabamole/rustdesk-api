@@ -675,6 +675,11 @@ impl ApiState {
         self.db.peer_admission(id, &uuid).await.and_then(Admission::from_code)
     }
 
+    /// Admission data for the webhook check, cloneable into a background task.
+    pub fn admission_store(&self) -> crate::admission::AdmissionStore {
+        crate::admission::AdmissionStore { db: self.db.clone() }
+    }
+
     /// The heartbeat answer's `admission`: only while the switch is on.
     pub async fn admission_for_heartbeat(&self, enabled: bool, id: &str, uuid: &str) -> Option<Admission> {
         if !enabled {

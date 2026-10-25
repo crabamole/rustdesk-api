@@ -1028,6 +1028,9 @@ pub struct Peer{
     pub last_online: String,
     pub info: PeerInfo,
     pub admission: Admission,
+    /// When the admission webhook was last called for this device, and its result.
+    pub admission_webhook_at: Option<String>,
+    pub admission_webhook_result: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, JsonSchema)]

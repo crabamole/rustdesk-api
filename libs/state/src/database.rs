@@ -1194,7 +1194,7 @@ impl Database {
             .map_err(|e| log::error!("get_peers count error: {e:?}"))
             .ok()?;
         let res = sqlx::query(&format!(
-            "SELECT guid, id, uuid, status, info, last_online, admission FROM peer {WHERE} ORDER BY id, guid LIMIT $5 OFFSET $6"
+            "SELECT guid, id, uuid, status, info, last_online, admission, admission_webhook_at, admission_webhook_result FROM peer {WHERE} ORDER BY id, guid LIMIT $5 OFFSET $6"
         ))
         .bind(&q)
         .bind(status)
@@ -1231,6 +1231,8 @@ impl Database {
                 status: status as i32,
                 strategy_name: "-".to_string(),
                 admission: row.try_get::<i16, _>("admission").ok().and_then(Admission::from_code).unwrap_or(Admission::Admitted),
+                admission_webhook_at: row.try_get::<Option<String>, _>("admission_webhook_at").ok().flatten(),
+                admission_webhook_result: row.try_get::<Option<String>, _>("admission_webhook_result").ok().flatten(),
             });
         }
         Some((total, peers))
@@ -2318,6 +2320,74 @@ impl Database {
             .flatten()
     }
 
+    /// A pending device's facts for the admission webhook; owner only while its session is live.
+    pub async fn webhook_pending_device(&self, id: &str) -> Option<crate::admission::WebhookDevice> {
+        let row = sqlx::query(
+            "SELECT p.id, COALESCE(NULLIF(p.info, ''), '{}') AS info, p.created_at, \
+                    u.name AS owner_name, u.email AS owner_email, g.name AS owner_group \
+             FROM peer p \
+             LEFT JOIN session s ON s.id = p.owner_session AND s.expiry_at > NOW()::text \
+             LEFT JOIN \"user\" u ON u.guid = s.\"user\" AND u.status = 1 \
+             LEFT JOIN grp g ON g.guid = u.grp \
+             WHERE p.id = $1 AND p.admission = 0",
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| log::error!("webhook_pending_device error: {e:?}"))
+        .ok()??;
+        let info: serde_json::Value = serde_json::from_str(&row.try_get::<String, _>("info").unwrap_or_default()).unwrap_or_default();
+        let field = |k: &str| info.get(k).and_then(|v| v.as_str()).unwrap_or_default().to_string();
+        let owner = row.try_get::<Option<String>, _>("owner_name").ok().flatten().map(|name| crate::admission::WebhookOwner {
+            name,
+            email: row.try_get::<Option<String>, _>("owner_email").ok().flatten().unwrap_or_default(),
+            group: row.try_get::<Option<String>, _>("owner_group").ok().flatten().unwrap_or_default(),
+        });
+        Some(crate::admission::WebhookDevice {
+            id: row.try_get("id").unwrap_or_default(),
+            hostname: field("hostname"),
+            os: field("os"),
+            username: field("username"),
+            ip: field("ip"),
+            owner,
+            first_seen: row.try_get("created_at").unwrap_or_default(),
+        })
+    }
+
+    /// Stores when the webhook was last called for device `id` and what came back.
+    pub async fn record_webhook_result(&self, id: &str, result: &str) {
+        if let Err(e) = sqlx::query("UPDATE peer SET admission_webhook_at = current_timestamp::text, admission_webhook_result = $2 WHERE id = $1")
+            .bind(id)
+            .bind(result)
+            .execute(&self.pool)
+            .await
+        {
+            log::error!("record_webhook_result error: {e:?}");
+        }
+    }
+
+    /// Applies a webhook decision while device `id` is still pending; true when it changed.
+    pub async fn apply_webhook_decision(&self, id: &str, admission: i16) -> bool {
+        sqlx::query(
+            "UPDATE peer SET admission = $2, admission_at = current_timestamp::text, admission_by = 'webhook' \
+             WHERE id = $1 AND admission = 0",
+        )
+        .bind(id)
+        .bind(admission)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| log::error!("apply_webhook_decision error: {e:?}"))
+        .is_ok_and(|r| r.rows_affected() == 1)
+    }
+
+    pub async fn peer_exists(&self, id: &str) -> bool {
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM peer WHERE id = $1")
+            .bind(id)
+            .fetch_one(&self.pool)
+            .await
+            .is_ok_and(|n| n > 0)
+    }
+
     /// The owner key of device `id` when its owner session is live and belongs to active `user`.
     pub async fn same_user_owner_pk(&self, user: &[u8], id: &str) -> Option<Vec<u8>> {
         sqlx::query_scalar(
@@ -3193,7 +3263,7 @@ mod tests {
                 .fetch_all(&first.pool)
                 .await
                 .unwrap();
-        assert_eq!(applied, (1..=19).map(|v| (v, true)).collect::<Vec<_>>());
+        assert_eq!(applied, (1..=20).map(|v| (v, true)).collect::<Vec<_>>());
         first.pool.close().await;
 
         // Second start on the same database must not fail or duplicate rows.
