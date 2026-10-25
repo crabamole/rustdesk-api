@@ -37,6 +37,10 @@ impl AdmissionStore {
         self.db.record_webhook_result(id, result).await;
     }
 
+    pub async fn claim_background_call(&self, id: &str) -> bool {
+        self.db.claim_webhook_call(id).await
+    }
+
     pub async fn apply_decision(&self, id: &str, admission: Admission, reason: &str) -> bool {
         if !self.db.apply_webhook_decision(id, admission.code()).await {
             return false;
@@ -65,6 +69,17 @@ mod tests {
         state.test_register_device(id, "dXVpZA==").await;
         let store = state.admission_store();
         (state, store)
+    }
+
+    #[rocket::async_test]
+    async fn background_claim_is_limited_per_device() {
+        let (state, store) = store_with("wc1").await;
+        assert!(!store.claim_background_call("wc1").await, "not pending");
+        state.set_device_admission("wc1", Admission::Pending, "cli").await;
+        assert!(store.claim_background_call("wc1").await);
+        assert!(!store.claim_background_call("wc1").await, "second claim within 30 s");
+        store.record_result("wc1", "pending").await;
+        assert!(!store.claim_background_call("wc1").await, "a recorded call counts too");
     }
 
     #[rocket::async_test]

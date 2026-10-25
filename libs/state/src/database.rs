@@ -2366,6 +2366,23 @@ impl Database {
         }
     }
 
+    /// Claims a background webhook call for pending device `id`: true when none ran in the last 30 seconds.
+    pub async fn claim_webhook_call(&self, id: &str) -> bool {
+        sqlx::query(
+            "UPDATE peer SET admission_webhook_at = current_timestamp::text \
+             WHERE id = $1 AND admission = 0 \
+             AND (admission_webhook_at IS NULL OR admission_webhook_at::timestamptz < now() - interval '30 seconds')",
+        )
+        .bind(id)
+        .execute(&self.pool)
+        .await
+        .map(|r| r.rows_affected() == 1)
+        .unwrap_or_else(|e| {
+            log::error!("claim_webhook_call error: {e:?}");
+            false
+        })
+    }
+
     /// Applies a webhook decision while device `id` is still pending; true when it changed.
     pub async fn apply_webhook_decision(&self, id: &str, admission: i16) -> bool {
         sqlx::query(

@@ -7,7 +7,9 @@ The api-server asks the webhook. The webhook answers admit, reject or pending.
 ## Turn it on
 
 Set `ADMISSION_WEBHOOK_URL` and `ADMISSION_WEBHOOK_KEY`.
+The webhook runs only with `DEVICE_ADMISSION=Y` (case-insensitive). Without it the webhook is off.
 With an empty URL the webhook is off.
+Do not put a secret in the webhook URL: administrators see it in the console.
 If the URL is set and the key is missing or wrong, the server does not start.
 
 Create the key:
@@ -35,6 +37,8 @@ Only for pending devices, after:
 - `POST /api/peers/<id>/admission-check` (admin) or `rustdesk-api peer admission-check <id>`.
 
 System info and login calls run in the background. The device does not wait.
+These device-triggered calls are limited to one per device every 30 seconds, across all replicas.
+The console button and the CLI are not limited.
 There are no automatic retries.
 A failed call leaves the device pending until the next event or until an administrator asks again.
 
@@ -76,7 +80,7 @@ The server stores the time and the result (or the error) on the device.
 The server checks the receiver's TLS certificate.
 
 The api-server changes the state only while the device is pending.
-A decision by an administrator always stands.
+An admit or reject by an administrator always stands; a device an administrator sets back to pending can be decided by the webhook again.
 
 ## Key rotation
 

@@ -393,7 +393,10 @@ fn spawn_admission_check(state: &ApiState, webhook: &WebhookState, id: &str) {
     let store = state.admission_store();
     let id = id.to_string();
     tokio::spawn(async move {
-        w.check(&store, &id).await;
+        // At most one device-triggered call per device every 30 s, across replicas (the claim is in the database).
+        if store.claim_background_call(&id).await {
+            w.check(&store, &id).await;
+        }
     });
 }
 

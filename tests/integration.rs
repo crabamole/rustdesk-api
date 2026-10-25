@@ -2907,3 +2907,20 @@ async fn test_admission_check_route_without_webhook() {
     let body: Value = resp.into_json().await.unwrap();
     assert_eq!(body["enabled"], false);
 }
+
+#[rocket::async_test]
+async fn test_admission_webhook_routes_refuse_non_admin() {
+    let (client, _dir) = test_client().await;
+    login_admin(&client).await;
+    let state = client.rocket().state::<state::ApiState>().unwrap();
+    state.test_register_device("devna", "ZGM=").await;
+    state.set_device_admission("devna", utils::Admission::Pending, "cli").await;
+    state.test_oidc_login(&"carol".to_string()).await;
+    state.set_admin("carol@example.org", true).await.unwrap();
+    state.set_admin("carol@example.org", false).await.unwrap();
+    let carol = oidc_token(&client, "carol").await;
+    let s = client.post("/api/peers/devna/admission-check").header(auth_header(&carol)).dispatch().await.status();
+    assert!(s == Status::Unauthorized || s == Status::Forbidden, "{s}");
+    let s = client.get("/api/admission/webhook").header(auth_header(&carol)).dispatch().await.status();
+    assert!(s == Status::Unauthorized || s == Status::Forbidden, "{s}");
+}

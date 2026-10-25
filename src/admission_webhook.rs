@@ -57,8 +57,11 @@ impl AdmissionWebhook {
         Ok(Self { url: url.to_string(), key, client })
     }
 
-    /// From `ADMISSION_WEBHOOK_URL` / `ADMISSION_WEBHOOK_KEY`; `Ok(None)` when the URL is empty.
+    /// From `ADMISSION_WEBHOOK_URL` / `ADMISSION_WEBHOOK_KEY`; `Ok(None)` when `DEVICE_ADMISSION` is not `Y` or the URL is empty.
     pub fn from_env() -> Result<Option<Self>, String> {
+        if !std::env::var("DEVICE_ADMISSION").is_ok_and(|v| v.eq_ignore_ascii_case("Y")) {
+            return Ok(None);
+        }
         let url = std::env::var("ADMISSION_WEBHOOK_URL").unwrap_or_default();
         if url.trim().is_empty() {
             return Ok(None);
@@ -81,19 +84,24 @@ impl AdmissionWebhook {
             return CheckOutcome::NotPending;
         };
         let outcome = self.call(&device).await;
-        let stored = match &outcome {
-            Ok((decision, _)) => decision.clone(),
-            Err(e) => e.clone(),
+        let applied = match &outcome {
+            Ok((decision, reason)) if decision == "admit" || decision == "reject" => {
+                let a = if decision == "admit" { Admission::Admitted } else { Admission::Rejected };
+                Some((a, store.apply_decision(id, a, reason).await))
+            }
+            _ => None,
+        };
+        let stored = match (&outcome, applied) {
+            (Ok((decision, _)), Some((_, false))) => format!("{decision} (not applied)"),
+            (Ok((decision, _)), _) => decision.clone(),
+            (Err(e), _) => e.clone(),
         };
         store.record_result(id, &stored).await;
         match outcome {
-            Ok((decision, reason)) => match decision.as_str() {
-                "admit" | "reject" => {
-                    let a = if decision == "admit" { Admission::Admitted } else { Admission::Rejected };
-                    store.apply_decision(id, a, &reason).await;
-                    CheckOutcome::Decided(a)
-                }
-                _ => CheckOutcome::StillPending,
+            Ok(_) => match applied {
+                Some((_, false)) => CheckOutcome::NotPending,
+                Some((a, true)) => CheckOutcome::Decided(a),
+                None => CheckOutcome::StillPending,
             },
             Err(e) => {
                 log::warn!("admission webhook for {id}: {e}");
@@ -252,6 +260,22 @@ mod tests {
         *seen.lock().unwrap() = None;
         assert_eq!(webhook(&url).check(&store, "wt1").await, CheckOutcome::NotPending);
         assert!(seen.lock().unwrap().is_none(), "no call for a device that is not pending");
+    }
+
+    #[rocket::async_test]
+    async fn admin_change_during_call_is_not_overwritten() {
+        let (url, _) = stub(200, r#"{"decision":"admit"}"#, std::time::Duration::from_millis(500)).await;
+        let (state, store) = pending("wl1").await;
+        let w = webhook(&url);
+        let admin = async {
+            tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+            state.set_device_admission("wl1", Admission::Rejected, "cli").await;
+        };
+        let (outcome, _) = tokio::join!(w.check(&store, "wl1"), admin);
+        assert_eq!(outcome, CheckOutcome::NotPending);
+        assert_eq!(state.device_admission("wl1", "dXVpZA==").await, Some(Admission::Rejected));
+        let (_, peers) = state.get_peers(Some("wl1"), None, None, 0, 10).await.unwrap();
+        assert_eq!(peers[0].admission_webhook_result.as_deref(), Some("admit (not applied)"));
     }
 
     #[rocket::async_test]
