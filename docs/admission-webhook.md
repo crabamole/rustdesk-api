@@ -150,3 +150,5 @@ HTTPServer(("127.0.0.1", 8080), Handler).serve_forever()
 ```
 
 Run it with the public key as the only argument.
+
+A runnable example with YAML rules and tests is in `examples/admission-webhook/`.

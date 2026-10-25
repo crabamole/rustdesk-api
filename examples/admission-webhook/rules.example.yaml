@@ -1,0 +1,12 @@
+# Example rules for receiver.py. First matching rule wins; a rule matches when any listed
+# condition matches. Hostnames are reported by the device itself.
+rules:
+  - decision: admit
+    match:
+      hostnames: ["CORP-WS-*"]
+      subnets: ["192.0.2.0/24"]
+      owner_groups: ["IT"]
+  - decision: reject
+    match:
+      hostnames: ["*-GUEST"]
+default: pending
