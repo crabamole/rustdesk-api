@@ -150,18 +150,46 @@ pub enum PeerCommand {
         /// The device's RustDesk ID
         id: String,
     },
+    /// Let device ID be controlled while DEVICE_ADMISSION=Y
+    Admit {
+        /// The device's RustDesk ID
+        id: String,
+    },
+    /// Refuse every connection to device ID while DEVICE_ADMISSION=Y
+    Reject {
+        /// The device's RustDesk ID
+        id: String,
+    },
+    /// Put device ID back to pending
+    Pending {
+        /// The device's RustDesk ID
+        id: String,
+    },
 }
 
 /// Runs a `peer` subcommand and returns the message to print.
 pub async fn run_peer(cmd: &PeerCommand, db_url: &str) -> Result<String, String> {
-    let PeerCommand::ResetKey { id } = cmd;
     let state = ApiState::new_with_db(db_url).await;
-    let had_key = state.reset_device_key(id).await.ok_or("cannot reset the key")?.ok_or(format!("no device {id}"))?;
-    if !had_key {
-        return Ok(format!("{id}: key already reset; its next registration sets the key"));
+    let (id, admission) = match cmd {
+        PeerCommand::ResetKey { id } => {
+            let had_key = state.reset_device_key(id).await.ok_or("cannot reset the key")?.ok_or(format!("no device {id}"))?;
+            if !had_key {
+                return Ok(format!("{id}: key already reset; its next registration sets the key"));
+            }
+            state.log_console(None, utils::console_log::TYP_DEVICE, utils::console_log::IOP_RESET_DEVICE_KEY, serde_json::json!({ "device": id, "via": "cli" })).await;
+            return Ok(format!("{id}: key reset; its next registration sets the key"));
+        }
+        PeerCommand::Admit { id } => (id, utils::Admission::Admitted),
+        PeerCommand::Reject { id } => (id, utils::Admission::Rejected),
+        PeerCommand::Pending { id } => (id, utils::Admission::Pending),
+    };
+    let word = serde_json::to_value(admission).ok().and_then(|v| v.as_str().map(str::to_owned)).unwrap_or_default();
+    let old = state.set_device_admission(id, admission, "cli").await.ok_or("cannot set the admission")?.ok_or(format!("no device {id}"))?;
+    if old == admission {
+        return Ok(format!("{id}: already {word}"));
     }
-    state.log_console(None, utils::console_log::TYP_DEVICE, utils::console_log::IOP_RESET_DEVICE_KEY, serde_json::json!({ "device": id, "via": "cli" })).await;
-    Ok(format!("{id}: key reset; its next registration sets the key"))
+    state.log_console(None, utils::console_log::TYP_DEVICE, utils::console_log::iop_for_admission(admission), serde_json::json!({ "device": id, "via": "cli" })).await;
+    Ok(format!("{id}: {word}"))
 }
 
 #[cfg(test)]
@@ -322,6 +350,32 @@ issuer = "https://idp.example.com"
         let (_, rows) = state.list_audit_consoles(&q).await.unwrap();
         assert_eq!(rows.iter().filter(|r| r.iop == utils::console_log::IOP_RESET_DEVICE_KEY).count(), 1);
         let err = run_peer(&PeerCommand::ResetKey { id: "nobody".to_string() }, &db_url).await.unwrap_err();
+        assert_eq!(err, "no device nobody");
+    }
+
+    #[test]
+    fn peer_takes_admission_commands() {
+        let cli = Cli::try_parse_from(["rustdesk-api", "peer", "admit", "123"]).unwrap();
+        assert!(matches!(cli.command, Command::Peer(PeerCommand::Admit { id }) if id == "123"));
+        let cli = Cli::try_parse_from(["rustdesk-api", "peer", "reject", "123"]).unwrap();
+        assert!(matches!(cli.command, Command::Peer(PeerCommand::Reject { id }) if id == "123"));
+        let cli = Cli::try_parse_from(["rustdesk-api", "peer", "pending", "123"]).unwrap();
+        assert!(matches!(cli.command, Command::Peer(PeerCommand::Pending { id }) if id == "123"));
+    }
+
+    #[rocket::async_test]
+    async fn peer_admit_sets_the_state_and_logs_once() {
+        let db_url = state::testing::fresh_database_url().await;
+        let state = ApiState::new_with_db(&db_url).await;
+        state.test_register_device("dev-adm", "ZGV2").await;
+        let reject = PeerCommand::Reject { id: "dev-adm".to_string() };
+        assert_eq!(run_peer(&reject, &db_url).await.unwrap(), "dev-adm: rejected");
+        assert_eq!(run_peer(&reject, &db_url).await.unwrap(), "dev-adm: already rejected");
+        assert_eq!(state.device_admission("dev-adm", "ZGV2").await, Some(utils::Admission::Rejected));
+        let q = utils::AuditQuery { offset: 0, limit: 10, created_at: None, pattern: None, conn_type: None };
+        let (_, rows) = state.list_audit_consoles(&q).await.unwrap();
+        assert_eq!(rows.iter().filter(|r| r.iop == utils::console_log::IOP_REJECT_DEVICE).count(), 1);
+        let err = run_peer(&PeerCommand::Admit { id: "nobody".to_string() }, &db_url).await.unwrap_err();
         assert_eq!(err, "no device nobody");
     }
 }

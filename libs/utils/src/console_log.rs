@@ -25,3 +25,15 @@ pub const IOP_UPDATE_POLICY: i16 = 25;
 pub const IOP_REPUSH_POLICY: i16 = 26;
 pub const IOP_RESET_DEVICE_KEY: i16 = 27;
 pub const IOP_DEVICE_KEY_CHANGED: i16 = 28;
+pub const IOP_ADMIT_DEVICE: i16 = 29;
+pub const IOP_REJECT_DEVICE: i16 = 30;
+pub const IOP_SET_DEVICE_PENDING: i16 = 31;
+
+/// The console log `iop` of a change to admission state `a`.
+pub fn iop_for_admission(a: crate::Admission) -> i16 {
+    match a {
+        crate::Admission::Admitted => IOP_ADMIT_DEVICE,
+        crate::Admission::Rejected => IOP_REJECT_DEVICE,
+        crate::Admission::Pending => IOP_SET_DEVICE_PENDING,
+    }
+}
