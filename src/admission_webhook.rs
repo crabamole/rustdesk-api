@@ -53,7 +53,7 @@ impl AdmissionWebhook {
         if key.verifying_key().to_bytes() != raw[32..] {
             return Err("ADMISSION_WEBHOOK_KEY: the public key does not belong to the seed".to_string());
         }
-        let client = reqwest::Client::builder().timeout(TIMEOUT).build().map_err(|e| format!("webhook client: {e}"))?;
+        let client = reqwest::Client::builder().timeout(TIMEOUT).redirect(reqwest::redirect::Policy::none()).build().map_err(|e| format!("webhook client: {e}"))?;
         Ok(Self { url: url.to_string(), key, client })
     }
 
@@ -113,7 +113,7 @@ impl AdmissionWebhook {
             .body(body)
             .send()
             .await
-            .map_err(|e| if e.is_timeout() { "timeout".to_string() } else { format!("error: {}", short(&e.to_string())) })?;
+            .map_err(|e| if e.is_timeout() { "timeout".to_string() } else { format!("error: {}", short(&root_cause(e).to_string())) })?;
         if resp.status() != reqwest::StatusCode::OK {
             return Err(format!("HTTP {}", resp.status().as_u16()));
         }
@@ -123,6 +123,16 @@ impl AdmissionWebhook {
             _ => Err("invalid response".to_string()),
         }
     }
+}
+
+/// Innermost cause of a request error, without the URL (it can carry a token).
+fn root_cause(e: reqwest::Error) -> Box<dyn std::error::Error> {
+    let e = e.without_url();
+    let mut cause: &dyn std::error::Error = &e;
+    while let Some(next) = cause.source() {
+        cause = next;
+    }
+    cause.to_string().into()
 }
 
 fn short(s: &str) -> &str {
@@ -221,6 +231,7 @@ mod tests {
             (200, r#"{"decision":"reject"}"#, CheckOutcome::Decided(Admission::Rejected), "reject"),
             (200, r#"{"decision":"pending"}"#, CheckOutcome::StillPending, "pending"),
             (500, "{}", CheckOutcome::Failed("HTTP 500".into()), "HTTP 500"),
+            (307, "{}", CheckOutcome::Failed("HTTP 307".into()), "HTTP 307"),
             (200, r#"{"decision":"maybe"}"#, CheckOutcome::Failed("invalid response".into()), "invalid response"),
         ] {
             let (url, _) = stub(status, body, Default::default()).await;
@@ -241,5 +252,18 @@ mod tests {
         *seen.lock().unwrap() = None;
         assert_eq!(webhook(&url).check(&store, "wt1").await, CheckOutcome::NotPending);
         assert!(seen.lock().unwrap().is_none(), "no call for a device that is not pending");
+    }
+
+    #[rocket::async_test]
+    async fn connection_error_keeps_cause_without_url() {
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/admission", l.local_addr().unwrap());
+        drop(l);
+        let (state, store) = pending("wc1").await;
+        let CheckOutcome::Failed(msg) = webhook(&url).check(&store, "wc1").await else { panic!("expected Failed") };
+        assert!(msg.starts_with("error: "), "{msg}");
+        assert!(!msg.contains("127.0.0.1") && !msg.contains("http://"), "{msg}");
+        let (_, peers) = state.get_peers(Some("wc1"), None, None, 0, 10).await.unwrap();
+        assert_eq!(peers[0].admission_webhook_result.as_deref(), Some(msg.as_str()));
     }
 }
