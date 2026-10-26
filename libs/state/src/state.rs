@@ -305,8 +305,8 @@ impl ApiState {
     }
 
     /// Issues the session for a one-time result when the starter proves itself; the result
-    /// is used up either way.
-    pub async fn oidc_redeem(&self, req: &utils::OidcTokenRequest) -> Option<(Token, String, DatabaseUserInfo)> {
+    /// is used up either way. The last value says whether the device signed this login as its owner.
+    pub async fn oidc_redeem(&self, req: &utils::OidcTokenRequest) -> Option<(Token, String, DatabaseUserInfo, bool)> {
         let (login, expired) = self.db.take_oidc_result(&req.result, OIDC_RESULT_TTL_SECS).await?;
         let uuid = base64::prelude::BASE64_STANDARD.decode(&req.uuid).ok().and_then(|u| String::from_utf8(u).ok());
         if expired
@@ -336,10 +336,10 @@ impl ApiState {
             return None;
         }
         let token = self.get_access_token(user_id.clone(), &username, db_user_info.admin).await;
-        self.record_device_owner(&login, req, &token.to_base64(), &user_id).await;
+        let owner = self.record_device_owner(&login, req, &token.to_base64(), &user_id).await;
         self.record_viewer_login(&login, &user_id).await;
         self.record_login(&login, "ok", String::new(), username.clone()).await;
-        Some((token, username, db_user_info))
+        Some((token, username, db_user_info, owner))
     }
 
     /// Writes the login's outcome to the login audit.
@@ -384,39 +384,42 @@ impl ApiState {
             .await;
     }
 
-    /// Makes this login the owner of its device when the device signed it (design-same-user-access.md).
-    async fn record_device_owner(&self, login: &OidcState, req: &utils::OidcTokenRequest, session: &str, user: &UserId) {
+    /// Makes this login the owner of its device when the device signed it (design-same-user-access.md);
+    /// true when the signature matched.
+    async fn record_device_owner(&self, login: &OidcState, req: &utils::OidcTokenRequest, session: &str, user: &UserId) -> bool {
         if login.device_type != "client" || req.owner_signature.is_empty() {
-            return;
+            return false;
         }
         let Some(pk) = self.db.peer_pk(&login.id, login.uuid.as_bytes()).await else {
             log::warn!("device owner: {:?} is not registered", login.id);
-            return;
+            return false;
         };
         if let Some(new_pk) = base64::prelude::BASE64_STANDARD.decode(&req.owner_pk).ok().filter(|k| !k.is_empty() && *k != pk) {
             return self.approve_device_key(login, req, session, user, &new_pk).await;
         }
         if !crate::device_owner::verify(&pk, &login.login_code, &req.id, &req.uuid, &req.owner_signature) {
             log::warn!("device owner: signature for {:?} does not match its key", login.id);
-            return;
+            return false;
         }
         if self.db.set_peer_owner(&login.id, session, &pk).await != Some(true) {
             log::warn!("device owner: {:?} not updated", login.id);
         }
+        true
     }
 
     /// Approves the device's new key when its owner logs in on it (design-device-key-change.md, stage 2).
-    async fn approve_device_key(&self, login: &OidcState, req: &utils::OidcTokenRequest, session: &str, user: &UserId, new_pk: &[u8]) {
+    async fn approve_device_key(&self, login: &OidcState, req: &utils::OidcTokenRequest, session: &str, user: &UserId, new_pk: &[u8]) -> bool {
         if !crate::device_owner::verify(new_pk, &login.login_code, &req.id, &req.uuid, &req.owner_signature) {
             log::warn!("device key: signature for {:?} does not match the new key", login.id);
-            return;
+            return false;
         }
         if self.db.approve_peer_key(&login.id, login.uuid.as_bytes(), session, new_pk, user).await != Some(true) {
             log::warn!("device key: {:?} has no live owner session of this user", login.id);
-            return;
+            return false;
         }
         let info = serde_json::json!({ "device": login.id, "via": "owner-login" });
         self.log_console(Some(user), utils::console_log::TYP_DEVICE, utils::console_log::IOP_DEVICE_KEY_CHANGED, info).await;
+        true
     }
 
     /// The device's owner key when same-user access is `enabled` and `user` owns device `target`.
@@ -1348,7 +1351,7 @@ mod tests {
     async fn oidc_redeem_issues_a_session_once() {
         let state = test_state().await;
         finished_login(&state, "admin", "v", "r1").await;
-        let (_, username, _) = state.oidc_redeem(&token_request("r1", "v")).await.unwrap();
+        let (_, username, _, _) = state.oidc_redeem(&token_request("r1", "v")).await.unwrap();
         assert_eq!(username, "admin");
         assert!(state.oidc_redeem(&token_request("r1", "v")).await.is_none());
     }
@@ -1407,7 +1410,8 @@ mod tests {
         let state = test_state().await;
         let pk = owned_device(&state, "701").await;
         device_login(&state, "admin", "701", "c1", "r1").await;
-        assert!(state.oidc_redeem(&owner_request("701", "c1", "r1", Some(OWNER_SEED))).await.is_some());
+        let (.., signed) = state.oidc_redeem(&owner_request("701", "c1", "r1", Some(OWNER_SEED))).await.unwrap();
+        assert!(signed, "the login reports the device's signature");
         let admin = admin_id(&state).await;
         assert_eq!(state.same_user_owner_pk(true, &admin, "701").await, Some(pk));
         assert_eq!(state.same_user_owner_pk(false, &admin, "701").await, None, "switch off");
@@ -1419,9 +1423,11 @@ mod tests {
         let state = test_state().await;
         owned_device(&state, "702").await;
         device_login(&state, "admin", "702", "c2", "r2").await;
-        assert!(state.oidc_redeem(&owner_request("702", "c2", "r2", None)).await.is_some(), "the login itself works");
+        let (.., signed) = state.oidc_redeem(&owner_request("702", "c2", "r2", None)).await.expect("the login itself works");
+        assert!(!signed);
         device_login(&state, "admin", "702", "c3", "r3").await;
-        assert!(state.oidc_redeem(&owner_request("702", "c3", "r3", Some([8; 32]))).await.is_some());
+        let (.., signed) = state.oidc_redeem(&owner_request("702", "c3", "r3", Some([8; 32]))).await.unwrap();
+        assert!(!signed, "a signature from another key does not count");
         assert_eq!(state.same_user_owner_pk(true, &admin_id(&state).await, "702").await, None);
     }
 
@@ -1430,7 +1436,7 @@ mod tests {
         let state = test_state().await;
         owned_device(&state, "703").await;
         device_login(&state, "admin", "703", "c4", "r4").await;
-        let (token, _, _) = state.oidc_redeem(&owner_request("703", "c4", "r4", Some(OWNER_SEED))).await.unwrap();
+        let (token, _, _, _) = state.oidc_redeem(&owner_request("703", "c4", "r4", Some(OWNER_SEED))).await.unwrap();
         let admin = admin_id(&state).await;
         let guid = uuid::Uuid::from_slice(&admin).unwrap().to_string();
         state.user_change_status(&guid, true).await.unwrap();
@@ -1499,7 +1505,7 @@ mod tests {
         assert!(b.test_set_oidc_provider("c", Arc::new(StubIdp("admin"))).await);
         let (return_to, result) = b.oidc_complete_callback("c", "idp-code").await.unwrap();
         assert_eq!(return_to, "/ui/login");
-        let (_, username, _) = a.oidc_redeem(&token_request(&result.unwrap(), "v")).await.unwrap();
+        let (_, username, _, _) = a.oidc_redeem(&token_request(&result.unwrap(), "v")).await.unwrap();
         assert_eq!(username, "admin");
     }
 

@@ -1919,10 +1919,10 @@ async fn oidc_token(
     webhook: &State<WebhookState>,
     request: Json<utils::OidcTokenRequest>,
 ) -> Result<Json<OidcResponse>, status::Custom<Json<serde_json::Value>>> {
-    let Some((token, username, userinfo)) = state.oidc_redeem(&request).await else {
+    let Some((token, username, userinfo, signed_by_device)) = state.oidc_redeem(&request).await else {
         return Err(status::Custom(Status::BadRequest, Json(serde_json::json!({ "error": "Login failed" }))));
     };
-    if !request.owner_signature.is_empty() {
+    if signed_by_device {
         spawn_admission_check(state, webhook, &request.id);
     }
     Ok(Json(OidcResponse {
