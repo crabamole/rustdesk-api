@@ -933,6 +933,7 @@ async fn peer_admission_check(
         admission_webhook::CheckOutcome::NotPending => return Err(Status::Conflict),
         admission_webhook::CheckOutcome::Decided(utils::Admission::Admitted) => "admit".to_string(),
         admission_webhook::CheckOutcome::Decided(_) => "reject".to_string(),
+        admission_webhook::CheckOutcome::NotApplied(a) => format!("{} (not applied)", if a == utils::Admission::Admitted { "admit" } else { "reject" }),
         admission_webhook::CheckOutcome::StillPending => "pending".to_string(),
         admission_webhook::CheckOutcome::Failed(e) => e,
     };

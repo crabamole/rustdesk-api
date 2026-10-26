@@ -212,7 +212,8 @@ pub async fn run_peer(cmd: &PeerCommand, db_url: &str) -> Result<String, String>
             return Ok(format!("{id}: key reset; its next registration sets the key"));
         }
         PeerCommand::AdmissionCheck { id } => {
-            let w = crate::admission_webhook::AdmissionWebhook::from_env()?.ok_or("ADMISSION_WEBHOOK_URL is not set")?;
+            let w = crate::admission_webhook::AdmissionWebhook::from_env()?
+                .ok_or("the admission webhook is off: it needs DEVICE_ADMISSION=Y and ADMISSION_WEBHOOK_URL")?;
             let store = state.admission_store();
             if !store.is_registered(id).await {
                 return Err(format!("no device {id}"));
@@ -220,6 +221,10 @@ pub async fn run_peer(cmd: &PeerCommand, db_url: &str) -> Result<String, String>
             return Ok(match w.check(&store, id).await {
                 crate::admission_webhook::CheckOutcome::NotPending => format!("{id}: not pending; nothing asked"),
                 crate::admission_webhook::CheckOutcome::Decided(a) => format!("{id}: webhook decided {}", if a == utils::Admission::Admitted { "admit" } else { "reject" }),
+                crate::admission_webhook::CheckOutcome::NotApplied(a) => format!(
+                    "{id}: webhook decided {}, not applied: the device was decided while it was asked",
+                    if a == utils::Admission::Admitted { "admit" } else { "reject" }
+                ),
                 crate::admission_webhook::CheckOutcome::StillPending => format!("{id}: webhook answered pending"),
                 crate::admission_webhook::CheckOutcome::Failed(e) => format!("{id}: webhook failed: {e}"),
             });

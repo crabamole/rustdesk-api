@@ -19,6 +19,8 @@ pub struct AdmissionWebhook {
 pub enum CheckOutcome {
     NotPending,
     Decided(Admission),
+    /// The webhook decided, but the device was decided while it was asked; that decision stands.
+    NotApplied(Admission),
     StillPending,
     Failed(String),
 }
@@ -99,7 +101,7 @@ impl AdmissionWebhook {
         store.record_result(id, &stored).await;
         match outcome {
             Ok(_) => match applied {
-                Some((_, false)) => CheckOutcome::NotPending,
+                Some((a, false)) => CheckOutcome::NotApplied(a),
                 Some((a, true)) => CheckOutcome::Decided(a),
                 None => CheckOutcome::StillPending,
             },
@@ -272,7 +274,7 @@ mod tests {
             state.set_device_admission("wl1", Admission::Rejected, "cli").await;
         };
         let (outcome, _) = tokio::join!(w.check(&store, "wl1"), admin);
-        assert_eq!(outcome, CheckOutcome::NotPending);
+        assert_eq!(outcome, CheckOutcome::NotApplied(Admission::Admitted));
         assert_eq!(state.device_admission("wl1", "dXVpZA==").await, Some(Admission::Rejected));
         let (_, peers) = state.get_peers(Some("wl1"), None, None, 0, 10).await.unwrap();
         assert_eq!(peers[0].admission_webhook_result.as_deref(), Some("admit (not applied)"));
