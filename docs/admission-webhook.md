@@ -10,7 +10,7 @@ Set `ADMISSION_WEBHOOK_URL` and `ADMISSION_WEBHOOK_KEY`.
 The webhook runs only with `DEVICE_ADMISSION=Y` (case-insensitive). Without it the webhook is off.
 With an empty URL the webhook is off.
 Do not put a secret in the webhook URL: administrators see it in the console.
-If the URL is set and the key is missing or wrong, the server does not start.
+With `DEVICE_ADMISSION=Y`, if the URL is set and the key is missing or wrong, the server does not start.
 
 Create the key:
 
