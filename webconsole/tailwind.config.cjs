@@ -13,6 +13,8 @@ module.exports = {
   theme: {
     extend: {
       colors: {
+        // The table buttons (TailGrids markup) use primary; without it their hover text is white on white.
+        primary: '#3758F9',
         hcfdark: '#0e6835',
         hcflight: '#95be1f',
         hcfcardinal: '#882647',
